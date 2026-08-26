@@ -149,10 +149,10 @@ void tcp_engine::on_packet(const ip_packet_info& ip, const uint8_t* payload, siz
 
     const uint8_t* data = payload + hlen;
     size_t data_len = len - hlen;
-    handle_segment(std::move(f), th, data, data_len);
+    handle_segment(f, th, data, data_len);
 }
 
-void tcp_engine::handle_segment(std::shared_ptr<tcp_flow> f, const tcp_header& th,
+void tcp_engine::handle_segment(const std::shared_ptr<tcp_flow>& f, const tcp_header& th,
                                 const uint8_t* data, size_t data_len) {
     const uint32_t seq = ntohl(th.seq);
     const uint32_t ack = ntohl(th.ack);
@@ -379,8 +379,7 @@ void tcp_engine::send_segment(tcp_flow& f, uint32_t seq, uint8_t flags,
                                           IPPROTO_TCP_V, base + ip_hdr_len,
                                           tcp_hdr_len + len));
 
-    writer_.async_write(std::move(pkt),
-                        net::bind_executor(strand_, [](const boost::system::error_code&, size_t) {}));
+    writer_.async_write_and_forget(std::move(pkt));
 }
 
 void tcp_engine::send_ack(tcp_flow& f) {

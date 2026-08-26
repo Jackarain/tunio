@@ -133,18 +133,21 @@ namespace std {
 template <>
 struct hash<tunio::five_tuple> {
     size_t operator()(const tunio::five_tuple& k) const noexcept {
-        size_t h = 0;
-        for (uint8_t b : k.src_ip) {
-            h ^= std::hash<uint8_t>{}(b) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        // 64 位字混合哈希：一次 memcpy 加载 8 字节（未用字节恒为 0，不引入碰撞），
+        // 替代逐字节 FNV 循环，减少每包查找的指令数。
+        uint64_t h = 1469598103934665603ULL; // FNV offset basis
+        uint64_t v[6];
+        std::memcpy(v, k.src_ip.data(), 8);
+        std::memcpy(v + 1, k.src_ip.data() + 8, 8);
+        std::memcpy(v + 2, k.dst_ip.data(), 8);
+        std::memcpy(v + 3, k.dst_ip.data() + 8, 8);
+        v[4] = static_cast<uint64_t>(k.src_port) | (static_cast<uint64_t>(k.dst_port) << 16);
+        v[5] = static_cast<uint64_t>(k.protocol) | (static_cast<uint64_t>(k.family) << 8);
+        for (uint64_t x : v) {
+            h ^= x;
+            h *= 1099511628211ULL; // FNV prime
         }
-        for (uint8_t b : k.dst_ip) {
-            h ^= std::hash<uint8_t>{}(b) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        }
-        h ^= std::hash<uint16_t>{}(k.src_port) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        h ^= std::hash<uint16_t>{}(k.dst_port) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        h ^= std::hash<uint8_t>{}(k.protocol) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        h ^= std::hash<uint8_t>{}(k.family) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
+        return static_cast<size_t>(h);
     }
 };
 } // namespace std

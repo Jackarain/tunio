@@ -151,7 +151,7 @@ private:
     friend void tcp_flow_start_write(std::shared_ptr<tcp_flow>, std::vector<uint8_t>,
                                      std::function<void(boost::system::error_code, size_t)>);
 
-    void handle_segment(std::shared_ptr<tcp_flow> f, const tcp_header& th,
+    void handle_segment(const std::shared_ptr<tcp_flow>& f, const tcp_header& th,
                         const uint8_t* data, size_t data_len);
     void send_ack(tcp_flow& f);
     void defer_ack(tcp_flow& f);

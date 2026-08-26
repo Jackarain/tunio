@@ -55,6 +55,13 @@ public:
         }
     }
 
+    // 写后无需回调的发送路径（引擎内 TCP/UDP/ICMP 出包）：
+    // 跳过 CompletionToken 包装与 handler 堆分配，直接在 Strand 上入队。
+    void async_write_and_forget(packet_buffer&& buf) {
+        queue_.push_back(entry{std::move(buf), {}});
+        pump();
+    }
+
     // 将数据包加入写队列；完成回调在调用方绑定执行器上触发
     template <typename CompletionToken>
     auto async_write(packet_buffer&& buf, CompletionToken&& token) {
@@ -106,8 +113,10 @@ private:
                 stats_.tx_packets.fetch_add(1, std::memory_order_relaxed);
             }
             if (cancelled_) {
-                e->handler(net::error::operation_aborted, 0);
-            } else {
+                if (e->handler) {
+                    e->handler(net::error::operation_aborted, 0);
+                }
+            } else if (e->handler) {
                 e->handler(ec, n);
             }
             recycle(std::move(e->buf));

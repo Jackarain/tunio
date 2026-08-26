@@ -82,6 +82,43 @@ enum tcp_flag : uint8_t {
 };
 
 // ---- 校验和工具（RFC 1071 反码和）----
+#if defined(__SSE2__)
+#include <emmintrin.h>
+
+// SSE2 向量化：每 32 字节展开为 8 路 32 位累加器（16 位字按网络序解释），
+// 避免标量实现的逐字进位链；无 SIMD 平台回退到下方标量版本。
+inline uint32_t checksum_sum(const uint8_t* data, size_t len, uint32_t sum = 0) {
+    __m128i acc0 = _mm_setzero_si128();
+    __m128i acc1 = _mm_setzero_si128();
+    const __m128i mask = _mm_set1_epi16(0x00ff);
+    size_t i = 0;
+    for (; i + 32 <= len; i += 32) {
+        const __m128i v0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
+        const __m128i v1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i + 16));
+        const __m128i w0 = _mm_or_si128(_mm_slli_epi16(_mm_and_si128(v0, mask), 8),
+                                        _mm_srli_epi16(v0, 8));
+        const __m128i w1 = _mm_or_si128(_mm_slli_epi16(_mm_and_si128(v1, mask), 8),
+                                        _mm_srli_epi16(v1, 8));
+        acc0 = _mm_add_epi32(acc0, _mm_unpacklo_epi16(w0, _mm_setzero_si128()));
+        acc1 = _mm_add_epi32(acc1, _mm_unpackhi_epi16(w0, _mm_setzero_si128()));
+        acc0 = _mm_add_epi32(acc0, _mm_unpacklo_epi16(w1, _mm_setzero_si128()));
+        acc1 = _mm_add_epi32(acc1, _mm_unpackhi_epi16(w1, _mm_setzero_si128()));
+    }
+    uint32_t t[8];
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(t), acc0);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(t + 4), acc1);
+    sum += t[0] + t[1] + t[2] + t[3] + t[4] + t[5] + t[6] + t[7];
+    for (; i + 1 < len; i += 2) {
+        sum += static_cast<uint16_t>((data[i] << 8) | data[i + 1]);
+    }
+    if (i < len) {
+        sum += static_cast<uint16_t>(data[i] << 8);
+    }
+    return sum;
+}
+
+#else
+
 inline uint32_t checksum_sum(const uint8_t* data, size_t len, uint32_t sum = 0) {
     size_t i = 0;
     for (; i + 1 < len; i += 2) {
@@ -92,6 +129,8 @@ inline uint32_t checksum_sum(const uint8_t* data, size_t len, uint32_t sum = 0) 
     }
     return sum;
 }
+
+#endif
 
 inline uint16_t checksum_fold(uint32_t sum) {
     while (sum >> 16) {
