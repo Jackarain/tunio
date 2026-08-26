@@ -15,13 +15,11 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
-#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 
 #include "tunio/tun_config.hpp"
-#include "tunio/detail/handler_util.hpp"
 #include "ip_headers.hpp"
 
 namespace tunio {
@@ -98,14 +96,14 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow> {
     struct read_op {
         std::vector<net::mutable_buffer> buffers;
         size_t total = 0;
-        std::function<void(boost::system::error_code, size_t)> handler;
+        net::any_completion_handler<void(boost::system::error_code, size_t)> handler;
     };
     std::deque<read_op> pending_reads;
 
     struct write_op {
         std::vector<uint8_t> data;
         size_t offset = 0;
-        std::function<void(boost::system::error_code, size_t)> handler;
+        net::any_completion_handler<void(boost::system::error_code, size_t)> handler;
     };
     std::deque<write_op> pending_writes;
     size_t tx_bytes = 0;  // 排队待发送的字节数（含未发送部分）
@@ -181,7 +179,8 @@ private:
     size_t mss6_ = 1220;  // IPv6 MSS = MTU - 40(IP) - 20(TCP)
 
     std::unordered_map<five_tuple, std::shared_ptr<tcp_flow>> flows_;
-    std::deque<std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)>> pending_accepts_;
+    std::deque<net::any_completion_handler<void(boost::system::error_code, std::shared_ptr<tcp_flow>)>>
+        pending_accepts_;
     std::deque<std::shared_ptr<tcp_flow>> pending_flows_;
     net::steady_timer sweep_timer_;
     net::steady_timer ack_timer_;
@@ -215,9 +214,7 @@ void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
             handler(boost::system::error_code{}, 0);
             return;
         }
-        flow.pending_reads.push_back({std::move(buffers), total,
-            std::function<void(boost::system::error_code, size_t)>(
-                make_copyable(std::move(handler)))});
+        flow.pending_reads.push_back({std::move(buffers), total, std::move(handler)});
         f->eng->flush_reads(flow);
     });
 }
@@ -250,9 +247,7 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow, std::vector<uint8_t> d
             handler(boost::system::error_code(net::error::no_buffer_space), 0);
             return;
         }
-        flow.pending_writes.push_back({std::move(data), 0,
-            std::function<void(boost::system::error_code, size_t)>(
-                make_copyable(std::move(handler)))});
+        flow.pending_writes.push_back({std::move(data), 0, std::move(handler)});
         flow.tx_bytes += flow.pending_writes.back().data.size();
         f->eng->flush_writes(flow);
     });
@@ -270,9 +265,7 @@ void tcp_engine::async_accept(Handler handler) {
         handler(boost::system::error_code{}, std::move(f));
         return;
     }
-    pending_accepts_.push_back(
-        std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)>(
-            make_copyable(std::move(handler))));
+    pending_accepts_.push_back(std::move(handler));
 }
 
 void tcp_flow_shutdown_send(std::shared_ptr<tcp_flow> flow);

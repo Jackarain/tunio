@@ -13,7 +13,6 @@
 #include <boost/asio.hpp>
 
 #include <deque>
-#include <functional>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -21,7 +20,6 @@
 #include "tunio/packet_buffer.hpp"
 #include "tunio/packet_device.hpp"
 #include "tunio/tun_config.hpp"
-#include "tunio/detail/handler_util.hpp"
 
 namespace tunio {
 namespace net = boost::asio;
@@ -68,9 +66,7 @@ public:
     auto async_write(packet_buffer&& buf, CompletionToken&& token) {
         return net::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
             [this](auto handler, packet_buffer buf) {
-                queue_.push_back(entry{std::move(buf),
-                    std::function<void(boost::system::error_code, size_t)>(
-                        make_copyable(std::move(handler)))});
+                queue_.push_back(entry{std::move(buf), std::move(handler)});
                 pump();
             },
             token,
@@ -88,7 +84,7 @@ public:
             queue_.pop_front();
             recycle(std::move(e.buf));
             if (e.handler) {
-                e.handler(net::error::operation_aborted, 0);
+                e.handler(boost::system::error_code(net::error::operation_aborted), 0);
             }
         }
     }
@@ -96,7 +92,7 @@ public:
 private:
     struct entry {
         packet_buffer buf;
-        std::function<void(boost::system::error_code, size_t)> handler;
+        net::any_completion_handler<void(boost::system::error_code, size_t)> handler;
     };
 
     void pump() {
@@ -115,7 +111,7 @@ private:
             }
             if (cancelled_) {
                 if (e->handler) {
-                    e->handler(net::error::operation_aborted, 0);
+                    e->handler(boost::system::error_code(net::error::operation_aborted), 0);
                 }
             } else if (e->handler) {
                 e->handler(ec, n);

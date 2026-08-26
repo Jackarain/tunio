@@ -12,8 +12,6 @@
 
 #include <boost/asio.hpp>
 
-#include "tunio/detail/handler_util.hpp"
-
 #include "tunio/tun_stream.hpp"
 
 namespace tunio {

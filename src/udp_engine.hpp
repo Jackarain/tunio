@@ -17,13 +17,11 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
-#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
 
 #include "tunio/tun_config.hpp"
-#include "tunio/detail/handler_util.hpp"
 #include "device_writer.hpp"
 #include "ip_headers.hpp"
 #include "tcp_engine.hpp"
@@ -54,7 +52,7 @@ struct udp_session : public std::enable_shared_from_this<udp_session> {
     struct read_op {
         std::vector<net::mutable_buffer> buffers;
         size_t total = 0;
-        std::function<void(boost::system::error_code, size_t)> handler;
+        net::any_completion_handler<void(boost::system::error_code, size_t)> handler;
     };
     std::deque<read_op> pending_reads;
 
@@ -114,7 +112,8 @@ private:
     size_t mtu_ = 1500;
 
     std::unordered_map<five_tuple, std::shared_ptr<udp_session>> sessions_;
-    std::deque<std::function<void(boost::system::error_code, std::shared_ptr<udp_session>)>> pending_accepts_;
+    std::deque<net::any_completion_handler<void(boost::system::error_code, std::shared_ptr<udp_session>)>>
+        pending_accepts_;
     std::deque<std::shared_ptr<udp_session>> pending_new_sessions_;
 
     // 最小堆：堆顶为最早即将过期的会话
@@ -178,9 +177,7 @@ void udp_session_start_receive(std::shared_ptr<udp_session> session,
             handler(boost::system::error_code{}, dg.size());
             return;
         }
-        session.pending_reads.push_back({std::move(buffers), total,
-            std::function<void(boost::system::error_code, size_t)>(
-                make_copyable(std::move(handler)))});
+        session.pending_reads.push_back({std::move(buffers), total, std::move(handler)});
     });
 }
 
@@ -258,9 +255,7 @@ void udp_engine::async_accept(Handler handler) {
         handler(boost::system::error_code{}, std::move(s));
         return;
     }
-    pending_accepts_.push_back(
-        std::function<void(boost::system::error_code, std::shared_ptr<udp_session>)>(
-            make_copyable(std::move(handler))));
+    pending_accepts_.push_back(std::move(handler));
 }
 
 void udp_session_close(std::shared_ptr<udp_session> session);

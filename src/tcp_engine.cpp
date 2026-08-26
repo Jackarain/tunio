@@ -531,7 +531,7 @@ void tcp_engine::cancel_accepts() {
     while (!pending_accepts_.empty()) {
         auto h = std::move(pending_accepts_.front());
         pending_accepts_.pop_front();
-        h(net::error::operation_aborted, nullptr);
+        h(boost::system::error_code(net::error::operation_aborted), nullptr);
     }
 }
 
@@ -577,7 +577,7 @@ void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow) {
         }
         f.rx_shutdown = true;
         for (auto& op : f.pending_reads) {
-            op.handler(net::error::operation_aborted, 0);
+            op.handler(boost::system::error_code(net::error::operation_aborted), 0);
         }
         f.pending_reads.clear();
         if (f.rx_bytes > 0) {
@@ -600,11 +600,11 @@ void tcp_flow_close(std::shared_ptr<tcp_flow> flow) {
         }
         f.app_closed = true;
         for (auto& op : f.pending_reads) {
-            op.handler(net::error::operation_aborted, 0);
+            op.handler(boost::system::error_code(net::error::operation_aborted), 0);
         }
         f.pending_reads.clear();
         for (auto& op : f.pending_writes) {
-            op.handler(net::error::operation_aborted, 0);
+            op.handler(boost::system::error_code(net::error::operation_aborted), 0);
         }
         f.pending_writes.clear();
         f.tx_bytes = 0;

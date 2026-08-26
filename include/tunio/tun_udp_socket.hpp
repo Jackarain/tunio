@@ -12,7 +12,6 @@
 
 #include <boost/asio.hpp>
 
-#include "tunio/detail/handler_util.hpp"
 #include <chrono>
 #include <memory>
 

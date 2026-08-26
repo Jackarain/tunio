@@ -115,7 +115,7 @@ void udp_engine::deliver_datagram(const std::shared_ptr<udp_session>& s, std::ve
         auto op = std::move(s->pending_reads.front());
         s->pending_reads.pop_front();
         if (datagram.size() > op.total) {
-            op.handler(net::error::message_size, 0);
+            op.handler(boost::system::error_code(net::error::message_size), 0);
         } else {
             size_t copied = 0;
             for (auto& buf : op.buffers) {
@@ -217,7 +217,7 @@ void udp_engine::remove_session(std::shared_ptr<udp_session> s) {
     sessions_.erase(s->key);
     stats_.udp_sessions.fetch_sub(1, std::memory_order_relaxed);
     for (auto& op : s->pending_reads) {
-        op.handler(net::error::operation_aborted, 0);
+        op.handler(boost::system::error_code(net::error::operation_aborted), 0);
     }
     s->pending_reads.clear();
     if (s->rx_bytes > 0) {
@@ -231,7 +231,7 @@ void udp_engine::cancel_accepts() {
     while (!pending_accepts_.empty()) {
         auto h = std::move(pending_accepts_.front());
         pending_accepts_.pop_front();
-        h(net::error::operation_aborted, nullptr);
+        h(boost::system::error_code(net::error::operation_aborted), nullptr);
     }
 }
 
