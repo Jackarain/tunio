@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "tunio/tun_config.hpp"
+#include "tunio/detail/handler_util.hpp"
 #include "ip_headers.hpp"
 
 namespace tunio {
@@ -113,6 +114,12 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow> {
     bool is_open() const;
 };
 
+template <typename Handler>
+void tcp_flow_start_read(std::shared_ptr<tcp_flow>, std::vector<net::mutable_buffer>,
+                         size_t, Handler);
+template <typename Handler>
+void tcp_flow_start_write(std::shared_ptr<tcp_flow>, std::vector<uint8_t>, Handler);
+
 class tcp_engine : public std::enable_shared_from_this<tcp_engine> {
 public:
     tcp_engine(net::any_io_executor strand, device_writer& writer,
@@ -146,12 +153,12 @@ public:
 
 private:
     friend struct tcp_flow;
+    template <typename Handler>
     friend void tcp_flow_start_read(std::shared_ptr<tcp_flow>,
                                     std::vector<net::mutable_buffer>,
-                                    size_t,
-                                    std::function<void(boost::system::error_code, size_t)>);
-    friend void tcp_flow_start_write(std::shared_ptr<tcp_flow>, std::vector<uint8_t>,
-                                     std::function<void(boost::system::error_code, size_t)>);
+                                    size_t, Handler);
+    template <typename Handler>
+    friend void tcp_flow_start_write(std::shared_ptr<tcp_flow>, std::vector<uint8_t>, Handler);
 
     void handle_segment(const std::shared_ptr<tcp_flow>& f, const tcp_header& th,
                         const uint8_t* data, size_t data_len);
@@ -182,13 +189,73 @@ private:
 };
 
 // ---- 供 tun_stream 调用的入口（内部自动派发到 Strand）----
+template <typename Handler>
 void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
-                         std::shared_ptr<std::vector<net::mutable_buffer>> buffers,
+                         std::vector<net::mutable_buffer> buffers,
                          size_t total,
-                         std::function<void(boost::system::error_code, size_t)> handler);
+                         Handler handler) {
+    if (!flow || !flow->eng) {
+        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        return;
+    }
+    auto strand = flow->eng->strand();
+    net::dispatch(strand, [f = std::move(flow), buffers = std::move(buffers), total,
+                           handler = std::move(handler)]() mutable {
+        auto& flow = *f;
+        if (flow.state == tcp_state::CLOSED || flow.app_closed || flow.rx_shutdown) {
+            handler(boost::system::error_code(net::error::bad_descriptor), 0);
+            return;
+        }
+        if (flow.rst) {
+            handler(boost::system::error_code(net::error::connection_reset), 0);
+            return;
+        }
+        if (total == 0) {
+            handler(boost::system::error_code{}, 0);
+            return;
+        }
+        flow.pending_reads.push_back({std::move(buffers), total,
+            std::function<void(boost::system::error_code, size_t)>(
+                make_copyable(std::move(handler)))});
+        f->eng->flush_reads(flow);
+    });
+}
 
+template <typename Handler>
 void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow, std::vector<uint8_t> data,
-                          std::function<void(boost::system::error_code, size_t)> handler);
+                          Handler handler) {
+    if (!flow || !flow->eng) {
+        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        return;
+    }
+    auto strand = flow->eng->strand();
+    net::dispatch(strand, [f = std::move(flow), data = std::move(data),
+                           handler = std::move(handler)]() mutable {
+        auto& flow = *f;
+        if (flow.state == tcp_state::CLOSED || flow.app_closed || flow.fin_sent) {
+            handler(boost::system::error_code(net::error::bad_descriptor), 0);
+            return;
+        }
+        if (flow.rst) {
+            handler(boost::system::error_code(net::error::connection_reset), 0);
+            return;
+        }
+        if (data.empty()) {
+            handler(boost::system::error_code{}, 0);
+            return;
+        }
+        if (flow.tx_bytes + data.size() > f->eng->max_tx_queue()) {
+            // 发送队列积压超限：拒绝本次写入以施加背压，避免内存无限增长
+            handler(boost::system::error_code(net::error::no_buffer_space), 0);
+            return;
+        }
+        flow.pending_writes.push_back({std::move(data), 0,
+            std::function<void(boost::system::error_code, size_t)>(
+                make_copyable(std::move(handler)))});
+        flow.tx_bytes += flow.pending_writes.back().data.size();
+        f->eng->flush_writes(flow);
+    });
+}
 
 void tcp_flow_shutdown_send(std::shared_ptr<tcp_flow> flow);
 void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow);

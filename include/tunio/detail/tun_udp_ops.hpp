@@ -10,37 +10,21 @@
 
 #pragma once
 
-#include <boost/asio.hpp>
-
-#include <cstdint>
-#include <functional>
 #include <memory>
 #include <vector>
 
-#include "tunio/detail/handler_util.hpp"
+#include "udp_engine.hpp"
 #include "tunio/tun_udp_socket.hpp"
 
 namespace tunio {
 namespace net = boost::asio;
 
 namespace detail {
-
-struct udp_session;
-
-void udp_session_start_receive(std::shared_ptr<udp_session> session,
-                               std::vector<net::mutable_buffer> buffers,
-                               size_t total,
-                               std::function<void(boost::system::error_code, size_t)> handler);
-
-void udp_session_start_send(std::shared_ptr<udp_session> session,
-                            std::vector<uint8_t> data,
-                            std::function<void(boost::system::error_code, size_t)> handler);
-
 } // namespace detail
 
-template <typename MutableBufferSequence>
+template <typename MutableBufferSequence, typename Handler>
 void tun_udp_socket::do_receive(MutableBufferSequence&& buffers,
-                                std::function<void(boost::system::error_code, size_t)> handler) {
+                                Handler handler) {
     std::vector<net::mutable_buffer> seq;
     size_t total = 0;
     for (const auto& b : buffers) {
@@ -50,19 +34,16 @@ void tun_udp_socket::do_receive(MutableBufferSequence&& buffers,
 
     auto session = session_;
     if (!session) {
-        auto ex = ex_;
-        net::post(ex, [handler = std::move(handler)]() mutable {
-            handler(net::error::bad_descriptor, 0);
-        });
+        handler(boost::system::error_code(net::error::bad_descriptor), 0);
         return;
     }
     detail::udp_session_start_receive(std::move(session), std::move(seq), total,
-                                      detail::bind_handler(ex_, std::move(handler)));
+                                      std::move(handler));
 }
 
-template <typename ConstBufferSequence>
+template <typename ConstBufferSequence, typename Handler>
 void tun_udp_socket::do_send(ConstBufferSequence&& buffers,
-                             std::function<void(boost::system::error_code, size_t)> handler) {
+                             Handler handler) {
     size_t total = 0;
     for (const auto& b : buffers) {
         total += b.size();
@@ -77,14 +58,11 @@ void tun_udp_socket::do_send(ConstBufferSequence&& buffers,
 
     auto session = session_;
     if (!session) {
-        auto ex = ex_;
-        net::post(ex, [handler = std::move(handler)]() mutable {
-            handler(net::error::bad_descriptor, 0);
-        });
+        handler(boost::system::error_code(net::error::bad_descriptor), 0);
         return;
     }
     detail::udp_session_start_send(std::move(session), std::move(data),
-                                   detail::bind_handler(ex_, std::move(handler)));
+                                   std::move(handler));
 }
 
 } // namespace tunio

@@ -30,13 +30,5 @@ inline auto make_copyable(Handler&& handler) {
     };
 }
 
-// 将完成回调绑定到调用方执行器，返回可拷贝的 std::function；
-// 调用点均传入可拷贝的 std::function，直接构造免去一次堆分配。
-template <typename Handler>
-inline std::function<void(boost::system::error_code, size_t)>
-bind_handler(net::any_io_executor ex, Handler&& handler) {
-    return net::bind_executor(ex, std::forward<Handler>(handler));
-}
-
 } // namespace detail
 } // namespace tunio

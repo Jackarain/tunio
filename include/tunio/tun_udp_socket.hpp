@@ -49,7 +49,7 @@ public:
     auto async_receive(MutableBufferSequence&& buffers, CompletionToken&& token) {
         return net::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
             [this](auto handler, auto buffers) mutable {
-                do_receive(std::move(buffers), detail::make_copyable(std::move(handler)));
+                do_receive(std::move(buffers), net::bind_executor(ex_, std::move(handler)));
             },
             token,
             std::forward<MutableBufferSequence>(buffers));
@@ -60,7 +60,7 @@ public:
     auto async_send(ConstBufferSequence&& buffers, CompletionToken&& token) {
         return net::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
             [this](auto handler, auto buffers) mutable {
-                do_send(std::move(buffers), detail::make_copyable(std::move(handler)));
+                do_send(std::move(buffers), net::bind_executor(ex_, std::move(handler)));
             },
             token,
             std::forward<ConstBufferSequence>(buffers));
@@ -73,10 +73,10 @@ public:
     bool is_open() const noexcept;
 
 private:
-    template <typename MutableBufferSequence>
-    void do_receive(MutableBufferSequence&& buffers, std::function<void(boost::system::error_code, size_t)> handler);
-    template <typename ConstBufferSequence>
-    void do_send(ConstBufferSequence&& buffers, std::function<void(boost::system::error_code, size_t)> handler);
+    template <typename MutableBufferSequence, typename Handler>
+    void do_receive(MutableBufferSequence&& buffers, Handler handler);
+    template <typename ConstBufferSequence, typename Handler>
+    void do_send(ConstBufferSequence&& buffers, Handler handler);
 
     executor_type ex_;
     std::shared_ptr<detail::udp_session> session_;

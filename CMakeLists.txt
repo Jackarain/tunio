@@ -38,7 +38,10 @@ else()
 endif()
 
 add_library(tunio STATIC ${TUNIO_SOURCES})
-target_include_directories(tunio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(tunio PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
 if(TARGET Boost::headers)
   target_link_libraries(tunio PUBLIC Boost::headers)
 else()

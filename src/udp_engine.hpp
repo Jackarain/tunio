@@ -12,8 +12,10 @@
 
 #include <boost/asio.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -21,7 +23,10 @@
 #include <vector>
 
 #include "tunio/tun_config.hpp"
+#include "tunio/detail/handler_util.hpp"
+#include "device_writer.hpp"
 #include "ip_headers.hpp"
+#include "tcp_engine.hpp"
 
 namespace tunio {
 namespace net = boost::asio;
@@ -56,6 +61,12 @@ struct udp_session : public std::enable_shared_from_this<udp_session> {
     bool is_open() const { return !closed; }
 };
 
+template <typename Handler>
+void udp_session_start_receive(std::shared_ptr<udp_session>,
+                               std::vector<net::mutable_buffer>, size_t, Handler);
+template <typename Handler>
+void udp_session_start_send(std::shared_ptr<udp_session>, std::vector<uint8_t>, Handler);
+
 class udp_engine : public std::enable_shared_from_this<udp_engine> {
 public:
     udp_engine(net::any_io_executor strand, device_writer& writer,
@@ -80,11 +91,11 @@ public:
 
 private:
     friend struct udp_session;
-    friend void udp_session_start_receive(
-        std::shared_ptr<udp_session>, std::vector<net::mutable_buffer>,
-        size_t, std::function<void(boost::system::error_code, size_t)>);
-    friend void udp_session_start_send(std::shared_ptr<udp_session>, std::vector<uint8_t>,
-                                       std::function<void(boost::system::error_code, size_t)>);
+    template <typename Handler>
+    friend void udp_session_start_receive(std::shared_ptr<udp_session>,
+                                          std::vector<net::mutable_buffer>, size_t, Handler);
+    template <typename Handler>
+    friend void udp_session_start_send(std::shared_ptr<udp_session>, std::vector<uint8_t>, Handler);
     friend void udp_session_close(std::shared_ptr<udp_session>);
     friend void udp_session_set_timeout(std::shared_ptr<udp_session>, std::chrono::seconds);
 
@@ -124,13 +135,115 @@ private:
 };
 
 // ---- 供 tun_udp_socket 调用的入口（内部自动派发到 Strand）----
+template <typename Handler>
 void udp_session_start_receive(std::shared_ptr<udp_session> session,
                                std::vector<net::mutable_buffer> buffers,
                                size_t total,
-                               std::function<void(boost::system::error_code, size_t)> handler);
+                               Handler handler) {
+    if (!session || !session->eng) {
+        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        return;
+    }
+    auto strand = session->eng->strand();
+    net::dispatch(strand, [s = std::move(session), buffers = std::move(buffers), total,
+                           handler = std::move(handler)]() mutable {
+        auto& session = *s;
+        if (session.closed) {
+            handler(boost::system::error_code(net::error::bad_descriptor), 0);
+            return;
+        }
+        if (total == 0) {
+            handler(boost::system::error_code{}, 0);
+            return;
+        }
+        if (!session.rx_datagrams.empty()) {
+            auto dg = std::move(session.rx_datagrams.front());
+            session.rx_datagrams.pop_front();
+            session.rx_bytes -= dg.size();
+            s->eng->account().release(dg.size());
+            if (dg.size() > total) {
+                handler(boost::system::error_code(net::error::message_size), 0);
+                return;
+            }
+            size_t copied = 0;
+            for (auto& buf : buffers) {
+                if (copied >= dg.size()) {
+                    break;
+                }
+                const size_t take = std::min(buf.size(), dg.size() - copied);
+                std::memcpy(buf.data(), dg.data() + copied, take);
+                copied += take;
+            }
+            handler(boost::system::error_code{}, dg.size());
+            return;
+        }
+        session.pending_reads.push_back({std::move(buffers), total,
+            std::function<void(boost::system::error_code, size_t)>(
+                make_copyable(std::move(handler)))});
+    });
+}
 
+template <typename Handler>
 void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<uint8_t> data,
-                            std::function<void(boost::system::error_code, size_t)> handler);
+                            Handler handler) {
+    if (!session || !session->eng) {
+        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        return;
+    }
+    auto strand = session->eng->strand();
+    net::dispatch(strand, [s = std::move(session), data = std::move(data),
+                           handler = std::move(handler)]() mutable {
+        auto& session = *s;
+        if (session.closed) {
+            handler(boost::system::error_code(net::error::bad_descriptor), 0);
+            return;
+        }
+        const int family = session.key.family;
+        const size_t ip_hdr_len = ip_header_size(family);
+        const size_t mtu = s->eng->mtu();
+        if (data.size() > mtu - ip_hdr_len - sizeof(udp_header)) {
+            handler(boost::system::error_code(net::error::message_size), 0);
+            return;
+        }
+        s->eng->refresh_expiry(s);
+
+        // 构造 IP + UDP 报文（源地址为客户端请求的目标地址）
+        const size_t total = ip_hdr_len + sizeof(udp_header) + data.size();
+        packet_buffer pkt = s->eng->writer().acquire(mtu + 64, 64);
+        pkt.resize(total);
+        uint8_t* base = pkt.data();
+
+        build_ip_header(base, family, session.key.dst_ip.data(), session.key.src_ip.data(),
+                        IPPROTO_UDP_V, total, s->eng->writer().alloc_ip_id());
+
+        auto* uh = reinterpret_cast<udp_header*>(base + ip_hdr_len);
+        uh->src_port = session.key.dst_port;
+        uh->dst_port = session.key.src_port;
+        uh->length = htons(static_cast<uint16_t>(sizeof(udp_header) + data.size()));
+        uh->checksum = 0;
+        if (!data.empty()) {
+            std::memcpy(base + ip_hdr_len + sizeof(udp_header), data.data(), data.size());
+        }
+        uint16_t csum = tcp_udp_checksum(family, session.key.dst_ip.data(), session.key.src_ip.data(),
+                                         IPPROTO_UDP_V, base + ip_hdr_len,
+                                         sizeof(udp_header) + data.size());
+        // IPv6 下 UDP 校验和不可为 0；按 RFC 768/8200 以 0xffff 替代
+        if (csum == 0) {
+            csum = 0xffff;
+        }
+        uh->checksum = htons(csum);
+
+        using handler_t = std::decay_t<Handler>;
+        auto sp = std::make_shared<handler_t>(std::move(handler));
+        const size_t sent = data.size();
+        s->eng->writer().async_write(
+            std::move(pkt), net::bind_executor(s->eng->strand(),
+                [sp, sent](const boost::system::error_code& ec, size_t) {
+                    // 设备写失败时透传错误码，避免向调用方误报成功
+                    std::move(*sp)(ec, ec ? 0 : sent);
+                }));
+    });
+}
 
 void udp_session_close(std::shared_ptr<udp_session> session);
 void udp_session_set_timeout(std::shared_ptr<udp_session> session, std::chrono::seconds timeout);
