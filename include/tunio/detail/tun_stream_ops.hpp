@@ -20,49 +20,49 @@ namespace tunio {
 namespace net = boost::asio;
 
 namespace detail {
-} // namespace detail
+}
 
 template <typename MutableBufferSequence, typename Handler>
 void tun_stream::do_read_some(MutableBufferSequence&& buffers,
-                              Handler handler) {
-    std::vector<net::mutable_buffer> seq;
-    size_t total = 0;
-    for (const auto& b : buffers) {
-        seq.push_back(b);
-        total += b.size();
-    }
+        Handler handler) {
+ std::vector<net::mutable_buffer> seq;
+ size_t total = 0;
+ for (const auto& b : buffers) {
+  seq.push_back(b);
+  total += b.size();
+ }
 
-    auto flow = flow_;
-    if (!flow) {
-        handler(boost::system::error_code(net::error::bad_descriptor), 0);
-        return;
-    }
-    detail::tcp_flow_start_read(std::move(flow), std::move(seq), total,
-                                std::move(handler));
+ auto flow = flow_;
+ if (!flow) {
+  handler(boost::system::error_code(net::error::bad_descriptor), 0);
+  return;
+ }
+ detail::tcp_flow_start_read(std::move(flow), std::move(seq), total,
+        std::move(handler));
 }
 
 template <typename ConstBufferSequence, typename Handler>
 void tun_stream::do_write_some(ConstBufferSequence&& buffers,
-                               Handler handler) {
-    size_t total = 0;
-    for (const auto& b : buffers) {
-        total += b.size();
-    }
+        Handler handler) {
+ size_t total = 0;
+ for (const auto& b : buffers) {
+  total += b.size();
+ }
 
-    std::vector<uint8_t> data;
-    data.reserve(total);
-    for (const auto& b : buffers) {
-        const uint8_t* p = static_cast<const uint8_t*>(b.data());
-        data.insert(data.end(), p, p + b.size());
-    }
+ std::vector<uint8_t> data;
+ data.reserve(total);
+ for (const auto& b : buffers) {
+  const uint8_t* p = static_cast<const uint8_t*>(b.data());
+  data.insert(data.end(), p, p + b.size());
+ }
 
-    auto flow = flow_;
-    if (!flow) {
-        handler(boost::system::error_code(net::error::bad_descriptor), 0);
-        return;
-    }
-    detail::tcp_flow_start_write(std::move(flow), std::move(data),
-                                 std::move(handler));
+ auto flow = flow_;
+ if (!flow) {
+  handler(boost::system::error_code(net::error::bad_descriptor), 0);
+  return;
+ }
+ detail::tcp_flow_start_write(std::move(flow), std::move(data),
+        std::move(handler));
 }
 
-} // namespace tunio
+}

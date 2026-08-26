@@ -22,7 +22,7 @@ namespace detail {
 class tunio_impl;
 class tcp_engine;
 class udp_engine;
-} // namespace detail
+}
 
 // 用户态 TUN 网络引擎
 //
@@ -39,37 +39,38 @@ class udp_engine;
 // io_context 必须正在运行：open() 会在 Strand 上同步收尾上一代实例，
 // io_context 未运行时该收尾任务无法执行，将导致调用线程阻塞等待。
 class tunio {
+
 public:
-    using executor_type = net::any_io_executor;
+ using executor_type = net::any_io_executor;
 
-    explicit tunio(net::io_context& ctx);
-    ~tunio();
+ explicit tunio(net::io_context& ctx);
+ ~tunio();
 
-    tunio(const tunio&) = delete;
-    tunio& operator=(const tunio&) = delete;
+ tunio(const tunio&) = delete;
+ tunio& operator=(const tunio&) = delete;
 
-    // 打开 TUN 设备并启动数据通路；外部句柄注入时 config.external_handle 必须有效。
-    bool open(const tun_config& config, boost::system::error_code& ec);
+ // 打开 TUN 设备并启动数据通路；外部句柄注入时 config.external_handle 必须有效。
+ bool open(const tun_config& config, boost::system::error_code& ec);
 
-    // 关闭引擎：停止数据通路并清理全部会话与挂起操作。
-    void close();
+ // 关闭引擎：停止数据通路并清理全部会话与挂起操作。
+ void close();
 
-    bool is_open() const noexcept;
-    size_t mtu() const noexcept;
+ bool is_open() const noexcept;
+ size_t mtu() const noexcept;
 
-    // 引擎本地虚拟 IP（用于 ICMP 回显响应等）。
-    net::ip::address local_address() const noexcept;
+ // 引擎本地虚拟 IP（用于 ICMP 回显响应等）。
+ net::ip::address local_address() const noexcept;
 
-    const engine_stats& stats() const noexcept;
+ const engine_stats& stats() const noexcept;
 
-    // 引擎内部 Strand 的执行器；应用层也可通过其提交任务保证与引擎状态串行化。
-    executor_type get_executor() const noexcept;
+ // 引擎内部 Strand 的执行器；应用层也可通过其提交任务保证与引擎状态串行化。
+ executor_type get_executor() const noexcept;
 
 private:
-    friend class tun_acceptor;
-    friend class tun_udp_acceptor;
+ friend class tun_acceptor;
+ friend class tun_udp_acceptor;
 
-    std::shared_ptr<detail::tunio_impl> impl_;
+ std::shared_ptr<detail::tunio_impl> impl_;
 };
 
-} // namespace tunio
+}

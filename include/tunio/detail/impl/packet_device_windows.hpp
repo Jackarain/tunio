@@ -23,46 +23,47 @@ namespace detail {
 // Windows 实现 (Wintun / Overlapped)：基于 windows::overlapped_handle。
 // 平台相关打开逻辑（Wintun 会话创建）见 src/packet_device_windows.cpp。
 class windows_packet_device_impl {
+
 public:
-    explicit windows_packet_device_impl(net::io_context& ctx) : handle_(ctx) {}
+ explicit windows_packet_device_impl(net::io_context& ctx) : handle_(ctx) {}
 
-    bool open(const device_config& cfg, boost::system::error_code& ec);
+ bool open(const device_config& cfg, boost::system::error_code& ec);
 
-    bool assign(native_handle_type handle, size_t mtu, boost::system::error_code& ec) {
-        handle_.assign(handle, ec);
-        if (!ec) {
-            open_ = true;
-            mtu_ = mtu;
-        }
-        return !ec;
-    }
+ bool assign(native_handle_type handle, size_t mtu, boost::system::error_code& ec) {
+  handle_.assign(handle, ec);
+  if (!ec) {
+   open_ = true;
+   mtu_ = mtu;
+  }
+  return !ec;
+ }
 
-    void close() {
-        if (open_) {
-            handle_.close();
-            open_ = false;
-        }
-    }
+ void close() {
+  if (open_) {
+   handle_.close();
+   open_ = false;
+  }
+ }
 
-    size_t mtu() const { return mtu_; }
-    bool is_open() const { return open_; }
+ size_t mtu() const { return mtu_; }
+ bool is_open() const { return open_; }
 
-    template <typename Handler>
-    void async_read(packet_buffer& buf, Handler&& handler) {
-        handle_.async_read_some_at(0, net::buffer(buf.writable_data(), buf.writable_size()),
-                                   std::forward<Handler>(handler));
-    }
+ template <typename Handler>
+ void async_read(packet_buffer& buf, Handler&& handler) {
+  handle_.async_read_some_at(0, net::buffer(buf.writable_data(), buf.writable_size()),
+         std::forward<Handler>(handler));
+ }
 
-    template <typename Handler>
-    void async_write(packet_buffer& buf, Handler&& handler) {
-        handle_.async_write_some_at(0, net::buffer(buf.data(), buf.size()),
-                                    std::forward<Handler>(handler));
-    }
+ template <typename Handler>
+ void async_write(packet_buffer& buf, Handler&& handler) {
+  handle_.async_write_some_at(0, net::buffer(buf.data(), buf.size()),
+         std::forward<Handler>(handler));
+ }
 
-    net::windows::overlapped_handle handle_;
-    size_t mtu_ = 1500;
-    bool open_ = false;
+ net::windows::overlapped_handle handle_;
+ size_t mtu_ = 1500;
+ bool open_ = false;
 };
 
-} // namespace detail
-} // namespace tunio
+}
+}
