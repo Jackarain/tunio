@@ -1,5 +1,6 @@
 ﻿add_executable(tun2socks tun2socks.cpp)
 add_executable(tun_echo tun_echo.cpp)
-foreach(e tun2socks tun_echo)
+add_executable(benchmark benchmark.cpp)
+foreach(e tun2socks tun_echo benchmark)
   target_link_libraries(${e} PRIVATE tunio)
 endforeach()
