@@ -69,7 +69,9 @@ void udp_engine::on_packet(const ip_packet_info& ip, const uint8_t* payload, siz
 
     auto it = sessions_.find(key);
     if (it != sessions_.end()) {
-        const auto& s = it->second;
+        // 强引用：deliver_datagram 内联调用用户完成回调时，回调可能关闭并
+        // 擦除会话（remove_session），强引用保证回调返回后 s 仍有效。
+        std::shared_ptr<udp_session> s = it->second;
         if (!s->closed) {
             deliver_datagram(s, std::move(datagram));
             return;

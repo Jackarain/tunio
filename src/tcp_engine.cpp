@@ -26,7 +26,8 @@ namespace detail {
 namespace {
 
 uint32_t random_iss() {
-    static std::mt19937 rng{std::random_device{}()};
+    // thread_local：多个引擎（不同线程）并发时避免共享 RNG 的数据竞争
+    static thread_local std::mt19937 rng{std::random_device{}()};
     return rng();
 }
 
@@ -144,7 +145,10 @@ void tcp_engine::on_packet(const ip_packet_info& ip, const uint8_t* payload, siz
         f->snd_nxt = f->iss + 1; // SYN 消耗一个序号
         return;
     }
-    const std::shared_ptr<tcp_flow>& f = it->second;
+    // 持有强引用：handle_segment 内会内联调用用户完成回调（当流绑定引擎
+    // Strand 时），回调中 reset() 后销毁流可能擦除 flows_ 并释放最后引用；
+    // 强引用保证回调返回后 f 仍然有效，避免 use-after-free。
+    std::shared_ptr<tcp_flow> f = it->second;
 
     const uint8_t* data = payload + hlen;
     size_t data_len = len - hlen;

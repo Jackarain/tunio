@@ -24,6 +24,10 @@ class tunio;
 //
 // async_accept 在三次握手完成（收到客户端 ACK）时触发完成回调，
 // 此时连接处于 ESTABLISHED 状态。
+//
+// 生命周期约束：与 Boost.Asio 的 acceptor::async_accept(socket) 一致，
+// 挂起 accept 期间传入的 tun_stream 必须存活至完成回调触发；提前销毁
+// peer 将导致未定义行为。
 class tun_acceptor {
 public:
     explicit tun_acceptor(tunio& engine) : engine_(engine) {}

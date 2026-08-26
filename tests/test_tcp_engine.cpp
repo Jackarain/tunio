@@ -14,7 +14,9 @@
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "test_harness.hpp"
@@ -650,6 +652,91 @@ static void test_fragmented_packet_dropped() {
     assert(env.engine.stats().rx_dropped.load() >= 1);
 }
 
+static void test_oversized_declared_length() {
+    // 注入流伪造报文头声明长度超过 MTU：引擎应丢弃而非卡死读循环，
+    // 后续合法报文仍须正常处理（on_read 拆包防护）。
+    engine_env env;
+
+    // 声明 total_len = 65535 的伪 IPv4 报文（仅 20 头 + 16 字节）
+    std::vector<uint8_t> junk(36, 0);
+    junk[0] = 0x45;
+    junk[2] = 0xff;
+    junk[3] = 0xff;
+    const uint16_t c = test::csum16(junk.data(), 20);
+    junk[10] = static_cast<uint8_t>(c >> 8);
+    junk[11] = static_cast<uint8_t>(c & 0xff);
+    env.dev.send(junk);
+
+    // 等待引擎消费并丢弃伪报文，避免与后续 SYN 在同一读中被连带丢弃
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // 合法 SYN 必须仍被处理（收到 SYN-ACK）
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12356, DEST_PORT, 0x02, 12000, 0, 65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK after oversized junk");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    assert(ipi.proto == 6);
+}
+
+static void test_reentrant_reset_in_handler() {
+    // 读完成回调在引擎 Strand 上内联执行时，回调内 reset() 并销毁流：
+    // 引擎在回调返回后仍须安全使用流（on_packet 强引用保活），否则 UAF。
+    engine_env env;
+    tun_acceptor acceptor(env.engine);
+    // 使用引擎 Strand 作为执行器：完成回调在 Strand 上内联执行
+    auto stream = std::make_shared<tun_stream>(env.engine.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(*stream, [&](boost::system::error_code e) {
+        accept_done.set_value(e);
+    });
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12357, DEST_PORT, 0x02, 13000, 0, 65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    tcp_hdr_info ti;
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    const uint32_t engine_iss = ti.seq;
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12357, DEST_PORT, 0x10, 13001, engine_iss + 1, 65535, {}));
+    future_get(accept_done.get_future());
+
+    // 挂起读；回调捕获流的唯一强引用，在回调内 reset 并销毁流
+    std::promise<void> read_done;
+    char buf[64];
+    stream->async_read_some(net::buffer(buf),
+                            [stream, &read_done](boost::system::error_code, size_t) mutable {
+                                stream->reset(); // 重入：close_flow 擦除 flows_
+                                stream.reset();  // 销毁流：释放 flow_ 的最后引用
+                                read_done.set_value();
+                            });
+    stream.reset(); // 外部不再持有
+
+    // 客户端发数据：触发 deliver_data 直接路径内联调用读回调
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12357, DEST_PORT, 0x18, 13001, engine_iss + 1, 65535,
+                          std::vector<uint8_t>{'h', 'i'}));
+    future_get(read_done.get_future());
+    // 引擎不得崩溃：on_packet 的强引用保证回调返回后 f 仍有效
+}
+
 int main() {
     // socketpair 注入场景下，关闭读端后引擎仍可能写回（FIN 等），忽略 SIGPIPE
     std::signal(SIGPIPE, SIG_IGN);
@@ -663,5 +750,7 @@ int main() {
     test_write_queue_limit();
     test_close_reopen();
     test_fragmented_packet_dropped();
+    test_oversized_declared_length();
+    test_reentrant_reset_in_handler();
     return 0;
 }

@@ -28,6 +28,18 @@ tunio_impl::tunio_impl(boost::asio::io_context& ctx)
       read_buf_(2048, 64) {}
 
 tunio_impl::~tunio_impl() {
+    // 关闭引擎以打破定时器回调（self 捕获）形成的引用环：sweep/ack/expiry
+    // 定时器用 shared_from_this 自持有，未显式调用 close() 直接析构时若不
+    // 在此取消，引擎及流表将无法释放，io_context 也不会退出。
+    if (tcp_) {
+        tcp_->close_all();
+    }
+    if (udp_) {
+        udp_->close_all();
+    }
+    if (writer_) {
+        writer_->cancel_all();
+    }
     if (device_) {
         device_->close();
     }
@@ -181,6 +193,15 @@ void tunio_impl::on_read(const boost::system::error_code& ec, size_t n) {
         }
         return;
     }
+    // 丢弃迟到数据：引擎已关闭（close() 不递增 epoch，仅查 read_epoch_ 不够），
+    // 或数据来自已被重新 open 替换的旧设备；两种情况都不得注入当前引擎。
+    if (!open_.load(std::memory_order_acquire) || read_epoch_ != epoch_) {
+        read_buf_.reset();
+        if (open_.load(std::memory_order_acquire)) {
+            start_read();
+        }
+        return;
+    }
     read_buf_.commit(n);
     // 注：注入设备为字节流（如 socketpair）时，一次读取可能粘合/拆散多个报文；
     // 按 IP 头中的总长度逐包解析，完整处理缓冲区内全部报文（IPv4/IPv6 均支持），
@@ -213,6 +234,14 @@ void tunio_impl::on_read(const boost::system::error_code& ec, size_t n) {
         } else {
             ++offset; // 非 IP 报文：跳过该字节继续扫描
             continue;
+        }
+        if (total_len > read_buf_.capacity() - read_buf_.headroom()) {
+            // 声明长度超出缓冲可容纳上限（正常 MTU 内报文不可能出现）：
+            // 该报文永远无法凑齐，丢弃全部缓冲并重新开始，避免读循环停滞。
+            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            read_buf_.reset();
+            start_read();
+            return;
         }
         if (offset + total_len > avail) {
             break; // 报文体不完整，等待续读
@@ -287,8 +316,10 @@ void tunio_impl::handle_packet(const uint8_t* pkt, size_t len) {
             stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        // 丢弃带 Fragment 扩展头（Next Header = 44）的报文：引擎不做 IP 重组
-        if (h.next_header == 44) {
+        // 丢弃带扩展头的报文（Hop-by-Hop=0、Routing=43、Fragment=44、
+        // AH=51、Dest-Options=60）：引擎不做 IP 重组且不解析扩展头链
+        if (h.next_header == 0 || h.next_header == 43 || h.next_header == 44 ||
+            h.next_header == 51 || h.next_header == 60) {
             stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
             return;
         }

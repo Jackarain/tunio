@@ -39,8 +39,10 @@ namespace detail {
 namespace {
 
 void addattr_l(struct nlmsghdr* n, size_t maxlen, int type, const void* data, size_t alen) {
-    (void)maxlen;
     const size_t len = RTA_LENGTH(alen);
+    if (NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len) > maxlen) {
+        return; // 属性溢出消息缓冲：丢弃，避免越界写入
+    }
     struct rtattr* rta = reinterpret_cast<struct rtattr*>(
         reinterpret_cast<char*>(n) + NLMSG_ALIGN(n->nlmsg_len));
     rta->rta_type = type;

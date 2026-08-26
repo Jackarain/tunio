@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(tunio VERSION 3.0.0 LANGUAGES CXX)
 
+# CMake 3.30+ 移除 FindBoost 模块（CMP0167）：系统提供 BoostConfig 时
+# find_package 自动回退到 config 模式，此处显式声明旧策略以抑制告警。
+if(POLICY CMP0167)
+  cmake_policy(SET CMP0167 OLD)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

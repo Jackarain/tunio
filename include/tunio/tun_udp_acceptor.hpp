@@ -25,6 +25,10 @@ class tunio;
 //
 // 当引擎收到一个属于未知五元组的 UDP 数据报时，自动创建新的会话，
 // async_accept 触发完成回调并将会话对应的 tun_udp_socket 交给调用者。
+//
+// 生命周期约束：与 Boost.Asio 的 acceptor::async_accept(socket) 一致，
+// 挂起 accept 期间传入的 tun_udp_socket 必须存活至完成回调触发；提前
+// 销毁 peer 将导致未定义行为。
 class tun_udp_acceptor {
 public:
     explicit tun_udp_acceptor(tunio& engine) : engine_(engine) {}
