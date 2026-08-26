@@ -264,6 +264,38 @@ void tcp_engine::deliver_data(tcp_flow& f, const uint8_t* data, size_t len) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    // 直投：接收缓冲无积压且用户读操作等待时，跳过 rx_data 中间缓冲，
+    // 直接拷入用户缓冲，减少一次全量 memcpy。
+    if (f.rx_data.empty() && !f.pending_reads.empty()) {
+        auto op = std::move(f.pending_reads.front());
+        f.pending_reads.pop_front();
+        const size_t n = std::min(op.total, len);
+        size_t copied = 0;
+        for (auto& buf : *op.buffers) {
+            if (copied >= n) {
+                break;
+            }
+            const size_t take = std::min(buf.size(), n - copied);
+            std::memcpy(buf.data(), data + copied, take);
+            copied += take;
+        }
+        f.rcv_nxt += len;
+        account_->release(n);
+        op.handler(boost::system::error_code{}, n);
+        if (n < len) {
+            // 剩余数据缓存，等待后续读操作消费
+            f.rx_data.insert(f.rx_data.end(), data + n, data + len);
+            f.rx_bytes += len - n;
+            flush_reads(f);
+        }
+        if (++f.ack_pending >= 2) {
+            send_ack(f);
+            f.ack_pending = 0;
+        } else {
+            defer_ack(f);
+        }
+        return;
+    }
     f.rx_data.insert(f.rx_data.end(), data, data + len);
     f.rx_bytes += len;
     f.rcv_nxt += len;
