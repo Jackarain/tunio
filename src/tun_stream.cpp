@@ -38,25 +38,25 @@ tun_stream::executor_type tun_stream::get_executor() const noexcept {
     return ex_;
 }
 
-boost::asio::ip::tcp::endpoint tun_stream::original_destination() const {
+net::ip::tcp::endpoint tun_stream::original_destination() const {
     if (!flow_) {
         return {};
     }
     return flow_->original_destination();
 }
 
-void tun_stream::shutdown(boost::asio::ip::tcp::socket::shutdown_type what, boost::system::error_code& ec) {
+void tun_stream::shutdown(net::ip::tcp::socket::shutdown_type what, boost::system::error_code& ec) {
     ec = {};
     if (!flow_) {
-        ec = boost::asio::error::bad_descriptor;
+        ec = net::error::bad_descriptor;
         return;
     }
-    if (what == boost::asio::ip::tcp::socket::shutdown_send ||
-        what == boost::asio::ip::tcp::socket::shutdown_both) {
+    if (what == net::ip::tcp::socket::shutdown_send ||
+        what == net::ip::tcp::socket::shutdown_both) {
         detail::tcp_flow_shutdown_send(flow_);
     }
-    if (what == boost::asio::ip::tcp::socket::shutdown_receive ||
-        what == boost::asio::ip::tcp::socket::shutdown_both) {
+    if (what == net::ip::tcp::socket::shutdown_receive ||
+        what == net::ip::tcp::socket::shutdown_both) {
         detail::tcp_flow_shutdown_receive(flow_);
     }
 }

@@ -293,7 +293,7 @@ static void test_rst() {
 
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12347, DEST_PORT, 0x04, 3001, engine_iss + 1, 0, {}));
     auto [rec, rn] = future_get(read_done.get_future());
-    assert(rec == boost::asio::error::connection_reset);
+    assert(rec == net::error::connection_reset);
     assert(!peer.is_open());
 }
 
@@ -452,7 +452,7 @@ static void test_write_after_shutdown_send() {
 
     // shutdown(send)：发出 FIN
     boost::system::error_code sec;
-    peer.shutdown(boost::asio::ip::tcp::socket::shutdown_send, sec);
+    peer.shutdown(net::ip::tcp::socket::shutdown_send, sec);
     assert(!sec);
 
     // 之后写入应被拒绝（fin_sent 已置位）
@@ -461,7 +461,7 @@ static void test_write_after_shutdown_send() {
         write_done.set_value({ec, n});
     });
     auto [wec, wn] = future_get(write_done.get_future());
-    assert(wec == boost::asio::error::bad_descriptor);
+    assert(wec == net::error::bad_descriptor);
     assert(wn == 0);
 
     // 设备应只收到 FIN，无数据段
@@ -572,7 +572,7 @@ static void test_write_queue_limit() {
         w3.set_value({ec, n});
     });
     auto [w3ec, w3n] = future_get(w3.get_future());
-    assert(w3ec == boost::asio::error::no_buffer_space);
+    assert(w3ec == net::error::no_buffer_space);
     assert(w3n == 0);
 
     // 窗口更新后，前两个写完成

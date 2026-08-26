@@ -36,6 +36,7 @@
 #include "tunio/tun_udp_socket.hpp"
 
 namespace test {
+namespace net = boost::asio;
 
 using engine_type = tunio::tunio;
 using tunio::tun_acceptor;
@@ -559,16 +560,16 @@ private:
 // 使用 executor_work_guard 保持 io 持续运行：close() 会清空引擎挂起工作，
 // 若无 guard，io.run() 将返回导致线程退出（真实应用同样需要持续 run）。
 struct engine_env {
-    boost::asio::io_context io;
+    net::io_context io;
     engine_type engine;
     fake_device dev;
     std::thread thread;
-    boost::asio::executor_work_guard<boost::asio::io_context::executor_type> guard;
+    net::executor_work_guard<net::io_context::executor_type> guard;
 
     explicit engine_env(size_t mtu = 1500, std::chrono::seconds udp_timeout = std::chrono::seconds(1),
                         std::chrono::seconds tcp_accept_timeout = std::chrono::seconds(30),
                         size_t max_rx_queue = 1024 * 1024, size_t max_tx_queue = 1024 * 1024)
-        : engine(io), guard(boost::asio::make_work_guard(io)) {
+        : engine(io), guard(net::make_work_guard(io)) {
         tun_config cfg;
         cfg.external_handle = dev.inject_fd();
         cfg.external_mtu = mtu;

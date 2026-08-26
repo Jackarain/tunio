@@ -52,7 +52,7 @@ void tun_udp_socket::do_receive(MutableBufferSequence&& buffers,
     if (!session) {
         auto ex = ex_;
         net::post(ex, [handler = std::move(handler)]() mutable {
-            handler(boost::asio::error::bad_descriptor, 0);
+            handler(net::error::bad_descriptor, 0);
         });
         return;
     }
@@ -79,7 +79,7 @@ void tun_udp_socket::do_send(ConstBufferSequence&& buffers,
     if (!session) {
         auto ex = ex_;
         net::post(ex, [handler = std::move(handler)]() mutable {
-            handler(boost::asio::error::bad_descriptor, 0);
+            handler(net::error::bad_descriptor, 0);
         });
         return;
     }

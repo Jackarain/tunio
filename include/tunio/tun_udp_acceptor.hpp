@@ -18,6 +18,7 @@
 #include "tunio/tun_udp_socket.hpp"
 
 namespace tunio {
+namespace net = boost::asio;
 
 class tunio;
 
@@ -35,7 +36,7 @@ public:
 
     template <typename CompletionToken>
     auto async_accept(tun_udp_socket& peer, CompletionToken&& token) {
-        return boost::asio::async_initiate<CompletionToken, void(boost::system::error_code)>(
+        return net::async_initiate<CompletionToken, void(boost::system::error_code)>(
             [this, &peer](auto handler) {
                 do_accept(peer, detail::make_copyable(std::move(handler)));
             },

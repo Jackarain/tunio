@@ -19,13 +19,14 @@
 #include "tunio/tun_config.hpp"
 
 namespace tunio {
+namespace net = boost::asio;
 namespace detail {
 
 // ---- POSIX 实现 (Linux TUN / macOS utun) ----
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
 class posix_packet_device_impl {
 public:
-    explicit posix_packet_device_impl(boost::asio::io_context& ctx) : desc_(ctx) {}
+    explicit posix_packet_device_impl(net::io_context& ctx) : desc_(ctx) {}
 
     // 平台相关打开逻辑，见 src/packet_device.cpp
     bool open(const device_config& cfg, boost::system::error_code& ec);
@@ -50,17 +51,17 @@ public:
 
     template <typename Handler>
     void async_read(packet_buffer& buf, Handler&& handler) {
-        desc_.async_read_some(boost::asio::buffer(buf.writable_data(), buf.writable_size()),
+        desc_.async_read_some(net::buffer(buf.writable_data(), buf.writable_size()),
                               std::forward<Handler>(handler));
     }
 
     template <typename Handler>
     void async_write(packet_buffer& buf, Handler&& handler) {
-        desc_.async_write_some(boost::asio::buffer(buf.data(), buf.size()),
+        desc_.async_write_some(net::buffer(buf.data(), buf.size()),
                                std::forward<Handler>(handler));
     }
 
-    boost::asio::posix::stream_descriptor desc_;
+    net::posix::stream_descriptor desc_;
     size_t mtu_ = 1500;
     bool open_ = false;
 };
@@ -72,7 +73,7 @@ using device_impl_variant = std::variant<posix_packet_device_impl>;
 // ---- Windows 实现 (Wintun / Overlapped) ----
 class windows_packet_device_impl {
 public:
-    explicit windows_packet_device_impl(boost::asio::io_context& ctx) : handle_(ctx) {}
+    explicit windows_packet_device_impl(net::io_context& ctx) : handle_(ctx) {}
 
     // 平台相关打开逻辑（Wintun 会话创建），见 src/packet_device.cpp
     bool open(const device_config& cfg, boost::system::error_code& ec);
@@ -97,17 +98,17 @@ public:
 
     template <typename Handler>
     void async_read(packet_buffer& buf, Handler&& handler) {
-        handle_.async_read_some_at(0, boost::asio::buffer(buf.writable_data(), buf.writable_size()),
+        handle_.async_read_some_at(0, net::buffer(buf.writable_data(), buf.writable_size()),
                                    std::forward<Handler>(handler));
     }
 
     template <typename Handler>
     void async_write(packet_buffer& buf, Handler&& handler) {
-        handle_.async_write_some_at(0, boost::asio::buffer(buf.data(), buf.size()),
+        handle_.async_write_some_at(0, net::buffer(buf.data(), buf.size()),
                                     std::forward<Handler>(handler));
     }
 
-    boost::asio::windows::overlapped_handle handle_;
+    net::windows::overlapped_handle handle_;
     size_t mtu_ = 1500;
     bool open_ = false;
 };
@@ -119,7 +120,7 @@ using device_impl_variant = std::variant<windows_packet_device_impl>;
 // ---- 无平台实现时的兜底类型 ----
 class unsupported_packet_device {
 public:
-    explicit unsupported_packet_device(boost::asio::io_context&) {}
+    explicit unsupported_packet_device(net::io_context&) {}
 
     bool open(const device_config&, boost::system::error_code& ec) {
         ec = make_error_code(boost::system::errc::operation_not_supported);
@@ -137,12 +138,12 @@ public:
 
     template <typename Handler>
     void async_read(packet_buffer&, Handler&& handler) {
-        std::forward<Handler>(handler)(boost::asio::error::bad_descriptor, 0);
+        std::forward<Handler>(handler)(net::error::bad_descriptor, 0);
     }
 
     template <typename Handler>
     void async_write(packet_buffer&, Handler&& handler) {
-        std::forward<Handler>(handler)(boost::asio::error::bad_descriptor, 0);
+        std::forward<Handler>(handler)(net::error::bad_descriptor, 0);
     }
 };
 
@@ -162,7 +163,7 @@ using device_impl_variant = std::variant<unsupported_packet_device>;
 // use_future 及自定义 CompletionToken 无缝协作。
 class packet_device {
 public:
-    explicit packet_device(boost::asio::io_context& ctx) : ctx_(ctx), impl_(std::in_place_index<0>, ctx) {}
+    explicit packet_device(net::io_context& ctx) : ctx_(ctx), impl_(std::in_place_index<0>, ctx) {}
 
     // ---- 模式 1: 自主打开 ----
     bool open(const device_config& cfg, boost::system::error_code& ec) {
@@ -203,7 +204,7 @@ public:
     // ---- 异步读取一个完整数据包 ----
     template <typename CompletionToken>
     auto async_read_packet(packet_buffer& buf, CompletionToken&& token) {
-        return boost::asio::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
+        return net::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
             [this, &buf](auto handler) {
                 std::visit([&buf, h = std::move(handler)](auto& impl) mutable {
                     impl.async_read(buf, std::move(h));
@@ -215,7 +216,7 @@ public:
     // ---- 异步写入一个完整数据包 ----
     template <typename CompletionToken>
     auto async_write_packet(packet_buffer& buf, CompletionToken&& token) {
-        return boost::asio::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
+        return net::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
             [this, &buf](auto handler) {
                 std::visit([&buf, h = std::move(handler)](auto& impl) mutable {
                     impl.async_write(buf, std::move(h));
@@ -225,7 +226,7 @@ public:
     }
 
 private:
-    boost::asio::io_context& ctx_;
+    net::io_context& ctx_;
     detail::device_impl_variant impl_;
 };
 

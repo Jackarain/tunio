@@ -31,18 +31,18 @@ namespace detail {
 
 class tunio_impl : public std::enable_shared_from_this<tunio_impl> {
 public:
-    explicit tunio_impl(boost::asio::io_context& ctx);
+    explicit tunio_impl(net::io_context& ctx);
     ~tunio_impl();
 
     bool open(const tun_config& cfg, boost::system::error_code& ec);
     void close();
     bool is_open() const noexcept { return open_.load(std::memory_order_acquire); }
     size_t mtu() const noexcept { return mtu_; }
-    boost::asio::ip::address local_address() const noexcept {
+    net::ip::address local_address() const noexcept {
         return local_ip_;
     }
     engine_stats& stats() noexcept { return stats_; }
-    boost::asio::any_io_executor strand() const noexcept { return strand_ex_; }
+    net::any_io_executor strand() const noexcept { return strand_ex_; }
 
     // ---- accept 入口（自动派发到 Strand）----
     void async_accept_tcp(std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)> handler) {
@@ -50,7 +50,7 @@ public:
             if (tcp) {
                 tcp->async_accept(std::move(h));
             } else {
-                h(boost::asio::error::bad_descriptor, nullptr);
+                h(net::error::bad_descriptor, nullptr);
             }
         });
     }
@@ -60,7 +60,7 @@ public:
             if (udp) {
                 udp->async_accept(std::move(h));
             } else {
-                h(boost::asio::error::bad_descriptor, nullptr);
+                h(net::error::bad_descriptor, nullptr);
             }
         });
     }
@@ -88,14 +88,14 @@ private:
     void handle_icmp(const ip_packet_info& ip, const uint8_t* icmp, size_t icmp_len);
     void handle_icmpv6(const ip_packet_info& ip, const uint8_t* icmp, size_t icmp_len);
 
-    boost::asio::io_context& ctx_;
-    boost::asio::any_io_executor strand_ex_;
+    net::io_context& ctx_;
+    net::any_io_executor strand_ex_;
     std::atomic<bool> open_{false};
     uint64_t epoch_ = 0;  // 代际计数：close 的异步清理据此判断是否已被重新 open
     uint64_t read_epoch_ = 0;  // 当前读操作发起时的代际，用于识别旧设备的迟到回调
     tun_config cfg_;
     engine_stats stats_;
-    boost::asio::ip::address local_ip_{};  // 用于 local_address()
+    net::ip::address local_ip_{};  // 用于 local_address()
     uint8_t local_ip4_[4] = {};            // 网络字节序
     uint8_t local_ip6_[16] = {};           // 网络字节序
     bool have_ip4_ = false;

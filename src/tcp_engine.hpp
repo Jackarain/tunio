@@ -109,13 +109,13 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow> {
     std::deque<write_op> pending_writes;
     size_t tx_bytes = 0;  // 排队待发送的字节数（含未发送部分）
 
-    boost::asio::ip::tcp::endpoint original_destination() const;
+    net::ip::tcp::endpoint original_destination() const;
     bool is_open() const;
 };
 
 class tcp_engine : public std::enable_shared_from_this<tcp_engine> {
 public:
-    tcp_engine(boost::asio::any_io_executor strand, device_writer& writer,
+    tcp_engine(net::any_io_executor strand, device_writer& writer,
                const tun_config& cfg, engine_stats& stats,
                std::shared_ptr<buffer_accountant> account);
     ~tcp_engine();
@@ -130,7 +130,7 @@ public:
     void start_sweep();
     size_t flow_count() const { return flows_.size(); }
 
-    boost::asio::any_io_executor strand() const { return strand_; }
+    net::any_io_executor strand() const { return strand_; }
     device_writer& writer() { return writer_; }
     engine_stats& stats() { return stats_; }
     buffer_accountant& account() { return *account_; }
@@ -164,7 +164,7 @@ private:
     void notify_accept(tcp_flow& f);
     void on_sweep(const boost::system::error_code& ec);
 
-    boost::asio::any_io_executor strand_;
+    net::any_io_executor strand_;
     device_writer& writer_;
     tun_config cfg_;
     engine_stats& stats_;
@@ -175,8 +175,8 @@ private:
     std::unordered_map<five_tuple, std::shared_ptr<tcp_flow>> flows_;
     std::deque<std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)>> pending_accepts_;
     std::deque<std::shared_ptr<tcp_flow>> pending_flows_;
-    boost::asio::steady_timer sweep_timer_;
-    boost::asio::steady_timer ack_timer_;
+    net::steady_timer sweep_timer_;
+    net::steady_timer ack_timer_;
     std::deque<std::shared_ptr<tcp_flow>> ack_deferred_;
     bool ack_timer_waiting_ = false;
 };

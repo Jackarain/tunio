@@ -16,6 +16,7 @@
 #include "tunio/tun_config.hpp"
 
 namespace tunio {
+namespace net = boost::asio;
 
 namespace detail {
 class tunio_impl;
@@ -39,9 +40,9 @@ class udp_engine;
 // io_context 未运行时该收尾任务无法执行，将导致调用线程阻塞等待。
 class tunio {
 public:
-    using executor_type = boost::asio::any_io_executor;
+    using executor_type = net::any_io_executor;
 
-    explicit tunio(boost::asio::io_context& ctx);
+    explicit tunio(net::io_context& ctx);
     ~tunio();
 
     tunio(const tunio&) = delete;
@@ -57,7 +58,7 @@ public:
     size_t mtu() const noexcept;
 
     // 引擎本地虚拟 IP（用于 ICMP 回显响应等）。
-    boost::asio::ip::address local_address() const noexcept;
+    net::ip::address local_address() const noexcept;
 
     const engine_stats& stats() const noexcept;
 

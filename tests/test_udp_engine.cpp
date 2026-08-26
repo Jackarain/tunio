@@ -126,7 +126,7 @@ static void test_session_timeout() {
         timeout_read.set_value({ec, n});
     });
     auto [tec, tn] = future_get(timeout_read.get_future(), 5000);
-    assert(tec == boost::asio::error::operation_aborted);
+    assert(tec == net::error::operation_aborted);
     assert(!session.is_open());
 }
 

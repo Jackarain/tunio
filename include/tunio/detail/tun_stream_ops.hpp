@@ -52,7 +52,7 @@ void tun_stream::do_read_some(MutableBufferSequence&& buffers,
     if (!flow) {
         auto ex = ex_;
         net::post(ex, [handler = std::move(handler)]() mutable {
-            handler(boost::asio::error::bad_descriptor, 0);
+            handler(net::error::bad_descriptor, 0);
         });
         return;
     }
@@ -79,7 +79,7 @@ void tun_stream::do_write_some(ConstBufferSequence&& buffers,
     if (!flow) {
         auto ex = ex_;
         net::post(ex, [handler = std::move(handler)]() mutable {
-            handler(boost::asio::error::bad_descriptor, 0);
+            handler(net::error::bad_descriptor, 0);
         });
         return;
     }

@@ -58,7 +58,7 @@ struct udp_session : public std::enable_shared_from_this<udp_session> {
 
 class udp_engine : public std::enable_shared_from_this<udp_engine> {
 public:
-    udp_engine(boost::asio::any_io_executor strand, device_writer& writer,
+    udp_engine(net::any_io_executor strand, device_writer& writer,
                const tun_config& cfg, engine_stats& stats,
                std::shared_ptr<buffer_accountant> account);
     ~udp_engine();
@@ -72,7 +72,7 @@ public:
     void close_all();
     size_t session_count() const { return sessions_.size(); }
 
-    boost::asio::any_io_executor strand() const { return strand_; }
+    net::any_io_executor strand() const { return strand_; }
     device_writer& writer() { return writer_; }
     engine_stats& stats() { return stats_; }
     buffer_accountant& account() { return *account_; }
@@ -94,7 +94,7 @@ private:
     void on_expiry_timer(const boost::system::error_code& ec);
     void remove_session(std::shared_ptr<udp_session> s);
 
-    boost::asio::any_io_executor strand_;
+    net::any_io_executor strand_;
     device_writer& writer_;
     tun_config cfg_;
     engine_stats& stats_;
@@ -117,7 +117,7 @@ private:
         }
     };
     std::vector<expiry_entry> expiry_heap_;
-    boost::asio::steady_timer expiry_timer_;
+    net::steady_timer expiry_timer_;
     bool timer_waiting_ = false;
     std::chrono::steady_clock::time_point armed_target_{};
     uint64_t wait_gen_ = 0;

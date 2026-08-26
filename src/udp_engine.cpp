@@ -22,7 +22,7 @@
 namespace tunio {
 namespace detail {
 
-udp_engine::udp_engine(boost::asio::any_io_executor strand, device_writer& writer,
+udp_engine::udp_engine(net::any_io_executor strand, device_writer& writer,
                        const tun_config& cfg, engine_stats& stats,
                        std::shared_ptr<buffer_accountant> account)
     : strand_(std::move(strand)),
@@ -115,7 +115,7 @@ void udp_engine::deliver_datagram(const std::shared_ptr<udp_session>& s, std::ve
         auto op = std::move(s->pending_reads.front());
         s->pending_reads.pop_front();
         if (datagram.size() > op.total) {
-            op.handler(boost::asio::error::message_size, 0);
+            op.handler(net::error::message_size, 0);
         } else {
             size_t copied = 0;
             for (auto& buf : op.buffers) {
@@ -217,7 +217,7 @@ void udp_engine::remove_session(std::shared_ptr<udp_session> s) {
     sessions_.erase(s->key);
     stats_.udp_sessions.fetch_sub(1, std::memory_order_relaxed);
     for (auto& op : s->pending_reads) {
-        op.handler(boost::asio::error::operation_aborted, 0);
+        op.handler(net::error::operation_aborted, 0);
     }
     s->pending_reads.clear();
     if (s->rx_bytes > 0) {
@@ -245,7 +245,7 @@ void udp_engine::cancel_accepts() {
     while (!pending_accepts_.empty()) {
         auto h = std::move(pending_accepts_.front());
         pending_accepts_.pop_front();
-        h(boost::asio::error::operation_aborted, nullptr);
+        h(net::error::operation_aborted, nullptr);
     }
 }
 
@@ -273,7 +273,7 @@ void udp_session_start_receive(std::shared_ptr<udp_session> session,
                                size_t total,
                                std::function<void(boost::system::error_code, size_t)> handler) {
     if (!session || !session->eng) {
-        handler(boost::asio::error::bad_descriptor, 0);
+        handler(net::error::bad_descriptor, 0);
         return;
     }
     auto strand = session->eng->strand();
@@ -281,7 +281,7 @@ void udp_session_start_receive(std::shared_ptr<udp_session> session,
                            handler = std::move(handler)]() mutable {
         auto& session = *s;
         if (session.closed) {
-            handler(boost::asio::error::bad_descriptor, 0);
+            handler(net::error::bad_descriptor, 0);
             return;
         }
         if (total == 0) {
@@ -294,7 +294,7 @@ void udp_session_start_receive(std::shared_ptr<udp_session> session,
             session.rx_bytes -= dg.size();
             s->eng->account().release(dg.size());
             if (dg.size() > total) {
-                handler(boost::asio::error::message_size, 0);
+                handler(net::error::message_size, 0);
                 return;
             }
             size_t copied = 0;
@@ -316,7 +316,7 @@ void udp_session_start_receive(std::shared_ptr<udp_session> session,
 void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<uint8_t> data,
                             std::function<void(boost::system::error_code, size_t)> handler) {
     if (!session || !session->eng) {
-        handler(boost::asio::error::bad_descriptor, 0);
+        handler(net::error::bad_descriptor, 0);
         return;
     }
     auto strand = session->eng->strand();
@@ -324,14 +324,14 @@ void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<ui
                            handler = std::move(handler)]() mutable {
         auto& session = *s;
         if (session.closed) {
-            handler(boost::asio::error::bad_descriptor, 0);
+            handler(net::error::bad_descriptor, 0);
             return;
         }
         const int family = session.key.family;
         const size_t ip_hdr_len = ip_header_size(family);
         const size_t mtu = s->eng->mtu();
         if (data.size() > mtu - ip_hdr_len - sizeof(udp_header)) {
-            handler(boost::asio::error::message_size, 0);
+            handler(net::error::message_size, 0);
             return;
         }
         s->eng->refresh_expiry(s);

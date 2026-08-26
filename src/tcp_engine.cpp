@@ -33,7 +33,7 @@ uint32_t random_iss() {
 
 } // namespace
 
-tcp_engine::tcp_engine(boost::asio::any_io_executor strand, device_writer& writer,
+tcp_engine::tcp_engine(net::any_io_executor strand, device_writer& writer,
                        const tun_config& cfg, engine_stats& stats,
                        std::shared_ptr<buffer_accountant> account)
     : strand_(std::move(strand)),
@@ -86,7 +86,7 @@ void tcp_engine::on_sweep(const boost::system::error_code& ec) {
         if (f->state == tcp_state::ESTABLISHED && !f->accepted) {
             abort_flow(*f);
         } else {
-            close_flow(*f, boost::asio::error::operation_aborted);
+            close_flow(*f, net::error::operation_aborted);
         }
     }
     start_sweep();
@@ -182,7 +182,7 @@ void tcp_engine::handle_segment(const std::shared_ptr<tcp_flow>& f, const tcp_he
 
     if (flags & TCP_RST) {
         f->rst = true;
-        close_flow(*f, boost::asio::error::connection_reset);
+        close_flow(*f, net::error::connection_reset);
         return;
     }
 
@@ -473,7 +473,7 @@ void tcp_engine::send_fin(tcp_flow& f) {
         break;
     case tcp_state::SYN_RCVD:
         // 握手尚未完成：直接关闭，不发送 FIN
-        close_flow(f, boost::asio::error::operation_aborted);
+        close_flow(f, net::error::operation_aborted);
         break;
     default:
         break;
@@ -487,7 +487,7 @@ void tcp_engine::abort_flow(tcp_flow& f) {
     // RST 段：seq = snd_nxt, ack = rcv_nxt
     send_segment(f, f.snd_nxt, TCP_RST | TCP_ACK, nullptr, 0, false);
     f.rst = true;
-    close_flow(f, boost::asio::error::connection_reset);
+    close_flow(f, net::error::connection_reset);
 }
 
 void tcp_engine::close_flow(tcp_flow& f, const boost::system::error_code& err) {
@@ -545,7 +545,7 @@ void tcp_engine::cancel_accepts() {
     while (!pending_accepts_.empty()) {
         auto h = std::move(pending_accepts_.front());
         pending_accepts_.pop_front();
-        h(boost::asio::error::operation_aborted, nullptr);
+        h(net::error::operation_aborted, nullptr);
     }
 }
 
@@ -561,7 +561,7 @@ void tcp_engine::close_all() {
         all.push_back(f);
     }
     for (auto& f : all) {
-        close_flow(*f, boost::asio::error::operation_aborted);
+        close_flow(*f, net::error::operation_aborted);
     }
     pending_flows_.clear();
     cancel_accepts();
@@ -574,7 +574,7 @@ void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
                          size_t total,
                          std::function<void(boost::system::error_code, size_t)> handler) {
     if (!flow || !flow->eng) {
-        handler(boost::asio::error::bad_descriptor, 0);
+        handler(net::error::bad_descriptor, 0);
         return;
     }
     auto strand = flow->eng->strand();
@@ -582,11 +582,11 @@ void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
                            handler = std::move(handler)]() mutable {
         auto& flow = *f;
         if (flow.state == tcp_state::CLOSED || flow.app_closed || flow.rx_shutdown) {
-            handler(boost::asio::error::bad_descriptor, 0);
+            handler(net::error::bad_descriptor, 0);
             return;
         }
         if (flow.rst) {
-            handler(boost::asio::error::connection_reset, 0);
+            handler(net::error::connection_reset, 0);
             return;
         }
         if (total == 0) {
@@ -601,7 +601,7 @@ void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
 void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow, std::vector<uint8_t> data,
                           std::function<void(boost::system::error_code, size_t)> handler) {
     if (!flow || !flow->eng) {
-        handler(boost::asio::error::bad_descriptor, 0);
+        handler(net::error::bad_descriptor, 0);
         return;
     }
     auto strand = flow->eng->strand();
@@ -609,11 +609,11 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow, std::vector<uint8_t> d
                            handler = std::move(handler)]() mutable {
         auto& flow = *f;
         if (flow.state == tcp_state::CLOSED || flow.app_closed || flow.fin_sent) {
-            handler(boost::asio::error::bad_descriptor, 0);
+            handler(net::error::bad_descriptor, 0);
             return;
         }
         if (flow.rst) {
-            handler(boost::asio::error::connection_reset, 0);
+            handler(net::error::connection_reset, 0);
             return;
         }
         if (data.empty()) {
@@ -622,7 +622,7 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow, std::vector<uint8_t> d
         }
         if (flow.tx_bytes + data.size() > f->eng->max_tx_queue()) {
             // 发送队列积压超限：拒绝本次写入以施加背压，避免内存无限增长
-            handler(boost::asio::error::no_buffer_space, 0);
+            handler(net::error::no_buffer_space, 0);
             return;
         }
         flow.pending_writes.push_back({std::move(data), 0, std::move(handler)});
@@ -655,7 +655,7 @@ void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow) {
         }
         f.rx_shutdown = true;
         for (auto& op : f.pending_reads) {
-            op.handler(boost::asio::error::operation_aborted, 0);
+            op.handler(net::error::operation_aborted, 0);
         }
         f.pending_reads.clear();
         if (f.rx_bytes > 0) {
@@ -678,11 +678,11 @@ void tcp_flow_close(std::shared_ptr<tcp_flow> flow) {
         }
         f.app_closed = true;
         for (auto& op : f.pending_reads) {
-            op.handler(boost::asio::error::operation_aborted, 0);
+            op.handler(net::error::operation_aborted, 0);
         }
         f.pending_reads.clear();
         for (auto& op : f.pending_writes) {
-            op.handler(boost::asio::error::operation_aborted, 0);
+            op.handler(net::error::operation_aborted, 0);
         }
         f.pending_writes.clear();
         f.tx_bytes = 0;
@@ -713,15 +713,15 @@ bool tcp_flow_is_open(const std::shared_ptr<tcp_flow>& flow) {
     return flow && flow->eng && flow->state != tcp_state::CLOSED && !flow->app_closed && !flow->rst;
 }
 
-boost::asio::ip::tcp::endpoint tcp_flow::original_destination() const {
+net::ip::tcp::endpoint tcp_flow::original_destination() const {
     if (key.family == 6) {
-        boost::asio::ip::address_v6::bytes_type b{};
+        net::ip::address_v6::bytes_type b{};
         std::copy(key.dst_ip.begin(), key.dst_ip.end(), b.begin());
-        return {boost::asio::ip::address_v6(b), ntohs(key.dst_port)};
+        return {net::ip::address_v6(b), ntohs(key.dst_port)};
     }
-    boost::asio::ip::address_v4::bytes_type b{};
+    net::ip::address_v4::bytes_type b{};
     std::copy(key.dst_ip.begin(), key.dst_ip.begin() + 4, b.begin());
-    return {boost::asio::ip::address_v4(b), ntohs(key.dst_port)};
+    return {net::ip::address_v4(b), ntohs(key.dst_port)};
 }
 
 bool tcp_flow::is_open() const {

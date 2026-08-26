@@ -21,9 +21,9 @@
 namespace tunio {
 namespace detail {
 
-tunio_impl::tunio_impl(boost::asio::io_context& ctx)
+tunio_impl::tunio_impl(net::io_context& ctx)
     : ctx_(ctx),
-      strand_ex_(boost::asio::make_strand(ctx)),
+      strand_ex_(net::make_strand(ctx)),
       device_(std::make_unique<packet_device>(ctx)),
       read_buf_(2048, 64) {}
 
@@ -76,10 +76,10 @@ bool tunio_impl::open(const tun_config& cfg, boost::system::error_code& ec) {
     // 解析本地虚拟 IP（用于 ICMP/ICMPv6 回显等），允许为空
     have_ip4_ = false;
     have_ip6_ = false;
-    local_ip_ = boost::asio::ip::address();
+    local_ip_ = net::ip::address();
     if (!cfg.ipv4_addr.empty()) {
         boost::system::error_code parse_ec;
-        const auto v4 = boost::asio::ip::make_address_v4(cfg.ipv4_addr, parse_ec);
+        const auto v4 = net::ip::make_address_v4(cfg.ipv4_addr, parse_ec);
         if (parse_ec) {
             ec = parse_ec;
             return false;
@@ -91,7 +91,7 @@ bool tunio_impl::open(const tun_config& cfg, boost::system::error_code& ec) {
     }
     if (!cfg.ipv6_addr.empty()) {
         boost::system::error_code parse_ec;
-        const auto v6 = boost::asio::ip::make_address_v6(cfg.ipv6_addr, parse_ec);
+        const auto v6 = net::ip::make_address_v6(cfg.ipv6_addr, parse_ec);
         if (parse_ec) {
             ec = parse_ec;
             return false;
@@ -185,7 +185,7 @@ void tunio_impl::on_read(const boost::system::error_code& ec, size_t n) {
     if (ec) {
         // 仅当错误来自当前代际的读操作时才视为当前引擎的设备故障；
         // 旧设备（重新 open 前）的迟到回调（如 bad_descriptor）不得关闭新引擎。
-        if (read_epoch_ == epoch_ && ec != boost::asio::error::operation_aborted) {
+        if (read_epoch_ == epoch_ && ec != net::error::operation_aborted) {
             open_.store(false, std::memory_order_release);
         }
         if (open_.load(std::memory_order_acquire)) {
@@ -422,7 +422,7 @@ void tunio_impl::handle_icmpv6(const ip_packet_info& ip, const uint8_t* icmp, si
 
 } // namespace detail
 
-tunio::tunio(boost::asio::io_context& ctx)
+tunio::tunio(net::io_context& ctx)
     : impl_(std::make_shared<detail::tunio_impl>(ctx)) {}
 
 tunio::~tunio() = default;
@@ -443,7 +443,7 @@ size_t tunio::mtu() const noexcept {
     return impl_->mtu();
 }
 
-boost::asio::ip::address tunio::local_address() const noexcept {
+net::ip::address tunio::local_address() const noexcept {
     return impl_->local_address();
 }
 
