@@ -7,7 +7,7 @@
 #include <functional>
 #include <string>
 
-namespace tun_engine {
+namespace tunio {
 
 // 平台原生句柄类型，支持外部句柄注入
 #ifdef _WIN32
@@ -91,12 +91,12 @@ struct engine_stats {
     std::atomic<uint64_t> icmp_replies{0};
 };
 
-} // namespace tun_engine
+} // namespace tunio
 
 namespace std {
 template <>
-struct hash<tun_engine::five_tuple> {
-    size_t operator()(const tun_engine::five_tuple& k) const noexcept {
+struct hash<tunio::five_tuple> {
+    size_t operator()(const tunio::five_tuple& k) const noexcept {
         size_t h = std::hash<uint32_t>{}(k.src_ip);
         h ^= std::hash<uint32_t>{}(k.dst_ip) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
         h ^= std::hash<uint16_t>{}(k.src_port) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);

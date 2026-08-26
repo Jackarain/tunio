@@ -1,4 +1,4 @@
-﻿#include "tun_engine_impl.hpp"
+﻿#include "tunio_impl.hpp"
 
 #include <cstring>
 
@@ -6,22 +6,22 @@
 
 #include "ip_headers.hpp"
 
-namespace tun_engine {
+namespace tunio {
 namespace detail {
 
-tun_engine_impl::tun_engine_impl(boost::asio::io_context& ctx)
+tunio_impl::tunio_impl(boost::asio::io_context& ctx)
     : ctx_(ctx),
       strand_ex_(boost::asio::make_strand(ctx)),
       device_(std::make_unique<packet_device>(ctx)),
       read_buf_(2048, 64) {}
 
-tun_engine_impl::~tun_engine_impl() {
+tunio_impl::~tunio_impl() {
     if (device_) {
         device_->close();
     }
 }
 
-bool tun_engine_impl::open(const tun_config& cfg, boost::system::error_code& ec) {
+bool tunio_impl::open(const tun_config& cfg, boost::system::error_code& ec) {
     if (open_.load(std::memory_order_acquire)) {
         close();
     }
@@ -73,7 +73,7 @@ bool tun_engine_impl::open(const tun_config& cfg, boost::system::error_code& ec)
     return true;
 }
 
-void tun_engine_impl::close() {
+void tunio_impl::close() {
     if (!open_.exchange(false, std::memory_order_acq_rel)) {
         return;
     }
@@ -93,7 +93,7 @@ void tun_engine_impl::close() {
     });
 }
 
-void tun_engine_impl::start_read() {
+void tunio_impl::start_read() {
     if (!open_.load(std::memory_order_acquire) || reading_) {
         return;
     }
@@ -105,7 +105,7 @@ void tun_engine_impl::start_read() {
     }));
 }
 
-void tun_engine_impl::on_read(const boost::system::error_code& ec, size_t n) {
+void tunio_impl::on_read(const boost::system::error_code& ec, size_t n) {
     reading_ = false;
     if (ec) {
         if (ec != boost::asio::error::operation_aborted) {
@@ -133,7 +133,7 @@ void tun_engine_impl::on_read(const boost::system::error_code& ec, size_t n) {
     start_read();
 }
 
-void tun_engine_impl::handle_packet(const uint8_t* pkt, size_t len) {
+void tunio_impl::handle_packet(const uint8_t* pkt, size_t len) {
     if (len < sizeof(ipv4_header)) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -179,7 +179,7 @@ void tun_engine_impl::handle_packet(const uint8_t* pkt, size_t len) {
     }
 }
 
-void tun_engine_impl::handle_icmp(const uint8_t* pkt, size_t len) {
+void tunio_impl::handle_icmp(const uint8_t* pkt, size_t len) {
     if (local_ip_net_ == 0) {
         return;
     }
@@ -225,37 +225,37 @@ void tun_engine_impl::handle_icmp(const uint8_t* pkt, size_t len) {
 
 } // namespace detail
 
-tun_engine::tun_engine(boost::asio::io_context& ctx)
-    : impl_(std::make_shared<detail::tun_engine_impl>(ctx)) {}
+tunio::tunio(boost::asio::io_context& ctx)
+    : impl_(std::make_shared<detail::tunio_impl>(ctx)) {}
 
-tun_engine::~tun_engine() = default;
+tunio::~tunio() = default;
 
-bool tun_engine::open(const tun_config& config, boost::system::error_code& ec) {
+bool tunio::open(const tun_config& config, boost::system::error_code& ec) {
     return impl_->open(config, ec);
 }
 
-void tun_engine::close() {
+void tunio::close() {
     impl_->close();
 }
 
-bool tun_engine::is_open() const noexcept {
+bool tunio::is_open() const noexcept {
     return impl_->is_open();
 }
 
-size_t tun_engine::mtu() const noexcept {
+size_t tunio::mtu() const noexcept {
     return impl_->mtu();
 }
 
-boost::asio::ip::address tun_engine::local_address() const noexcept {
+boost::asio::ip::address tunio::local_address() const noexcept {
     return impl_->local_address();
 }
 
-const engine_stats& tun_engine::stats() const noexcept {
+const engine_stats& tunio::stats() const noexcept {
     return impl_->stats();
 }
 
-tun_engine::executor_type tun_engine::get_executor() const noexcept {
+tunio::executor_type tunio::get_executor() const noexcept {
     return impl_->strand();
 }
 
-} // namespace tun_engine
+} // namespace tunio

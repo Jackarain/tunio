@@ -9,7 +9,7 @@
 #include "device_writer.hpp"
 #include "tcp_engine.hpp"
 
-namespace tun_engine {
+namespace tunio {
 namespace detail {
 
 udp_engine::udp_engine(boost::asio::any_io_executor strand, device_writer& writer,
@@ -384,4 +384,4 @@ bool udp_session_is_open(const std::shared_ptr<udp_session>& session) {
 }
 
 } // namespace detail
-} // namespace tun_engine
+} // namespace tunio

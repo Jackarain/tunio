@@ -10,7 +10,7 @@
 
 #include "device_writer.hpp"
 
-namespace tun_engine {
+namespace tunio {
 namespace detail {
 
 namespace {
@@ -616,4 +616,4 @@ bool tcp_flow::is_open() const {
 }
 
 } // namespace detail
-} // namespace tun_engine
+} // namespace tunio

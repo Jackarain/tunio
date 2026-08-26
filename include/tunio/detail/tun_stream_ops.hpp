@@ -8,10 +8,10 @@ namespace asio = boost::asio;
 #include <memory>
 #include <vector>
 
-#include "tun_engine/detail/handler_util.hpp"
-#include "tun_engine/tun_stream.hpp"
+#include "tunio/detail/handler_util.hpp"
+#include "tunio/tun_stream.hpp"
 
-namespace tun_engine {
+namespace tunio {
 
 namespace detail {
 
@@ -77,4 +77,4 @@ void tun_stream::do_write_some(ConstBufferSequence&& buffers,
                                  detail::bind_handler(ex_, std::move(handler)));
 }
 
-} // namespace tun_engine
+} // namespace tunio

@@ -3,12 +3,12 @@
 #include <boost/asio.hpp>
 #include <memory>
 
-#include "tun_engine/tun_config.hpp"
+#include "tunio/tun_config.hpp"
 
-namespace tun_engine {
+namespace tunio {
 
 namespace detail {
-class tun_engine_impl;
+class tunio_impl;
 class tcp_engine;
 class udp_engine;
 } // namespace detail
@@ -21,15 +21,15 @@ class udp_engine;
 //
 // 生命周期要求：引擎必须在所有 tun_stream / tun_udp_socket 销毁之后、
 // io_context 停止运行之前销毁（与 Boost.Asio 对 socket 的约束一致）。
-class tun_engine {
+class tunio {
 public:
     using executor_type = boost::asio::any_io_executor;
 
-    explicit tun_engine(boost::asio::io_context& ctx);
-    ~tun_engine();
+    explicit tunio(boost::asio::io_context& ctx);
+    ~tunio();
 
-    tun_engine(const tun_engine&) = delete;
-    tun_engine& operator=(const tun_engine&) = delete;
+    tunio(const tunio&) = delete;
+    tunio& operator=(const tunio&) = delete;
 
     // 打开 TUN 设备并启动数据通路；外部句柄注入时 config.external_handle 必须有效。
     bool open(const tun_config& config, boost::system::error_code& ec);
@@ -52,7 +52,7 @@ private:
     friend class tun_acceptor;
     friend class tun_udp_acceptor;
 
-    std::shared_ptr<detail::tun_engine_impl> impl_;
+    std::shared_ptr<detail::tunio_impl> impl_;
 };
 
-} // namespace tun_engine
+} // namespace tunio

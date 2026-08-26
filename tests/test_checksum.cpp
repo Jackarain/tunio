@@ -3,16 +3,16 @@
 #include <cstring>
 #include <vector>
 
-#include "tun_engine/tun_config.hpp"
+#include "tunio/tun_config.hpp"
 #include "test_harness.hpp"
 #include "../src/ip_headers.hpp"
 
 // 验证引擎校验和实现与独立实现一致
 int main() {
-    using tun_engine::detail::ip_checksum;
-    using tun_engine::detail::ipv4_checksum;
-    using tun_engine::detail::verify_ipv4_checksum;
-    using tun_engine::detail::tcp_udp_checksum;
+    using tunio::detail::ip_checksum;
+    using tunio::detail::ipv4_checksum;
+    using tunio::detail::verify_ipv4_checksum;
+    using tunio::detail::tcp_udp_checksum;
 
     // IP 头（checksum 字段由 ipv4_checksum 自动跳过）
     const uint32_t src = test::ip("10.0.0.2");

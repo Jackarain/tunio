@@ -2,13 +2,13 @@
 
 #include <boost/asio.hpp>
 
-#include "tun_engine/detail/handler_util.hpp"
+#include "tunio/detail/handler_util.hpp"
 #include <memory>
 #include <vector>
 
-#include "tun_engine/tun_config.hpp"
+#include "tunio/tun_config.hpp"
 
-namespace tun_engine {
+namespace tunio {
 
 namespace detail {
 struct tcp_flow;
@@ -79,6 +79,6 @@ private:
     friend class tun_acceptor;
 };
 
-} // namespace tun_engine
+} // namespace tunio
 
-#include "tun_engine/detail/tun_stream_ops.hpp"
+#include "tunio/detail/tun_stream_ops.hpp"

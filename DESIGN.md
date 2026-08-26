@@ -9,7 +9,7 @@
 
 ### 1. 概述
 
-本设计定义了一个高性能、跨平台的用户态 TUN 网络引擎（以下简称 `tun_engine`）。该引擎将 Linux TUN、macOS utun 及 Windows Wintun 设备产生的 L3 原始 IP 包处理全面封装于内部，向上层应用暴露一套完全对齐 Boost.Asio 网络编程范式的现代 C++ 异步接口。
+本设计定义了一个高性能、跨平台的用户态 TUN 网络引擎（以下简称 `tunio`）。该引擎将 Linux TUN、macOS utun 及 Windows Wintun 设备产生的 L3 原始 IP 包处理全面封装于内部，向上层应用暴露一套完全对齐 Boost.Asio 网络编程范式的现代 C++ 异步接口。
 
 引擎在设计上具备高度的**设备管理灵活性**：既支持由引擎内部自主创建并配置 TUN 设备，也支持接管由外部应用预先打开的平台原生句柄（文件描述符或 HANDLE）。后者对于需要特殊权限提升（如 Linux CAP_NET_ADMIN 提前提权）、多实例共享同一设备或集成于现有网络管理框架的场景尤为关键。
 
@@ -475,7 +475,7 @@ private:
 ```cpp
 class tun_acceptor {
 public:
-    explicit tun_acceptor(tun_engine& engine);
+    explicit tun_acceptor(tunio& engine);
 
     template <typename CompletionToken>
     auto async_accept(tun_stream& peer, CompletionToken&& token) {
@@ -487,7 +487,7 @@ public:
         );
     }
 private:
-    tun_engine& engine_;
+    tunio& engine_;
 };
 ```
 
@@ -536,7 +536,7 @@ private:
 ```cpp
 class tun_udp_acceptor {
 public:
-    explicit tun_udp_acceptor(tun_engine& engine);
+    explicit tun_udp_acceptor(tunio& engine);
 
     template <typename CompletionToken>
     auto async_accept(tun_udp_socket& peer, CompletionToken&& token) {
@@ -548,7 +548,7 @@ public:
         );
     }
 private:
-    tun_engine& engine_;
+    tunio& engine_;
 };
 ```
 
@@ -580,7 +580,7 @@ struct engine_stats {
     std::atomic<uint64_t> icmp_replies;
 };
 
-class tun_engine {
+class tunio {
 public:
     const engine_stats& stats() const noexcept;
 };
@@ -663,7 +663,7 @@ asio::awaitable<void> bidirectional_bridge(tun_stream client, asio::ip::tcp::soc
     co_return;
 }
 
-asio::awaitable<void> tcp_listener(tun_engine& engine) {
+asio::awaitable<void> tcp_listener(tunio& engine) {
     tun_acceptor acceptor(engine);
     auto executor = co_await asio::this_coro::executor;
 
@@ -695,7 +695,7 @@ asio::awaitable<void> udp_echo_handler(tun_udp_socket session) {
     }
 }
 
-asio::awaitable<void> udp_listener(tun_engine& engine) {
+asio::awaitable<void> udp_listener(tunio& engine) {
     tun_udp_acceptor acceptor(engine);
     auto executor = co_await asio::this_coro::executor;
 
@@ -712,7 +712,7 @@ asio::awaitable<void> udp_listener(tun_engine& engine) {
 ```cpp
 int main() {
     asio::io_context io_context(1);
-    tun_engine engine(io_context);
+    tunio engine(io_context);
 
     tun_config config;
     config.dev_name = "tun0";

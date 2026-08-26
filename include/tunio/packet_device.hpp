@@ -5,10 +5,10 @@
 #include <memory>
 #include <variant>
 
-#include "tun_engine/packet_buffer.hpp"
-#include "tun_engine/tun_config.hpp"
+#include "tunio/packet_buffer.hpp"
+#include "tunio/tun_config.hpp"
 
-namespace tun_engine {
+namespace tunio {
 namespace detail {
 
 // ---- POSIX 实现 (Linux TUN / macOS utun) ----
@@ -219,4 +219,4 @@ private:
     detail::device_impl_variant impl_;
 };
 
-} // namespace tun_engine
+} // namespace tunio

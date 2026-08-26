@@ -5,7 +5,7 @@
 #include <memory>
 #include <stdexcept>
 
-namespace tun_engine {
+namespace tunio {
 
 // 零拷贝数据包缓冲区：支持头部预留（Headroom）、前置头部与裁剪头部，
 // 避免封装 IP/TCP 头部时频繁的内存分配与拷贝。
@@ -69,4 +69,4 @@ private:
     size_t data_size_;
 };
 
-} // namespace tun_engine
+} // namespace tunio

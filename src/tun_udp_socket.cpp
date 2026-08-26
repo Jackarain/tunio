@@ -1,11 +1,11 @@
-﻿#include "tun_engine/tun_udp_socket.hpp"
+﻿#include "tunio/tun_udp_socket.hpp"
 
 #include <utility>
 
-#include "tun_engine/detail/tun_udp_ops.hpp"
+#include "tunio/detail/tun_udp_ops.hpp"
 #include "udp_engine.hpp"
 
-namespace tun_engine {
+namespace tunio {
 
 tun_udp_socket::tun_udp_socket(executor_type ex) : ex_(std::move(ex)) {}
 
@@ -51,4 +51,4 @@ bool tun_udp_socket::is_open() const noexcept {
     return detail::udp_session_is_open(session_);
 }
 
-} // namespace tun_engine
+} // namespace tunio

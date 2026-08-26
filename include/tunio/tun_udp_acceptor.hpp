@@ -2,14 +2,14 @@
 
 #include <boost/asio.hpp>
 
-#include "tun_engine/detail/handler_util.hpp"
+#include "tunio/detail/handler_util.hpp"
 #include <functional>
 
-#include "tun_engine/tun_udp_socket.hpp"
+#include "tunio/tun_udp_socket.hpp"
 
-namespace tun_engine {
+namespace tunio {
 
-class tun_engine;
+class tunio;
 
 // UDP 新会话监听器
 //
@@ -17,7 +17,7 @@ class tun_engine;
 // async_accept 触发完成回调并将会话对应的 tun_udp_socket 交给调用者。
 class tun_udp_acceptor {
 public:
-    explicit tun_udp_acceptor(tun_engine& engine) : engine_(engine) {}
+    explicit tun_udp_acceptor(tunio& engine) : engine_(engine) {}
 
     template <typename CompletionToken>
     auto async_accept(tun_udp_socket& peer, CompletionToken&& token) {
@@ -34,7 +34,7 @@ public:
 private:
     void do_accept(tun_udp_socket& peer, std::function<void(boost::system::error_code)> handler);
 
-    tun_engine& engine_;
+    tunio& engine_;
 };
 
-} // namespace tun_engine
+} // namespace tunio

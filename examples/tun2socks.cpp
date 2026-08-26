@@ -1,4 +1,4 @@
-﻿// tun2socks：通过 tun_engine 库实现的 SOCKS5 透明代理
+﻿// tun2socks：通过 tunio 库实现的 SOCKS5 透明代理
 //
 // 用法示例：
 //   sudo ./tun2socks --tun tun0 --ip 10.0.0.1 --netmask 255.255.255.0 \
@@ -16,17 +16,17 @@
 #include <string>
 #include <vector>
 
-#include "tun_engine/tun_acceptor.hpp"
-#include "tun_engine/tun_config.hpp"
-#include "tun_engine/tun_engine.hpp"
-#include "tun_engine/tun_stream.hpp"
-#include "tun_engine/tun_udp_acceptor.hpp"
-#include "tun_engine/tun_udp_socket.hpp"
+#include "tunio/tun_acceptor.hpp"
+#include "tunio/tun_config.hpp"
+#include "tunio/tunio.hpp"
+#include "tunio/tun_stream.hpp"
+#include "tunio/tun_udp_acceptor.hpp"
+#include "tunio/tun_udp_socket.hpp"
 
 #include "socks5_client.hpp"
 
 namespace asio = boost::asio;
-namespace te = tun_engine;
+namespace te = tunio;
 
 namespace {
 
@@ -97,7 +97,7 @@ options parse_args(int argc, char** argv) {
 }
 
 // ---- TCP 全双工数据泵（与 DESIGN.md §10.1 一致）----
-asio::awaitable<void> tcp_bridge(tun_engine::tun_stream client, asio::ip::tcp::endpoint proxy) {
+asio::awaitable<void> tcp_bridge(tunio::tun_stream client, asio::ip::tcp::endpoint proxy) {
     auto ex = co_await asio::this_coro::executor;
     auto dest = client.original_destination();
     auto upstream = std::make_shared<asio::ip::tcp::socket>(ex);
@@ -110,7 +110,7 @@ asio::awaitable<void> tcp_bridge(tun_engine::tun_stream client, asio::ip::tcp::e
         co_return;
     }
 
-    auto c = std::make_shared<tun_engine::tun_stream>(std::move(client));
+    auto c = std::make_shared<tunio::tun_stream>(std::move(client));
     asio::co_spawn(ex, [c, upstream]() -> asio::awaitable<void> {
         std::array<char, 8192> buf;
         try {
@@ -137,11 +137,11 @@ asio::awaitable<void> tcp_bridge(tun_engine::tun_stream client, asio::ip::tcp::e
     }, asio::detached);
 }
 
-asio::awaitable<void> tcp_listener(tun_engine::tun_engine& engine, asio::ip::tcp::endpoint proxy) {
+asio::awaitable<void> tcp_listener(tunio::tunio& engine, asio::ip::tcp::endpoint proxy) {
     auto ex = co_await asio::this_coro::executor;
-    tun_engine::tun_acceptor acceptor(engine);
+    tunio::tun_acceptor acceptor(engine);
     for (;;) {
-        tun_engine::tun_stream client(ex);
+        tunio::tun_stream client(ex);
         boost::system::error_code ec;
         co_await acceptor.async_accept(client, asio::redirect_error(asio::use_awaitable, ec));
         if (ec) {
@@ -152,7 +152,7 @@ asio::awaitable<void> tcp_listener(tun_engine::tun_engine& engine, asio::ip::tcp
 }
 
 // ---- UDP：每个会话经 SOCKS5 UDP ASSOCIATE 中继转发 ----
-asio::awaitable<void> udp_bridge(tun_engine::tun_udp_socket session, asio::ip::tcp::endpoint proxy) {
+asio::awaitable<void> udp_bridge(tunio::tun_udp_socket session, asio::ip::tcp::endpoint proxy) {
     auto ex = co_await asio::this_coro::executor;
     auto relay = std::make_shared<tun2socks_example::socks5_udp_relay>(ex);
     try {
@@ -163,7 +163,7 @@ asio::awaitable<void> udp_bridge(tun_engine::tun_udp_socket session, asio::ip::t
         co_return;
     }
 
-    auto s = std::make_shared<tun_engine::tun_udp_socket>(std::move(session));
+    auto s = std::make_shared<tunio::tun_udp_socket>(std::move(session));
 
     // 客户端 -> 中继
     asio::co_spawn(ex, [s, relay]() -> asio::awaitable<void> {
@@ -195,11 +195,11 @@ asio::awaitable<void> udp_bridge(tun_engine::tun_udp_socket session, asio::ip::t
     }, asio::detached);
 }
 
-asio::awaitable<void> udp_listener(tun_engine::tun_engine& engine, asio::ip::tcp::endpoint proxy) {
+asio::awaitable<void> udp_listener(tunio::tunio& engine, asio::ip::tcp::endpoint proxy) {
     auto ex = co_await asio::this_coro::executor;
-    tun_engine::tun_udp_acceptor acceptor(engine);
+    tunio::tun_udp_acceptor acceptor(engine);
     for (;;) {
-        tun_engine::tun_udp_socket session(ex);
+        tunio::tun_udp_socket session(ex);
         boost::system::error_code ec;
         co_await acceptor.async_accept(session, asio::redirect_error(asio::use_awaitable, ec));
         if (ec) {
@@ -222,9 +222,9 @@ int main(int argc, char** argv) {
     }
 
     asio::io_context io(opt.threads);
-    tun_engine::tun_engine engine(io);
+    tunio::tunio engine(io);
 
-    tun_engine::tun_config cfg;
+    tunio::tun_config cfg;
     cfg.dev_name = opt.dev_name;
     cfg.ipv4_addr = opt.ipv4_addr;
     cfg.netmask = opt.netmask;

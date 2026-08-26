@@ -14,12 +14,12 @@
 
 #include <boost/asio.hpp>
 
-#include "tun_engine/tun_acceptor.hpp"
-#include "tun_engine/tun_config.hpp"
-#include "tun_engine/tun_engine.hpp"
-#include "tun_engine/tun_stream.hpp"
-#include "tun_engine/tun_udp_acceptor.hpp"
-#include "tun_engine/tun_udp_socket.hpp"
+#include "tunio/tun_acceptor.hpp"
+#include "tunio/tun_config.hpp"
+#include "tunio/tunio.hpp"
+#include "tunio/tun_stream.hpp"
+#include "tunio/tun_udp_acceptor.hpp"
+#include "tunio/tun_udp_socket.hpp"
 
 namespace asio = boost::asio;
 
@@ -64,7 +64,7 @@ options parse_args(int argc, char** argv) {
 }
 
 // ---- TCP 全双工数据泵（DESIGN.md §10.1）----
-asio::awaitable<void> bidirectional_bridge(tun_engine::tun_stream client, asio::ip::tcp::endpoint target) {
+asio::awaitable<void> bidirectional_bridge(tunio::tun_stream client, asio::ip::tcp::endpoint target) {
     auto ex = co_await asio::this_coro::executor;
     auto proxy = std::make_shared<asio::ip::tcp::socket>(ex);
     boost::system::error_code ec;
@@ -73,7 +73,7 @@ asio::awaitable<void> bidirectional_bridge(tun_engine::tun_stream client, asio::
         client.reset();
         co_return;
     }
-    auto c = std::make_shared<tun_engine::tun_stream>(std::move(client));
+    auto c = std::make_shared<tunio::tun_stream>(std::move(client));
 
     asio::co_spawn(ex, [c, proxy]() -> asio::awaitable<void> {
         std::array<char, 8192> buf;
@@ -101,11 +101,11 @@ asio::awaitable<void> bidirectional_bridge(tun_engine::tun_stream client, asio::
     }, asio::detached);
 }
 
-asio::awaitable<void> tcp_listener(tun_engine::tun_engine& engine, uint16_t echo_port) {
+asio::awaitable<void> tcp_listener(tunio::tunio& engine, uint16_t echo_port) {
     auto ex = co_await asio::this_coro::executor;
-    tun_engine::tun_acceptor acceptor(engine);
+    tunio::tun_acceptor acceptor(engine);
     for (;;) {
-        tun_engine::tun_stream client(ex);
+        tunio::tun_stream client(ex);
         boost::system::error_code ec;
         co_await acceptor.async_accept(client, asio::redirect_error(asio::use_awaitable, ec));
         if (ec) {
@@ -118,7 +118,7 @@ asio::awaitable<void> tcp_listener(tun_engine::tun_engine& engine, uint16_t echo
 }
 
 // ---- UDP 回显会话（DESIGN.md §10.2）----
-asio::awaitable<void> udp_echo_handler(tun_engine::tun_udp_socket session) {
+asio::awaitable<void> udp_echo_handler(tunio::tun_udp_socket session) {
     std::array<char, 2048> buf;
     try {
         for (;;) {
@@ -130,11 +130,11 @@ asio::awaitable<void> udp_echo_handler(tun_engine::tun_udp_socket session) {
     }
 }
 
-asio::awaitable<void> udp_listener(tun_engine::tun_engine& engine) {
+asio::awaitable<void> udp_listener(tunio::tunio& engine) {
     auto ex = co_await asio::this_coro::executor;
-    tun_engine::tun_udp_acceptor acceptor(engine);
+    tunio::tun_udp_acceptor acceptor(engine);
     for (;;) {
-        tun_engine::tun_udp_socket session(ex);
+        tunio::tun_udp_socket session(ex);
         boost::system::error_code ec;
         co_await acceptor.async_accept(session, asio::redirect_error(asio::use_awaitable, ec));
         if (ec) {
@@ -156,9 +156,9 @@ int main(int argc, char** argv) {
     }
 
     asio::io_context io(1);
-    tun_engine::tun_engine engine(io);
+    tunio::tunio engine(io);
 
-    tun_engine::tun_config cfg;
+    tunio::tun_config cfg;
     cfg.dev_name = opt.dev_name;
     cfg.ipv4_addr = opt.ipv4_addr;
     cfg.netmask = opt.netmask;

@@ -2,13 +2,13 @@
 
 #include <boost/asio.hpp>
 
-#include "tun_engine/detail/handler_util.hpp"
+#include "tunio/detail/handler_util.hpp"
 
-#include "tun_engine/tun_stream.hpp"
+#include "tunio/tun_stream.hpp"
 
-namespace tun_engine {
+namespace tunio {
 
-class tun_engine;
+class tunio;
 
 // TCP 连接监听器
 //
@@ -16,7 +16,7 @@ class tun_engine;
 // 此时连接处于 ESTABLISHED 状态。
 class tun_acceptor {
 public:
-    explicit tun_acceptor(tun_engine& engine) : engine_(engine) {}
+    explicit tun_acceptor(tunio& engine) : engine_(engine) {}
 
     template <typename CompletionToken>
     auto async_accept(tun_stream& peer, CompletionToken&& token) {
@@ -33,7 +33,7 @@ public:
 private:
     void do_accept(tun_stream& peer, std::function<void(boost::system::error_code)> handler);
 
-    tun_engine& engine_;
+    tunio& engine_;
 };
 
-} // namespace tun_engine
+} // namespace tunio

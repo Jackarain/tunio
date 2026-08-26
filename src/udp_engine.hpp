@@ -11,10 +11,10 @@ namespace asio = boost::asio;
 #include <unordered_map>
 #include <vector>
 
-#include "tun_engine/tun_config.hpp"
+#include "tunio/tun_config.hpp"
 #include "ip_headers.hpp"
 
-namespace tun_engine {
+namespace tunio {
 namespace detail {
 
 class device_writer;
@@ -127,4 +127,4 @@ void udp_session_set_timeout(std::shared_ptr<udp_session> session, std::chrono::
 bool udp_session_is_open(const std::shared_ptr<udp_session>& session);
 
 } // namespace detail
-} // namespace tun_engine
+} // namespace tunio

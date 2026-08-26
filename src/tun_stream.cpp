@@ -1,11 +1,11 @@
-﻿#include "tun_engine/tun_stream.hpp"
+﻿#include "tunio/tun_stream.hpp"
 
 #include <utility>
 
 #include "tcp_engine.hpp"
-#include "tun_engine/detail/tun_stream_ops.hpp"
+#include "tunio/detail/tun_stream_ops.hpp"
 
-namespace tun_engine {
+namespace tunio {
 
 tun_stream::tun_stream(executor_type ex) : ex_(std::move(ex)) {}
 
@@ -67,4 +67,4 @@ bool tun_stream::is_open() const noexcept {
     return detail::tcp_flow_is_open(flow_);
 }
 
-} // namespace tun_engine
+} // namespace tunio

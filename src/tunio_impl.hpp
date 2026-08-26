@@ -7,22 +7,22 @@ namespace asio = boost::asio;
 #include <memory>
 #include <utility>
 
-#include "tun_engine/packet_buffer.hpp"
-#include "tun_engine/packet_device.hpp"
-#include "tun_engine/tun_config.hpp"
-#include "tun_engine/tun_engine.hpp"
+#include "tunio/packet_buffer.hpp"
+#include "tunio/packet_device.hpp"
+#include "tunio/tun_config.hpp"
+#include "tunio/tunio.hpp"
 
 #include "device_writer.hpp"
 #include "tcp_engine.hpp"
 #include "udp_engine.hpp"
 
-namespace tun_engine {
+namespace tunio {
 namespace detail {
 
-class tun_engine_impl : public std::enable_shared_from_this<tun_engine_impl> {
+class tunio_impl : public std::enable_shared_from_this<tunio_impl> {
 public:
-    explicit tun_engine_impl(boost::asio::io_context& ctx);
-    ~tun_engine_impl();
+    explicit tunio_impl(boost::asio::io_context& ctx);
+    ~tunio_impl();
 
     bool open(const tun_config& cfg, boost::system::error_code& ec);
     void close();
@@ -97,4 +97,4 @@ private:
 };
 
 } // namespace detail
-} // namespace tun_engine
+} // namespace tunio

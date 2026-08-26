@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace tun_engine {
+namespace tunio {
 namespace detail {
 
 constexpr uint8_t IPPROTO_ICMP_V = 1;
@@ -133,4 +133,4 @@ inline bool seq_ge(uint32_t a, uint32_t b) {
 }
 
 } // namespace detail
-} // namespace tun_engine
+} // namespace tunio
