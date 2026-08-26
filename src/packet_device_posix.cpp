@@ -1,6 +1,6 @@
 ﻿//
-// packet_device.cpp
-// ~~~~~~~~~~~~~~~~~
+// packet_device_posix.cpp
+// ~~~~~~~~~~~~~~~~~~~~~~~
 //
 // Copyright (c) 2026 Jack (jack dot wgm at gmail dot com)
 //
@@ -12,9 +12,10 @@
 
 #include <algorithm>
 
+#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
+
 namespace tunio {
 
-#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
 
 #include <cerrno>
 #include <fcntl.h>
@@ -235,20 +236,7 @@ bool posix_packet_device_impl::open(const device_config& cfg, boost::system::err
 }
 
 } // namespace detail
-#endif // BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR
-
-#if defined(BOOST_ASIO_HAS_WINDOWS_OVERLAPPED_PTR)
-
-namespace detail {
-
-bool windows_packet_device_impl::open(const device_config&, boost::system::error_code& ec) {
-    // Wintun 会话创建（Phase 3），句柄注入模式 assign() 已可用。
-    ec = boost::system::error_code(boost::system::errc::operation_not_supported,
-                                   boost::system::generic_category());
-    return false;
-}
-
-} // namespace detail
-#endif // BOOST_ASIO_HAS_WINDOWS_OVERLAPPED_PTR
 
 } // namespace tunio
+
+#endif // BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR

@@ -17,9 +17,8 @@ endif()
 
 find_package(Boost 1.74 REQUIRED)
 
-add_library(tunio STATIC
+set(TUNIO_SOURCES
   src/packet_buffer.cpp
-  src/packet_device.cpp
   src/tcp_engine.cpp
   src/udp_engine.cpp
   src/tun_acceptor.cpp
@@ -28,6 +27,17 @@ add_library(tunio STATIC
   src/tun_udp_acceptor.cpp
   src/tun_udp_socket.cpp
 )
+
+# 平台相关实现按平台拆分（参考 Asio 的 impl 布局）：
+#   Windows -> packet_device_windows.cpp
+#   其他 POSIX -> packet_device_posix.cpp
+if(WIN32)
+  list(APPEND TUNIO_SOURCES src/packet_device_windows.cpp)
+else()
+  list(APPEND TUNIO_SOURCES src/packet_device_posix.cpp)
+endif()
+
+add_library(tunio STATIC ${TUNIO_SOURCES})
 target_include_directories(tunio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 if(TARGET Boost::headers)
   target_link_libraries(tunio PUBLIC Boost::headers)

@@ -11,147 +11,40 @@
 #pragma once
 
 #include <boost/asio.hpp>
-#include <functional>
 #include <memory>
 #include <variant>
 
 #include "tunio/packet_buffer.hpp"
 #include "tunio/tun_config.hpp"
 
+// 平台实现按文件拆分，参考 Asio 的 impl 目录布局：
+//   detail/impl/packet_device_posix.hpp
+//   detail/impl/packet_device_windows.hpp
+//   detail/impl/packet_device_unsupported.hpp
+#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
+#include "tunio/detail/impl/packet_device_posix.hpp"
+#elif defined(BOOST_ASIO_HAS_WINDOWS_OVERLAPPED_PTR)
+#include "tunio/detail/impl/packet_device_windows.hpp"
+#else
+#include "tunio/detail/impl/packet_device_unsupported.hpp"
+#endif
+
 namespace tunio {
 namespace net = boost::asio;
 namespace detail {
 
-// ---- POSIX 实现 (Linux TUN / macOS utun) ----
+using device_impl_variant = std::variant<
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
-class posix_packet_device_impl {
-public:
-    explicit posix_packet_device_impl(net::io_context& ctx) : desc_(ctx) {}
-
-    // 平台相关打开逻辑，见 src/packet_device.cpp
-    bool open(const device_config& cfg, boost::system::error_code& ec);
-    bool assign(native_handle_type handle, size_t mtu, boost::system::error_code& ec) {
-        desc_.assign(static_cast<native_handle_type>(handle), ec);
-        if (!ec) {
-            open_ = true;
-            mtu_ = mtu;
-        }
-        return !ec;
-    }
-
-    void close() {
-        if (open_) {
-            desc_.close();
-            open_ = false;
-        }
-    }
-
-    size_t mtu() const { return mtu_; }
-    bool is_open() const { return open_; }
-
-    template <typename Handler>
-    void async_read(packet_buffer& buf, Handler&& handler) {
-        desc_.async_read_some(net::buffer(buf.writable_data(), buf.writable_size()),
-                              std::forward<Handler>(handler));
-    }
-
-    template <typename Handler>
-    void async_write(packet_buffer& buf, Handler&& handler) {
-        desc_.async_write_some(net::buffer(buf.data(), buf.size()),
-                               std::forward<Handler>(handler));
-    }
-
-    net::posix::stream_descriptor desc_;
-    size_t mtu_ = 1500;
-    bool open_ = false;
-};
-
-using device_impl_variant = std::variant<posix_packet_device_impl>;
-
+    posix_packet_device_impl
 #elif defined(BOOST_ASIO_HAS_WINDOWS_OVERLAPPED_PTR)
-
-// ---- Windows 实现 (Wintun / Overlapped) ----
-class windows_packet_device_impl {
-public:
-    explicit windows_packet_device_impl(net::io_context& ctx) : handle_(ctx) {}
-
-    // 平台相关打开逻辑（Wintun 会话创建），见 src/packet_device.cpp
-    bool open(const device_config& cfg, boost::system::error_code& ec);
-    bool assign(native_handle_type handle, size_t mtu, boost::system::error_code& ec) {
-        handle_.assign(handle, ec);
-        if (!ec) {
-            open_ = true;
-            mtu_ = mtu;
-        }
-        return !ec;
-    }
-
-    void close() {
-        if (open_) {
-            handle_.close();
-            open_ = false;
-        }
-    }
-
-    size_t mtu() const { return mtu_; }
-    bool is_open() const { return open_; }
-
-    template <typename Handler>
-    void async_read(packet_buffer& buf, Handler&& handler) {
-        handle_.async_read_some_at(0, net::buffer(buf.writable_data(), buf.writable_size()),
-                                   std::forward<Handler>(handler));
-    }
-
-    template <typename Handler>
-    void async_write(packet_buffer& buf, Handler&& handler) {
-        handle_.async_write_some_at(0, net::buffer(buf.data(), buf.size()),
-                                    std::forward<Handler>(handler));
-    }
-
-    net::windows::overlapped_handle handle_;
-    size_t mtu_ = 1500;
-    bool open_ = false;
-};
-
-using device_impl_variant = std::variant<windows_packet_device_impl>;
-
+    windows_packet_device_impl
 #else
-
-// ---- 无平台实现时的兜底类型 ----
-class unsupported_packet_device {
-public:
-    explicit unsupported_packet_device(net::io_context&) {}
-
-    bool open(const device_config&, boost::system::error_code& ec) {
-        ec = make_error_code(boost::system::errc::operation_not_supported);
-        return false;
-    }
-
-    bool assign(native_handle_type, size_t, boost::system::error_code& ec) {
-        ec = make_error_code(boost::system::errc::operation_not_supported);
-        return false;
-    }
-
-    void close() {}
-    size_t mtu() const { return 0; }
-    bool is_open() const { return false; }
-
-    template <typename Handler>
-    void async_read(packet_buffer&, Handler&& handler) {
-        std::forward<Handler>(handler)(net::error::bad_descriptor, 0);
-    }
-
-    template <typename Handler>
-    void async_write(packet_buffer&, Handler&& handler) {
-        std::forward<Handler>(handler)(net::error::bad_descriptor, 0);
-    }
-};
-
-using device_impl_variant = std::variant<unsupported_packet_device>;
-
+    unsupported_packet_device
 #endif
+>;
 
 } // namespace detail
+
 // 跨平台设备抽象层
 //
 // 支持两种初始化模式：
