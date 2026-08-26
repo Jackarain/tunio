@@ -1,0 +1,259 @@
+﻿// tun2socks：通过 tun_engine 库实现的 SOCKS5 透明代理
+//
+// 用法示例：
+//   sudo ./tun2socks --tun tun0 --ip 10.0.0.1 --netmask 255.255.255.0 \
+//                    --proxy 127.0.0.1:1080
+//
+// 功能：
+//   - TCP：引擎终止虚拟连接，应用层经 SOCKS5 CONNECT 连到代理后全双工桥接；
+//   - UDP：引擎维护 NAT 会话，应用层经 SOCKS5 UDP ASSOCIATE 中继转发；
+//   - 后端连接失败时向客户端发送 RST。
+#include <boost/asio.hpp>
+#include <csignal>
+#include <cstdint>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "tun_engine/tun_acceptor.hpp"
+#include "tun_engine/tun_config.hpp"
+#include "tun_engine/tun_engine.hpp"
+#include "tun_engine/tun_stream.hpp"
+#include "tun_engine/tun_udp_acceptor.hpp"
+#include "tun_engine/tun_udp_socket.hpp"
+
+#include "socks5_client.hpp"
+
+namespace asio = boost::asio;
+namespace te = tun_engine;
+
+namespace {
+
+struct options {
+    std::string dev_name = "tun0";
+    std::string ipv4_addr = "10.0.0.1";
+    std::string netmask = "255.255.255.0";
+    size_t mtu = 1500;
+    std::string proxy_host = "127.0.0.1";
+    uint16_t proxy_port = 1080;
+    bool udp = true;
+    int inject_fd = -1;
+    size_t threads = 1;
+};
+
+void usage(const char* prog) {
+    std::cerr << "用法: " << prog << " [选项]\n"
+              << "  --tun <name>           TUN 设备名（默认 tun0）\n"
+              << "  --ip <addr>            本地虚拟 IP（默认 10.0.0.1）\n"
+              << "  --netmask <mask>       子网掩码（默认 255.255.255.0）\n"
+              << "  --mtu <bytes>          MTU（默认 1500）\n"
+              << "  --proxy <host:port>    SOCKS5 代理地址（默认 127.0.0.1:1080）\n"
+              << "  --no-udp               禁用 UDP 转发\n"
+              << "  --inject-fd <fd>       注入外部已打开的 TUN 文件描述符\n"
+              << "  --threads <n>          io_context 线程数（默认 1）\n";
+}
+
+options parse_args(int argc, char** argv) {
+    options opt;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        auto next = [&]() -> std::string {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("missing value for " + arg);
+            }
+            return argv[++i];
+        };
+        if (arg == "--tun") {
+            opt.dev_name = next();
+        } else if (arg == "--ip") {
+            opt.ipv4_addr = next();
+        } else if (arg == "--netmask") {
+            opt.netmask = next();
+        } else if (arg == "--mtu") {
+            opt.mtu = static_cast<size_t>(std::stoul(next()));
+        } else if (arg == "--proxy") {
+            const std::string val = next();
+            const auto pos = val.rfind(':');
+            if (pos == std::string::npos) {
+                throw std::runtime_error("proxy 需要 host:port 格式");
+            }
+            opt.proxy_host = val.substr(0, pos);
+            opt.proxy_port = static_cast<uint16_t>(std::stoul(val.substr(pos + 1)));
+        } else if (arg == "--no-udp") {
+            opt.udp = false;
+        } else if (arg == "--inject-fd") {
+            opt.inject_fd = std::stoi(next());
+        } else if (arg == "--threads") {
+            opt.threads = static_cast<size_t>(std::stoul(next()));
+        } else if (arg == "-h" || arg == "--help") {
+            usage(argv[0]);
+            std::exit(0);
+        } else {
+            throw std::runtime_error("未知参数: " + arg);
+        }
+    }
+    return opt;
+}
+
+// ---- TCP 全双工数据泵（与 DESIGN.md §10.1 一致）----
+asio::awaitable<void> tcp_bridge(tun_engine::tun_stream client, asio::ip::tcp::endpoint proxy) {
+    auto ex = co_await asio::this_coro::executor;
+    auto dest = client.original_destination();
+    auto upstream = std::make_shared<asio::ip::tcp::socket>(ex);
+
+    try {
+        *upstream = co_await tun2socks_example::socks5_connect(proxy, dest.address().to_string(), dest.port());
+    } catch (const boost::system::system_error& e) {
+        std::cerr << "[tun2socks] " << dest << " -> " << proxy << " : " << e.what() << std::endl;
+        client.reset(); // 后端失败：立即 RST 客户端
+        co_return;
+    }
+
+    auto c = std::make_shared<tun_engine::tun_stream>(std::move(client));
+    asio::co_spawn(ex, [c, upstream]() -> asio::awaitable<void> {
+        std::array<char, 8192> buf;
+        try {
+            for (;;) {
+                size_t n = co_await c->async_read_some(asio::buffer(buf), asio::use_awaitable);
+                co_await asio::async_write(*upstream, asio::buffer(buf, n), asio::use_awaitable);
+            }
+        } catch (...) {
+        }
+        boost::system::error_code sec;
+        upstream->shutdown(asio::ip::tcp::socket::shutdown_send, sec);
+    }, asio::detached);
+
+    asio::co_spawn(ex, [c, upstream]() -> asio::awaitable<void> {
+        std::array<char, 8192> buf;
+        try {
+            for (;;) {
+                size_t n = co_await upstream->async_read_some(asio::buffer(buf), asio::use_awaitable);
+                co_await asio::async_write(*c, asio::buffer(buf, n), asio::use_awaitable);
+            }
+        } catch (...) {
+            c->close();
+        }
+    }, asio::detached);
+}
+
+asio::awaitable<void> tcp_listener(tun_engine::tun_engine& engine, asio::ip::tcp::endpoint proxy) {
+    auto ex = co_await asio::this_coro::executor;
+    tun_engine::tun_acceptor acceptor(engine);
+    for (;;) {
+        tun_engine::tun_stream client(ex);
+        boost::system::error_code ec;
+        co_await acceptor.async_accept(client, asio::redirect_error(asio::use_awaitable, ec));
+        if (ec) {
+            co_return;
+        }
+        asio::co_spawn(ex, tcp_bridge(std::move(client), proxy), asio::detached);
+    }
+}
+
+// ---- UDP：每个会话经 SOCKS5 UDP ASSOCIATE 中继转发 ----
+asio::awaitable<void> udp_bridge(tun_engine::tun_udp_socket session, asio::ip::tcp::endpoint proxy) {
+    auto ex = co_await asio::this_coro::executor;
+    auto relay = std::make_shared<tun2socks_example::socks5_udp_relay>(ex);
+    try {
+        co_await relay->associate(proxy);
+    } catch (const boost::system::system_error& e) {
+        std::cerr << "[tun2socks] udp associate " << proxy << " : " << e.what() << std::endl;
+        session.close();
+        co_return;
+    }
+
+    auto s = std::make_shared<tun_engine::tun_udp_socket>(std::move(session));
+
+    // 客户端 -> 中继
+    asio::co_spawn(ex, [s, relay]() -> asio::awaitable<void> {
+        std::array<char, 2048> buf;
+        try {
+            for (;;) {
+                size_t n = co_await s->async_receive(asio::buffer(buf), asio::use_awaitable);
+                const auto key = s->remote_key();
+                asio::ip::udp::endpoint target(
+                    asio::ip::address_v4(ntohl(key.dst_ip)), ntohs(key.dst_port));
+                co_await relay->send_to(std::vector<uint8_t>(buf.data(), buf.data() + n), target);
+            }
+        } catch (...) {
+            relay->close();
+        }
+    }, asio::detached);
+
+    // 中继 -> 客户端
+    asio::co_spawn(ex, [s, relay]() -> asio::awaitable<void> {
+        try {
+            for (;;) {
+                auto [payload, target] = co_await relay->receive_from();
+                co_await s->async_send(asio::buffer(payload), asio::use_awaitable);
+            }
+        } catch (...) {
+            s->close();
+            relay->close();
+        }
+    }, asio::detached);
+}
+
+asio::awaitable<void> udp_listener(tun_engine::tun_engine& engine, asio::ip::tcp::endpoint proxy) {
+    auto ex = co_await asio::this_coro::executor;
+    tun_engine::tun_udp_acceptor acceptor(engine);
+    for (;;) {
+        tun_engine::tun_udp_socket session(ex);
+        boost::system::error_code ec;
+        co_await acceptor.async_accept(session, asio::redirect_error(asio::use_awaitable, ec));
+        if (ec) {
+            co_return;
+        }
+        asio::co_spawn(ex, udp_bridge(std::move(session), proxy), asio::detached);
+    }
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    options opt;
+    try {
+        opt = parse_args(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "参数错误: " << e.what() << std::endl;
+        usage(argv[0]);
+        return 1;
+    }
+
+    asio::io_context io(opt.threads);
+    tun_engine::tun_engine engine(io);
+
+    tun_engine::tun_config cfg;
+    cfg.dev_name = opt.dev_name;
+    cfg.ipv4_addr = opt.ipv4_addr;
+    cfg.netmask = opt.netmask;
+    cfg.mtu = opt.mtu;
+    if (opt.inject_fd >= 0) {
+        cfg.external_handle = opt.inject_fd;
+        cfg.external_mtu = opt.mtu;
+    }
+
+    boost::system::error_code ec;
+    if (!engine.open(cfg, ec)) {
+        std::cerr << "打开 TUN 设备失败: " << ec.message() << std::endl;
+        return 1;
+    }
+    std::cout << "tun2socks 已启动: " << cfg.dev_name << " " << cfg.ipv4_addr
+              << " -> " << opt.proxy_host << ":" << opt.proxy_port << std::endl;
+
+    asio::ip::tcp::endpoint proxy(asio::ip::make_address(opt.proxy_host), opt.proxy_port);
+    asio::co_spawn(io, tcp_listener(engine, proxy), asio::detached);
+    if (opt.udp) {
+        asio::co_spawn(io, udp_listener(engine, proxy), asio::detached);
+    }
+
+    asio::signal_set signals(io, SIGINT, SIGTERM);
+    signals.async_wait([&](const boost::system::error_code&, int) {
+        std::cout << "\n正在关闭..." << std::endl;
+        engine.close();
+    });
+
+    io.run();
+    return 0;
+}

@@ -1,0 +1,5 @@
+﻿add_executable(tun2socks tun2socks.cpp)
+add_executable(tun_echo tun_echo.cpp)
+foreach(e tun2socks tun_echo)
+  target_link_libraries(${e} PRIVATE tun_engine)
+endforeach()

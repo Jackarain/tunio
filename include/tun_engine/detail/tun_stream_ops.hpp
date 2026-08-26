@@ -1,0 +1,80 @@
+﻿#pragma once
+
+#include <boost/asio.hpp>
+
+namespace asio = boost::asio;
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <vector>
+
+#include "tun_engine/detail/handler_util.hpp"
+#include "tun_engine/tun_stream.hpp"
+
+namespace tun_engine {
+
+namespace detail {
+
+struct tcp_flow;
+
+void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
+                         std::shared_ptr<std::vector<asio::mutable_buffer>> buffers,
+                         size_t total,
+                         std::function<void(boost::system::error_code, size_t)> handler);
+
+void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow,
+                          std::vector<uint8_t> data,
+                          std::function<void(boost::system::error_code, size_t)> handler);
+
+} // namespace detail
+
+template <typename MutableBufferSequence>
+void tun_stream::do_read_some(MutableBufferSequence&& buffers,
+                              std::function<void(boost::system::error_code, size_t)> handler) {
+    auto seq = std::make_shared<std::vector<asio::mutable_buffer>>();
+    size_t total = 0;
+    for (const auto& b : buffers) {
+        seq->push_back(b);
+        total += b.size();
+    }
+
+    auto flow = flow_;
+    if (!flow) {
+        auto ex = ex_;
+        asio::post(ex, [handler = std::move(handler)]() mutable {
+            handler(boost::asio::error::bad_descriptor, 0);
+        });
+        return;
+    }
+    detail::tcp_flow_start_read(std::move(flow), std::move(seq), total,
+                                detail::bind_handler(ex_, std::move(handler)));
+}
+
+template <typename ConstBufferSequence>
+void tun_stream::do_write_some(ConstBufferSequence&& buffers,
+                               std::function<void(boost::system::error_code, size_t)> handler) {
+    size_t total = 0;
+    for (const auto& b : buffers) {
+        total += b.size();
+    }
+
+    std::vector<uint8_t> data;
+    data.reserve(total);
+    for (const auto& b : buffers) {
+        const uint8_t* p = static_cast<const uint8_t*>(b.data());
+        data.insert(data.end(), p, p + b.size());
+    }
+
+    auto flow = flow_;
+    if (!flow) {
+        auto ex = ex_;
+        asio::post(ex, [handler = std::move(handler)]() mutable {
+            handler(boost::asio::error::bad_descriptor, 0);
+        });
+        return;
+    }
+    detail::tcp_flow_start_write(std::move(flow), std::move(data),
+                                 detail::bind_handler(ex_, std::move(handler)));
+}
+
+} // namespace tun_engine

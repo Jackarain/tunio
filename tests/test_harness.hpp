@@ -1,0 +1,347 @@
+﻿#pragma once
+
+#include <boost/asio.hpp>
+
+#include <arpa/inet.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <future>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "tun_engine/packet_buffer.hpp"
+#include "tun_engine/tun_acceptor.hpp"
+#include "tun_engine/tun_config.hpp"
+#include "tun_engine/tun_engine.hpp"
+#include "tun_engine/tun_stream.hpp"
+#include "tun_engine/tun_udp_acceptor.hpp"
+#include "tun_engine/tun_udp_socket.hpp"
+
+namespace test {
+
+using engine_type = tun_engine::tun_engine;
+using tun_engine::tun_acceptor;
+using tun_engine::tun_stream;
+using tun_engine::tun_udp_socket;
+using tun_engine::tun_udp_acceptor;
+using tun_engine::tun_config;
+using tun_engine::device_config;
+using tun_engine::engine_stats;
+using tun_engine::five_tuple;
+using tun_engine::native_handle_type;
+using tun_engine::invalid_native_handle;
+using tun_engine::packet_buffer;
+
+// ---- IP 地址辅助：host order 表示 ----
+inline uint32_t ip(const char* s) {
+    return ntohl(::inet_addr(s));
+}
+
+// ---- 独立校验和实现（与引擎实现相互验证）----
+inline uint32_t raw_sum(const uint8_t* d, size_t n) {
+    uint32_t sum = 0;
+    size_t i = 0;
+    for (; i + 1 < n; i += 2) {
+        sum += static_cast<uint16_t>((d[i] << 8) | d[i + 1]);
+    }
+    if (i < n) {
+        sum += static_cast<uint16_t>(d[i] << 8);
+    }
+    return sum;
+}
+
+inline uint32_t fold_sum(uint32_t sum) {
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return sum;
+}
+
+inline uint16_t csum16(const uint8_t* d, size_t n, uint32_t init = 0) {
+    return static_cast<uint16_t>(~fold_sum(raw_sum(d, n) + init));
+}
+
+// ---- 报文构造（host order 地址入参）----
+inline std::vector<uint8_t> make_ipv4(uint32_t src, uint32_t dst, uint8_t proto,
+                                      const std::vector<uint8_t>& payload) {
+    std::vector<uint8_t> pkt;
+    pkt.reserve(20 + payload.size());
+    pkt.resize(20, 0);
+    pkt[0] = 0x45;
+    const uint16_t total = static_cast<uint16_t>(20 + payload.size());
+    pkt[2] = static_cast<uint8_t>((total >> 8) & 0xff);
+    pkt[3] = static_cast<uint8_t>(total & 0xff);
+    pkt[8] = 64; // ttl
+    pkt[9] = proto;
+    uint32_t s = htonl(src);
+    uint32_t d = htonl(dst);
+    std::memcpy(&pkt[12], &s, 4);
+    std::memcpy(&pkt[16], &d, 4);
+    uint16_t c = csum16(pkt.data(), 20);
+    pkt[10] = static_cast<uint8_t>(c >> 8);
+    pkt[11] = static_cast<uint8_t>(c & 0xff);
+    pkt.insert(pkt.end(), payload.begin(), payload.end());
+    return pkt;
+}
+
+inline std::vector<uint8_t> make_tcp(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
+                                     uint8_t flags, uint32_t seq, uint32_t ack, uint16_t win,
+                                     const std::vector<uint8_t>& data, bool mss = false) {
+    const size_t hlen = mss ? 24 : 20;
+    std::vector<uint8_t> seg(hlen + data.size(), 0);
+    seg[0] = static_cast<uint8_t>(sport >> 8);
+    seg[1] = static_cast<uint8_t>(sport & 0xff);
+    seg[2] = static_cast<uint8_t>(dport >> 8);
+    seg[3] = static_cast<uint8_t>(dport & 0xff);
+    uint32_t s = htonl(seq), a = htonl(ack);
+    std::memcpy(&seg[4], &s, 4);
+    std::memcpy(&seg[8], &a, 4);
+    seg[12] = static_cast<uint8_t>((mss ? 6 : 5) << 4);
+    seg[13] = flags;
+    seg[14] = static_cast<uint8_t>(win >> 8);
+    seg[15] = static_cast<uint8_t>(win & 0xff);
+    if (mss) {
+        seg[20] = 2; // MSS 选项
+        seg[21] = 4;
+        seg[22] = 0x05;
+        seg[23] = 0xb4;
+    }
+    std::memcpy(seg.data() + hlen, data.data(), data.size());
+    const uint32_t pseudo = (htonl(src) >> 16) + (htonl(src) & 0xffff) +
+                            (htonl(dst) >> 16) + (htonl(dst) & 0xffff) + 6 + seg.size();
+    uint16_t c = csum16(seg.data(), seg.size(), pseudo);
+    seg[16] = static_cast<uint8_t>(c >> 8);
+    seg[17] = static_cast<uint8_t>(c & 0xff);
+    return make_ipv4(src, dst, 6, seg);
+}
+
+inline std::vector<uint8_t> make_udp(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
+                                     const std::vector<uint8_t>& data) {
+    std::vector<uint8_t> seg(8 + data.size(), 0);
+    seg[0] = static_cast<uint8_t>(sport >> 8);
+    seg[1] = static_cast<uint8_t>(sport & 0xff);
+    seg[2] = static_cast<uint8_t>(dport >> 8);
+    seg[3] = static_cast<uint8_t>(dport & 0xff);
+    const uint16_t ulen = static_cast<uint16_t>(seg.size());
+    seg[4] = static_cast<uint8_t>(ulen >> 8);
+    seg[5] = static_cast<uint8_t>(ulen & 0xff);
+    std::memcpy(seg.data() + 8, data.data(), data.size());
+    const uint32_t pseudo = (htonl(src) >> 16) + (htonl(src) & 0xffff) +
+                            (htonl(dst) >> 16) + (htonl(dst) & 0xffff) + 17 + seg.size();
+    uint16_t c = csum16(seg.data(), seg.size(), pseudo);
+    seg[6] = static_cast<uint8_t>(c >> 8);
+    seg[7] = static_cast<uint8_t>(c & 0xff);
+    return make_ipv4(src, dst, 17, seg);
+}
+
+inline std::vector<uint8_t> make_icmp_echo(uint32_t src, uint32_t dst, uint16_t id, uint16_t seqno,
+                                           const std::vector<uint8_t>& data) {
+    std::vector<uint8_t> icmp(8 + data.size(), 0);
+    icmp[0] = 8; // Echo Request
+    icmp[1] = 0;
+    icmp[4] = static_cast<uint8_t>(id >> 8);
+    icmp[5] = static_cast<uint8_t>(id & 0xff);
+    icmp[6] = static_cast<uint8_t>(seqno >> 8);
+    icmp[7] = static_cast<uint8_t>(seqno & 0xff);
+    std::memcpy(icmp.data() + 8, data.data(), data.size());
+    uint16_t c = csum16(icmp.data(), icmp.size());
+    icmp[2] = static_cast<uint8_t>(c >> 8);
+    icmp[3] = static_cast<uint8_t>(c & 0xff);
+    return make_ipv4(src, dst, 1, icmp);
+}
+
+// ---- 报文解析 ----
+struct ip_hdr_info {
+    uint8_t proto = 0;
+    uint8_t ihl = 0;
+    uint32_t src = 0, dst = 0; // host order
+    uint16_t total_len = 0;
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+};
+
+inline bool parse_ip(const std::vector<uint8_t>& pkt, ip_hdr_info& out) {
+    if (pkt.size() < 20 || (pkt[0] >> 4) != 4) {
+        return false;
+    }
+    out.ihl = static_cast<uint8_t>((pkt[0] & 0x0f) * 4);
+    out.total_len = static_cast<uint16_t>((pkt[2] << 8) | pkt[3]);
+    if (out.total_len < out.ihl || out.total_len > pkt.size()) {
+        return false;
+    }
+    out.proto = pkt[9];
+    uint32_t s, d;
+    std::memcpy(&s, &pkt[12], 4);
+    std::memcpy(&d, &pkt[16], 4);
+    out.src = ntohl(s);
+    out.dst = ntohl(d);
+    out.payload = pkt.data() + out.ihl;
+    out.payload_len = out.total_len - out.ihl;
+    return true;
+}
+
+struct tcp_hdr_info {
+    uint16_t sport = 0, dport = 0;
+    uint8_t flags = 0;
+    uint32_t seq = 0, ack = 0;
+    uint16_t win = 0;
+    const uint8_t* data = nullptr;
+    size_t len = 0;
+};
+
+inline bool parse_tcp(const uint8_t* p, size_t n, tcp_hdr_info& out) {
+    if (n < 20) {
+        return false;
+    }
+    out.sport = static_cast<uint16_t>((p[0] << 8) | p[1]);
+    out.dport = static_cast<uint16_t>((p[2] << 8) | p[3]);
+    uint32_t s, a;
+    std::memcpy(&s, &p[4], 4);
+    std::memcpy(&a, &p[8], 4);
+    out.seq = ntohl(s);
+    out.ack = ntohl(a);
+    const size_t hlen = static_cast<size_t>((p[12] >> 4) * 4);
+    out.flags = p[13];
+    out.win = static_cast<uint16_t>((p[14] << 8) | p[15]);
+    if (hlen > n) {
+        return false;
+    }
+    out.data = p + hlen;
+    out.len = n - hlen;
+    return true;
+}
+
+struct udp_hdr_info {
+    uint16_t sport = 0, dport = 0;
+    uint16_t len = 0;
+    const uint8_t* data = nullptr;
+    size_t n = 0;
+};
+
+inline bool parse_udp(const uint8_t* p, size_t n, udp_hdr_info& out) {
+    if (n < 8) {
+        return false;
+    }
+    out.sport = static_cast<uint16_t>((p[0] << 8) | p[1]);
+    out.dport = static_cast<uint16_t>((p[2] << 8) | p[3]);
+    out.len = static_cast<uint16_t>((p[4] << 8) | p[5]);
+    out.data = p + 8;
+    out.n = out.len > 8 ? out.len - 8 : 0;
+    return true;
+}
+
+// ---- 虚拟 TUN 设备（socketpair 注入）----
+class fake_device {
+public:
+    fake_device() {
+        int sv[2];
+        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+            throw std::runtime_error("socketpair failed");
+        }
+        fd_ = sv[0];
+        inject_fd_ = sv[1];
+    }
+
+    ~fake_device() {
+        ::close(fd_);
+    }
+
+    int inject_fd() const { return inject_fd_; }
+
+    void send(const std::vector<uint8_t>& pkt) {
+        size_t off = 0;
+        while (off < pkt.size()) {
+            const ssize_t n = ::write(fd_, pkt.data() + off, pkt.size() - off);
+            if (n <= 0) {
+                throw std::runtime_error("fake_device send failed");
+            }
+            off += static_cast<size_t>(n);
+        }
+    }
+
+    // 读取一个完整 IP 包；支持粘包拆包；超时返回 false
+    bool read_packet(std::vector<uint8_t>& out, int timeout_ms = 3000) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        for (;;) {
+            while (stash_.size() >= 20) {
+                const uint16_t total = static_cast<uint16_t>((stash_[2] << 8) | stash_[3]);
+                if (total >= 20 && stash_.size() >= total) {
+                    out.assign(stash_.begin(), stash_.begin() + total);
+                    stash_.erase(stash_.begin(), stash_.begin() + total);
+                    return true;
+                }
+                break;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                return false;
+            }
+            const int remaining = static_cast<int>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+            struct pollfd pfd { fd_, POLLIN, 0 };
+            const int r = ::poll(&pfd, 1, remaining);
+            if (r <= 0) {
+                return false;
+            }
+            uint8_t buf[65536];
+            const ssize_t n = ::read(fd_, buf, sizeof(buf));
+            if (n <= 0) {
+                return false;
+            }
+            stash_.insert(stash_.end(), buf, buf + n);
+        }
+    }
+
+private:
+    int fd_ = -1;
+    int inject_fd_ = -1;
+    std::vector<uint8_t> stash_;
+};
+
+// ---- 引擎测试环境：io_context 线程 + 注入设备 ----
+struct engine_env {
+    boost::asio::io_context io;
+    engine_type engine;
+    fake_device dev;
+    std::thread thread;
+
+    explicit engine_env(size_t mtu = 1500, std::chrono::seconds udp_timeout = std::chrono::seconds(1))
+        : engine(io) {
+        tun_config cfg;
+        cfg.external_handle = dev.inject_fd();
+        cfg.external_mtu = mtu;
+        cfg.ipv4_addr = "10.0.0.1";
+        cfg.netmask = "255.255.255.0";
+        cfg.udp_idle_timeout = udp_timeout;
+        boost::system::error_code ec;
+        if (!engine.open(cfg, ec)) {
+            throw std::runtime_error("engine open failed: " + ec.message());
+        }
+        thread = std::thread([this] { io.run(); });
+    }
+
+    ~engine_env() {
+        engine.close();
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+};
+
+// 带超时的 future 等待
+template <typename T>
+inline T future_get(std::future<T> fut, int timeout_ms = 5000) {
+    if (fut.wait_for(std::chrono::milliseconds(timeout_ms)) != std::future_status::ready) {
+        throw std::runtime_error("future timeout");
+    }
+    return fut.get();
+}
+
+} // namespace test

@@ -1,0 +1,11 @@
+﻿add_executable(test_packet_buffer test_packet_buffer.cpp)
+add_executable(test_checksum test_checksum.cpp)
+add_executable(test_tcp_engine test_tcp_engine.cpp)
+add_executable(test_udp_engine test_udp_engine.cpp)
+add_executable(test_icmp test_icmp.cpp)
+add_executable(test_integration test_integration.cpp)
+
+foreach(t test_packet_buffer test_checksum test_tcp_engine test_udp_engine test_icmp test_integration)
+  target_link_libraries(${t} PRIVATE tun_engine)
+  add_test(NAME ${t} COMMAND ${t})
+endforeach()
