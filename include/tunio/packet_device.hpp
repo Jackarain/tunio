@@ -1,4 +1,4 @@
-﻿//
+//
 // packet_device.hpp
 // ~~~~~~~~~~~~~~~~~
 //
@@ -20,9 +20,12 @@
 // 平台实现按文件拆分，参考 Asio 的 impl 目录布局：
 //   detail/impl/packet_device_posix.hpp
 //   detail/impl/packet_device_windows.hpp
+//   detail/impl/packet_device_wintun.hpp
 //   detail/impl/packet_device_unsupported.hpp
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
 #include "tunio/detail/impl/packet_device_posix.hpp"
+#elif defined(_WIN32) && defined(USE_WINTUN_DRIVER)
+#include "tunio/detail/impl/packet_device_wintun.hpp"
 #elif defined(BOOST_ASIO_HAS_WINDOWS_OVERLAPPED_PTR)
 #include "tunio/detail/impl/packet_device_windows.hpp"
 #else
@@ -36,6 +39,8 @@ namespace detail {
 using device_impl_variant = std::variant<
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
     posix_packet_device_impl
+#elif defined(_WIN32) && defined(USE_WINTUN_DRIVER)
+    wintun_packet_device_impl
 #elif defined(BOOST_ASIO_HAS_WINDOWS_OVERLAPPED_PTR)
     windows_packet_device_impl
 #else
@@ -62,6 +67,8 @@ public:
     bool open(const device_config& cfg, boost::system::error_code& ec) {
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
         impl_.emplace<detail::posix_packet_device_impl>(ctx_);
+#elif defined(_WIN32) && defined(USE_WINTUN_DRIVER)
+        impl_.emplace<detail::wintun_packet_device_impl>(ctx_);
 #elif defined(BOOST_ASIO_HAS_WINDOWS_OVERLAPPED_PTR)
         impl_.emplace<detail::windows_packet_device_impl>(ctx_);
 #else
@@ -74,6 +81,8 @@ public:
     bool assign(native_handle_type handle, size_t mtu, boost::system::error_code& ec) {
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
         impl_.emplace<detail::posix_packet_device_impl>(ctx_);
+#elif defined(_WIN32) && defined(USE_WINTUN_DRIVER)
+        impl_.emplace<detail::wintun_packet_device_impl>(ctx_);
 #elif defined(BOOST_ASIO_HAS_WINDOWS_OVERLAPPED_PTR)
         impl_.emplace<detail::windows_packet_device_impl>(ctx_);
 #else

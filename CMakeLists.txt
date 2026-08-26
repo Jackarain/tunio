@@ -31,7 +31,11 @@ set(TUNIO_SOURCES
 # 平台相关实现按平台拆分（参考 Asio 的 impl 布局）：
 #   Windows -> packet_device_windows.cpp
 #   其他 POSIX -> packet_device_posix.cpp
-if(WIN32)
+#   Windows + USE_WINTUN_DRIVER -> packet_device_wintun.cpp
+option(USE_WINTUN_DRIVER "Use Wintun driver on Windows" OFF)
+if(WIN32 AND USE_WINTUN_DRIVER)
+  list(APPEND TUNIO_SOURCES src/packet_device_wintun.cpp)
+elseif(WIN32)
   list(APPEND TUNIO_SOURCES src/packet_device_windows.cpp)
 else()
   list(APPEND TUNIO_SOURCES src/packet_device_posix.cpp)
@@ -42,6 +46,14 @@ target_include_directories(tunio PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+
+# Wintun 所需编译定义及系统库.
+if(WIN32 AND USE_WINTUN_DRIVER)
+  target_compile_definitions(tunio PRIVATE USE_WINTUN_DRIVER)
+  # 链接 Wintun 所需的 Windows 系统库.
+  target_link_libraries(tunio PRIVATE iphlpapi cfgmgr32 setupapi ws2_32)
+endif()
+
 if(TARGET Boost::headers)
   target_link_libraries(tunio PUBLIC Boost::headers)
 else()
