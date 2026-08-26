@@ -34,13 +34,16 @@ int main() {
     // TCP 校验
     const uint8_t* seg = pkt.data() + 20;
     const size_t seg_len = pkt.size() - 20;
-    const uint32_t snet = htonl(src);
-    const uint32_t dnet = htonl(dst);
+    // 引擎从报文头部 memcpy 得到网络序地址，这里同样直接从包内取出
+    uint32_t snet = 0, dnet = 0;
+    std::memcpy(&snet, pkt.data() + 12, 4);
+    std::memcpy(&dnet, pkt.data() + 16, 4);
     uint16_t tcp_csum = tcp_udp_checksum(snet, dnet, 6, seg, seg_len);
     assert(tcp_csum == 0);
 
     // 独立计算参考值
-    uint32_t pseudo = (snet >> 16) + (snet & 0xffff) + (dnet >> 16) + (dnet & 0xffff) + 6 + seg_len;
+    // 地址按 host 序拆成 16 位字参与伪头求和
+    uint32_t pseudo = (src >> 16) + (src & 0xffff) + (dst >> 16) + (dst & 0xffff) + 6 + seg_len;
     uint16_t ref = test::csum16(seg, seg_len, pseudo);
     assert(ref == 0);
 

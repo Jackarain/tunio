@@ -57,6 +57,11 @@ void tcp_engine::on_sweep(const boost::system::error_code& ec) {
             victims.push_back(f);
         } else if (f->state == tcp_state::TIME_WAIT && now >= f->destroy_at) {
             victims.push_back(f);
+        } else if ((f->state == tcp_state::FIN_WAIT_1 || f->state == tcp_state::FIN_WAIT_2 ||
+                    f->state == tcp_state::LAST_ACK) &&
+                   now - f->created_at > std::chrono::seconds(30)) {
+            // 关闭流程长期未完成（对端未确认 FIN / 未回复 FIN），30 秒后强制清理
+            victims.push_back(f);
         }
     }
     for (auto& f : victims) {
@@ -108,6 +113,7 @@ void tcp_engine::on_packet(const ipv4_header& ip, const uint8_t* payload, size_t
         flows_.emplace(key, f);
         // 回复 SYN-ACK（携带 MSS 选项）
         send_segment(*f, f->iss, TCP_SYN | TCP_ACK, nullptr, 0, true);
+        f->snd_nxt = f->iss + 1; // SYN 消耗一个序号
         return;
     }
     f = it->second;
@@ -313,7 +319,7 @@ void tcp_engine::send_segment(tcp_flow& f, uint32_t seq, uint8_t flags,
     ip->checksum = 0;
     ip->src_ip = f.key.dst_ip;
     ip->dst_ip = f.key.src_ip;
-    ip->checksum = ipv4_checksum(base, 20);
+    ip->checksum = htons(ipv4_checksum(base, 20));
 
     auto* th = reinterpret_cast<tcp_header*>(base + 20);
     th->src_port = f.key.dst_port;
@@ -336,8 +342,8 @@ void tcp_engine::send_segment(tcp_flow& f, uint32_t seq, uint8_t flags,
     if (len > 0) {
         std::memcpy(base + 20 + tcp_hdr_len, payload, len);
     }
-    th->checksum = tcp_udp_checksum(ip->src_ip, ip->dst_ip, IPPROTO_TCP_V, base + 20,
-                                    tcp_hdr_len + len);
+    th->checksum = htons(tcp_udp_checksum(ip->src_ip, ip->dst_ip, IPPROTO_TCP_V, base + 20,
+                                          tcp_hdr_len + len));
 
     writer_.async_write(std::move(pkt),
                         asio::bind_executor(strand_, [](const boost::system::error_code&, size_t) {}));

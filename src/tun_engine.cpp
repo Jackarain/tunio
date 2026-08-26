@@ -208,7 +208,7 @@ void tun_engine_impl::handle_icmp(const uint8_t* pkt, size_t len) {
     oip->dst_ip = ip.src_ip;
     oip->ttl = 64;
     oip->checksum = 0;
-    oip->checksum = ipv4_checksum(out, ihl);
+    oip->checksum = htons(ipv4_checksum(out, ihl));
 
     uint8_t* oicmp = out + ihl;
     std::memcpy(oicmp, icmp, len - ihl);

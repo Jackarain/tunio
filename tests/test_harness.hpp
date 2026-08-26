@@ -68,6 +68,47 @@ inline uint16_t csum16(const uint8_t* d, size_t n, uint32_t init = 0) {
     return static_cast<uint16_t>(~fold_sum(raw_sum(d, n) + init));
 }
 
+// 独立校验一个完整 IPv4 报文的 IP 头校验和，以及 TCP/UDP/ICMP 校验和。
+// 与引擎实现相互独立，用于验证引擎发送方向的报文合法性。
+inline bool verify_packet(const std::vector<uint8_t>& pkt) {
+    if (pkt.size() < 20) {
+        return false;
+    }
+    if (csum16(pkt.data(), 20) != 0) {
+        return false; // IP 头校验和
+    }
+    const uint8_t proto = pkt[9];
+    const size_t ihl = static_cast<size_t>(pkt[0] & 0x0f) * 4;
+    const size_t total = static_cast<size_t>((pkt[2] << 8) | pkt[3]);
+    if (ihl < 20 || total < ihl || pkt.size() < total) {
+        return false;
+    }
+    const uint8_t* seg = pkt.data() + ihl;
+    const size_t seg_len = total - ihl;
+    const uint32_t pseudo_ip = ((pkt[12] << 8) | pkt[13]) + ((pkt[14] << 8) | pkt[15]) +
+                               ((pkt[16] << 8) | pkt[17]) + ((pkt[18] << 8) | pkt[19]);
+    if (proto == 6) {
+        if (seg_len < 20) {
+            return false;
+        }
+        return csum16(seg, seg_len, pseudo_ip + 6 + seg_len) == 0;
+    }
+    if (proto == 17) {
+        if (seg_len < 8) {
+            return false;
+        }
+        const size_t ulen = static_cast<size_t>((seg[4] << 8) | seg[5]);
+        if (ulen < 8 || ulen > seg_len) {
+            return false;
+        }
+        return csum16(seg, ulen, pseudo_ip + 17 + ulen) == 0;
+    }
+    if (proto == 1) {
+        return csum16(seg, seg_len) == 0; // ICMP 无伪头
+    }
+    return true;
+}
+
 // ---- 报文构造（host order 地址入参）----
 inline std::vector<uint8_t> make_ipv4(uint32_t src, uint32_t dst, uint8_t proto,
                                       const std::vector<uint8_t>& payload) {
@@ -114,8 +155,8 @@ inline std::vector<uint8_t> make_tcp(uint32_t src, uint32_t dst, uint16_t sport,
         seg[23] = 0xb4;
     }
     std::memcpy(seg.data() + hlen, data.data(), data.size());
-    const uint32_t pseudo = (htonl(src) >> 16) + (htonl(src) & 0xffff) +
-                            (htonl(dst) >> 16) + (htonl(dst) & 0xffff) + 6 + seg.size();
+    const uint32_t pseudo = (src >> 16) + (src & 0xffff) +
+                            (dst >> 16) + (dst & 0xffff) + 6 + seg.size();
     uint16_t c = csum16(seg.data(), seg.size(), pseudo);
     seg[16] = static_cast<uint8_t>(c >> 8);
     seg[17] = static_cast<uint8_t>(c & 0xff);
@@ -133,8 +174,8 @@ inline std::vector<uint8_t> make_udp(uint32_t src, uint32_t dst, uint16_t sport,
     seg[4] = static_cast<uint8_t>(ulen >> 8);
     seg[5] = static_cast<uint8_t>(ulen & 0xff);
     std::memcpy(seg.data() + 8, data.data(), data.size());
-    const uint32_t pseudo = (htonl(src) >> 16) + (htonl(src) & 0xffff) +
-                            (htonl(dst) >> 16) + (htonl(dst) & 0xffff) + 17 + seg.size();
+    const uint32_t pseudo = (src >> 16) + (src & 0xffff) +
+                            (dst >> 16) + (dst & 0xffff) + 17 + seg.size();
     uint16_t c = csum16(seg.data(), seg.size(), pseudo);
     seg[6] = static_cast<uint8_t>(c >> 8);
     seg[7] = static_cast<uint8_t>(c & 0xff);

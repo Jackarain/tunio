@@ -20,6 +20,7 @@ int main() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no ICMP reply");
     }
+    assert(verify_packet(pkt));
     ip_hdr_info ipi;
     assert(parse_ip(pkt, ipi));
     assert(ipi.src == 0x0a000001 && ipi.dst == 0x0a000002 && ipi.proto == 1);

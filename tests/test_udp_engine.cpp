@@ -65,6 +65,7 @@ static void test_datagram_roundtrip() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no UDP reply packet");
     }
+    assert(verify_packet(pkt));
     ip_hdr_info ipi;
     assert(parse_ip(pkt, ipi));
     assert(ipi.src == DEST_IP && ipi.dst == CLIENT_IP && ipi.proto == 17);

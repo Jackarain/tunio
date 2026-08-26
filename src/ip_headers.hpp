@@ -108,8 +108,11 @@ inline uint16_t verify_ipv4_checksum(const uint8_t* ip, size_t hlen) {
 inline uint16_t tcp_udp_checksum(uint32_t src_ip, uint32_t dst_ip, uint8_t protocol,
                                  const uint8_t* segment, size_t seg_len) {
     uint32_t sum = 0;
-    sum += static_cast<uint16_t>(src_ip >> 16) + static_cast<uint16_t>(src_ip & 0xffff);
-    sum += static_cast<uint16_t>(dst_ip >> 16) + static_cast<uint16_t>(dst_ip & 0xffff);
+    // 地址按网络字节序存储：直接按内存字节拆成 16 位字，避免主机字节序干扰
+    const uint8_t* s = reinterpret_cast<const uint8_t*>(&src_ip);
+    const uint8_t* d = reinterpret_cast<const uint8_t*>(&dst_ip);
+    sum += static_cast<uint16_t>((s[0] << 8) | s[1]) + static_cast<uint16_t>((s[2] << 8) | s[3]);
+    sum += static_cast<uint16_t>((d[0] << 8) | d[1]) + static_cast<uint16_t>((d[2] << 8) | d[3]);
     sum += static_cast<uint16_t>(protocol);
     sum += static_cast<uint16_t>(seg_len);
     sum += checksum_sum(segment, seg_len);

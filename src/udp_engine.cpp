@@ -334,7 +334,7 @@ void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<ui
         ip->checksum = 0;
         ip->src_ip = s.key.dst_ip;
         ip->dst_ip = s.key.src_ip;
-        ip->checksum = ipv4_checksum(base, 20);
+        ip->checksum = htons(ipv4_checksum(base, 20));
 
         auto* uh = reinterpret_cast<udp_header*>(base + 20);
         uh->src_port = s.key.dst_port;
@@ -344,8 +344,8 @@ void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<ui
         if (!data.empty()) {
             std::memcpy(base + 20 + sizeof(udp_header), data.data(), data.size());
         }
-        uh->checksum = tcp_udp_checksum(ip->src_ip, ip->dst_ip, IPPROTO_UDP_V, base + 20,
-                                        sizeof(udp_header) + data.size());
+        uh->checksum = htons(tcp_udp_checksum(ip->src_ip, ip->dst_ip, IPPROTO_UDP_V, base + 20,
+                                              sizeof(udp_header) + data.size()));
 
         using handler_t = std::decay_t<decltype(handler)>;
         auto sp = std::make_shared<handler_t>(std::move(handler));

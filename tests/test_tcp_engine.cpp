@@ -37,6 +37,7 @@ static void test_handshake_data_fin() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no SYN-ACK");
     }
+    assert(verify_packet(pkt));
     ip_hdr_info ipi;
     assert(parse_ip(pkt, ipi));
     assert(ipi.src == DEST_IP && ipi.dst == CLIENT_IP && ipi.proto == 6);
@@ -77,6 +78,7 @@ static void test_handshake_data_fin() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no ACK");
     }
+    assert(verify_packet(pkt));
     assert(parse_ip(pkt, ipi));
     assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
     assert((ti.flags & 0x10) != 0 && ti.ack == 1001 + hello.size());
@@ -93,11 +95,12 @@ static void test_handshake_data_fin() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no data packet");
     }
+    assert(verify_packet(pkt));
     assert(parse_ip(pkt, ipi));
     assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
     assert(ipi.src == DEST_IP && ipi.dst == CLIENT_IP);
     assert(ti.sport == DEST_PORT && ti.dport == CLIENT_PORT);
-    assert(ti.seq == engine_iss); // 首个数据段使用 snd_nxt = iss
+    assert(ti.seq == engine_iss + 1); // 首个数据段 seq = iss + 1（SYN 消耗一个序号）
     assert(ti.ack == 1001 + hello.size());
     assert((ti.flags & 0x18) == 0x18); // PSH|ACK
     assert(std::string(reinterpret_cast<const char*>(ti.data), ti.len) == world);
@@ -116,6 +119,7 @@ static void test_handshake_data_fin() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no FIN ACK");
     }
+    assert(verify_packet(pkt));
     assert(parse_ip(pkt, ipi));
     assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
     assert(ti.ack == 1001 + hello.size() + 1);
@@ -129,6 +133,7 @@ static void test_handshake_data_fin() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no FIN from engine");
     }
+    assert(verify_packet(pkt));
     assert(parse_ip(pkt, ipi));
     assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
     assert((ti.flags & 0x01) != 0);
@@ -155,6 +160,7 @@ static void test_zero_window_flow_control() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no SYN-ACK");
     }
+    assert(verify_packet(pkt));
     ip_hdr_info ipi;
     assert(parse_ip(pkt, ipi));
     tcp_hdr_info ti;
@@ -184,6 +190,7 @@ static void test_zero_window_flow_control() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no data after window update");
     }
+    assert(verify_packet(pkt));
     assert(parse_ip(pkt, ipi));
     assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
     assert(ti.len == 1 && ti.data[0] == 'x');
@@ -206,6 +213,7 @@ static void test_rst() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no SYN-ACK");
     }
+    assert(verify_packet(pkt));
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     assert(parse_ip(pkt, ipi));
@@ -243,6 +251,7 @@ static void test_app_reset() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no SYN-ACK");
     }
+    assert(verify_packet(pkt));
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     assert(parse_ip(pkt, ipi));
@@ -256,6 +265,7 @@ static void test_app_reset() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no RST");
     }
+    assert(verify_packet(pkt));
     assert(parse_ip(pkt, ipi));
     assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
     assert((ti.flags & 0x04) != 0); // RST
