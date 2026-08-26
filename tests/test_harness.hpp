@@ -353,7 +353,8 @@ struct engine_env {
     fake_device dev;
     std::thread thread;
 
-    explicit engine_env(size_t mtu = 1500, std::chrono::seconds udp_timeout = std::chrono::seconds(1))
+    explicit engine_env(size_t mtu = 1500, std::chrono::seconds udp_timeout = std::chrono::seconds(1),
+                        std::chrono::seconds tcp_accept_timeout = std::chrono::seconds(30))
         : engine(io) {
         tun_config cfg;
         cfg.external_handle = dev.inject_fd();
@@ -361,6 +362,7 @@ struct engine_env {
         cfg.ipv4_addr = "10.0.0.1";
         cfg.netmask = "255.255.255.0";
         cfg.udp_idle_timeout = udp_timeout;
+        cfg.tcp_accept_timeout = tcp_accept_timeout;
         boost::system::error_code ec;
         if (!engine.open(cfg, ec)) {
             throw std::runtime_error("engine open failed: " + ec.message());

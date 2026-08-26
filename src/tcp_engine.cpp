@@ -55,6 +55,10 @@ void tcp_engine::on_sweep(const boost::system::error_code& ec) {
         if (f->state == tcp_state::SYN_RCVD && now - f->created_at > std::chrono::seconds(30)) {
             // 未完成握手的半开连接，30 秒后清理
             victims.push_back(f);
+        } else if (f->state == tcp_state::ESTABLISHED && !f->accepted &&
+                   now - f->created_at > cfg_.tcp_accept_timeout) {
+            // 应用层长期未通过 async_accept 领取的连接：发送 RST 通知客户端后回收
+            victims.push_back(f);
         } else if (f->state == tcp_state::TIME_WAIT && now >= f->destroy_at) {
             victims.push_back(f);
         } else if ((f->state == tcp_state::FIN_WAIT_1 || f->state == tcp_state::FIN_WAIT_2 ||
@@ -65,7 +69,11 @@ void tcp_engine::on_sweep(const boost::system::error_code& ec) {
         }
     }
     for (auto& f : victims) {
-        close_flow(*f, boost::asio::error::operation_aborted);
+        if (f->state == tcp_state::ESTABLISHED && !f->accepted) {
+            abort_flow(*f);
+        } else {
+            close_flow(*f, boost::asio::error::operation_aborted);
+        }
     }
     start_sweep();
 }
@@ -81,6 +89,13 @@ void tcp_engine::on_packet(const ipv4_header& ip, const uint8_t* payload, size_t
 
     // 校验 TCP 校验和
     if (tcp_udp_checksum(ip.src_ip, ip.dst_ip, IPPROTO_TCP_V, payload, len) != 0) {
+        stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    // 校验 TCP 头长（新建流与既有流统一前置检查）
+    const size_t hlen = th.header_len();
+    if (hlen < sizeof(tcp_header) || hlen > len) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -118,11 +133,6 @@ void tcp_engine::on_packet(const ipv4_header& ip, const uint8_t* payload, size_t
     }
     f = it->second;
 
-    size_t hlen = th.header_len();
-    if (hlen < sizeof(tcp_header) || hlen > len) {
-        stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
     const uint8_t* data = payload + hlen;
     size_t data_len = len - hlen;
     handle_segment(std::move(f), th, data, data_len);
@@ -197,7 +207,9 @@ void tcp_engine::handle_segment(std::shared_ptr<tcp_flow> f, const tcp_header& t
 
     // ---- FIN ----
     if (flags & TCP_FIN) {
-        if (seq == f->rcv_nxt) {
+        // FIN 序号 = seq + data_len（FIN 消耗一个序列号，可与数据同段）
+        const uint32_t fin_seq = seq + static_cast<uint32_t>(data_len);
+        if (fin_seq == f->rcv_nxt) {
             if (!f->fin_received) {
                 f->rcv_nxt += 1;
                 f->fin_received = true;
@@ -220,7 +232,7 @@ void tcp_engine::handle_segment(std::shared_ptr<tcp_flow> f, const tcp_header& t
                 break;
             }
             flush_reads(*f);
-        } else if (f->state == tcp_state::TIME_WAIT && seq == f->rcv_nxt - 1) {
+        } else if (f->state == tcp_state::TIME_WAIT && fin_seq == f->rcv_nxt - 1) {
             // 对端重传 FIN：重新确认
             send_ack(*f);
         }
@@ -499,7 +511,7 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow, std::vector<uint8_t> d
     asio::dispatch(flow->eng->strand(), [flow, data = std::move(data),
                                          handler = std::move(handler)]() mutable {
         auto& f = *flow;
-        if (f.state == tcp_state::CLOSED || f.app_closed) {
+        if (f.state == tcp_state::CLOSED || f.app_closed || f.fin_sent) {
             handler(boost::asio::error::bad_descriptor, 0);
             return;
         }

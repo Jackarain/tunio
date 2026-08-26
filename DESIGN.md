@@ -356,6 +356,7 @@ private:
 - 收到客户端 SYN 后，引擎分配一个 `tcp_minimal_state` 实例，记录 `irs = SYN.seq`。
 - 引擎立即回复 SYN-ACK，携带本端 `iss`（随机生成）与固定 MSS 值（由 MTU 推导，默认 `MSS = MTU - 40`）。
 - 收到客户端 ACK 后，状态切换为 `ESTABLISHED`，并触发 `tun_acceptor::async_accept` 完成事件。
+- 若应用层在 `tcp_accept_timeout`（默认 30 秒）内未通过 `async_accept` 领取该连接，引擎发送 RST 中断连接并回收资源，避免未领取连接长期驻留。
 
 #### 5.2 数据接收与转发
 
@@ -376,7 +377,7 @@ private:
 
 #### 5.5 连接终止
 
-- 收到 FIN 段时，引擎回复 ACK，状态进入 `CLOSE_WAIT`，并向应用层指示 `EOF`。
+- 收到 FIN 段时，引擎回复 ACK，状态进入 `CLOSE_WAIT`，并向应用层指示 `EOF`。FIN 可与数据同段（其序号为 `SEQ + 载荷长度`），引擎按 RFC 语义一并确认。
 - 当应用层关闭 `tun_stream` 时，引擎发送 FIN 段，完成四次挥手。
 - 收到 RST 段时，直接销毁 TCB 并通知应用层连接重置。
 
@@ -760,4 +761,3 @@ int main() {
 5. **生产级线程安全**：所有内部状态通过 Strand 串行化，支持多线程 `io_context` 运行，无锁竞争。
 
 该设计尤其适用于对转发延迟敏感、网络环境相对稳定或上层应用已具备重试机制的代理场景。
-

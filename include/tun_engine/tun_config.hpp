@@ -73,6 +73,7 @@ struct tun_config {
     // ---- 超时策略 ----
     std::chrono::seconds udp_idle_timeout{30};
     std::chrono::seconds tcp_time_wait_timeout{10};
+    std::chrono::seconds tcp_accept_timeout{30}; // 已建立但未被 async_accept 领取的连接超时
 
     // ---- 可选 Checksum 控制 ----
     // 用户态 TUN 收发的报文必须由本引擎计算校验和，该开关保留用于兼容设计文档；

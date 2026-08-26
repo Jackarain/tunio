@@ -272,10 +272,164 @@ static void test_app_reset() {
     assert(!peer.is_open());
 }
 
+static void test_data_with_fin() {
+    engine_env env;
+    auto& io = env.io;
+    tun_acceptor acceptor(env.engine);
+    tun_stream peer(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        accept_done.set_value(ec);
+    });
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12349, DEST_PORT, 0x02, 5000, 0, 65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK");
+    }
+    assert(verify_packet(pkt));
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    assert(parse_ip(pkt, ipi));
+    assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
+    const uint32_t engine_iss = ti.seq;
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12349, DEST_PORT, 0x10, 5001, engine_iss + 1, 65535, {}));
+    future_get(accept_done.get_future());
+
+    // 客户端发送 FIN|PSH|ACK 且携带数据（常见关闭方式）
+    const std::string tail = "bye";
+    const std::vector<uint8_t> data(tail.begin(), tail.end());
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12349, DEST_PORT, 0x19, 5001, engine_iss + 1, 65535, data));
+
+    // 应用读到数据
+    std::promise<std::pair<boost::system::error_code, size_t>> read_done;
+    char buf[64];
+    peer.async_read_some(asio::buffer(buf), [&](boost::system::error_code ec, size_t n) {
+        read_done.set_value({ec, n});
+    });
+    auto [rec, rn] = future_get(read_done.get_future());
+    assert(!rec && rn == data.size());
+    assert(std::string(buf, rn) == tail);
+
+    // 再次读取应得到 EOF（同段 FIN 已被正确处理）
+    std::promise<std::pair<boost::system::error_code, size_t>> eof_done;
+    peer.async_read_some(asio::buffer(buf), [&](boost::system::error_code ec, size_t n) {
+        eof_done.set_value({ec, n});
+    });
+    auto [eec, en] = future_get(eof_done.get_future());
+    assert(!eec && en == 0);
+
+    // 引擎 ACK 数据（ack = 5001 + data.size()）
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no data ACK");
+    }
+    assert(verify_packet(pkt));
+    assert(parse_ip(pkt, ipi));
+    assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
+    assert((ti.flags & 0x10) != 0);
+    assert(ti.ack == 5001 + data.size());
+
+    // 引擎 ACK FIN（ack = 5001 + data.size() + 1）
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no FIN ACK");
+    }
+    assert(verify_packet(pkt));
+    assert(parse_ip(pkt, ipi));
+    assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
+    assert((ti.flags & 0x10) != 0);
+    assert(ti.ack == 5001 + data.size() + 1);
+
+    peer.close();
+}
+
+static void test_write_after_shutdown_send() {
+    engine_env env;
+    auto& io = env.io;
+    tun_acceptor acceptor(env.engine);
+    tun_stream peer(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        accept_done.set_value(ec);
+    });
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12350, DEST_PORT, 0x02, 6000, 0, 65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK");
+    }
+    assert(verify_packet(pkt));
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    assert(parse_ip(pkt, ipi));
+    assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
+    const uint32_t engine_iss = ti.seq;
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12350, DEST_PORT, 0x10, 6001, engine_iss + 1, 65535, {}));
+    future_get(accept_done.get_future());
+
+    // shutdown(send)：发出 FIN
+    boost::system::error_code sec;
+    peer.shutdown(boost::asio::ip::tcp::socket::shutdown_send, sec);
+    assert(!sec);
+
+    // 之后写入应被拒绝（fin_sent 已置位）
+    std::promise<std::pair<boost::system::error_code, size_t>> write_done;
+    peer.async_write_some(asio::buffer("x", 1), [&](boost::system::error_code ec, size_t n) {
+        write_done.set_value({ec, n});
+    });
+    auto [wec, wn] = future_get(write_done.get_future());
+    assert(wec == boost::asio::error::bad_descriptor);
+    assert(wn == 0);
+
+    // 设备应只收到 FIN，无数据段
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no FIN");
+    }
+    assert(verify_packet(pkt));
+    assert(parse_ip(pkt, ipi));
+    assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
+    assert((ti.flags & 0x01) != 0); // FIN
+    assert(ti.len == 0);
+
+    peer.close();
+}
+
+static void test_unaccepted_connection_cleanup() {
+    // accept 超时设为 1 秒：建立连接后若不 accept，引擎应发送 RST 并回收资源
+    engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(1));
+    auto& io = env.io;
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12351, DEST_PORT, 0x02, 7000, 0, 65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK");
+    }
+    assert(verify_packet(pkt));
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    assert(parse_ip(pkt, ipi));
+    assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
+    const uint32_t engine_iss = ti.seq;
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12351, DEST_PORT, 0x10, 7001, engine_iss + 1, 65535, {}));
+
+    // 不调用 async_accept，等待引擎超时清理（发送 RST）
+    if (!env.dev.read_packet(pkt, 5000)) {
+        throw std::runtime_error("no RST after accept timeout");
+    }
+    assert(verify_packet(pkt));
+    assert(parse_ip(pkt, ipi));
+    assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
+    assert((ti.flags & 0x04) != 0); // RST
+}
+
 int main() {
     test_handshake_data_fin();
+    test_data_with_fin();
     test_zero_window_flow_control();
     test_rst();
     test_app_reset();
+    test_write_after_shutdown_send();
+    test_unaccepted_connection_cleanup();
     return 0;
 }
