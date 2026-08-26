@@ -37,7 +37,7 @@ public:
     auto async_accept(tun_stream& peer, CompletionToken&& token) {
         return net::async_initiate<CompletionToken, void(boost::system::error_code)>(
             [this, &peer](auto handler) {
-                do_accept(peer, detail::make_copyable(std::move(handler)));
+                do_accept(peer, std::move(handler));
             },
             token);
     }
@@ -46,9 +46,12 @@ public:
     void cancel();
 
 private:
-    void do_accept(tun_stream& peer, std::function<void(boost::system::error_code)> handler);
+    template <typename Handler>
+    void do_accept(tun_stream& peer, Handler handler);
 
     tunio& engine_;
 };
 
 } // namespace tunio
+
+#include "tunio/detail/tun_acceptor_ops.hpp"

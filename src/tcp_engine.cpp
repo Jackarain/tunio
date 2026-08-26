@@ -527,20 +527,6 @@ void tcp_engine::notify_accept(tcp_flow& f) {
     }
 }
 
-void tcp_engine::async_accept(std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)> handler) {
-    while (!pending_flows_.empty()) {
-        auto f = std::move(pending_flows_.front());
-        pending_flows_.pop_front();
-        if (f->state == tcp_state::CLOSED) {
-            continue;
-        }
-        f->accepted = true;
-        handler(boost::system::error_code{}, std::move(f));
-        return;
-    }
-    pending_accepts_.push_back(std::move(handler));
-}
-
 void tcp_engine::cancel_accepts() {
     while (!pending_accepts_.empty()) {
         auto h = std::move(pending_accepts_.front());

@@ -227,20 +227,6 @@ void udp_engine::remove_session(std::shared_ptr<udp_session> s) {
     s->rx_datagrams.clear();
 }
 
-void udp_engine::async_accept(std::function<void(boost::system::error_code, std::shared_ptr<udp_session>)> handler) {
-    while (!pending_new_sessions_.empty()) {
-        auto s = std::move(pending_new_sessions_.front());
-        pending_new_sessions_.pop_front();
-        if (s->closed) {
-            continue;
-        }
-        s->accepted = true;
-        handler(boost::system::error_code{}, std::move(s));
-        return;
-    }
-    pending_accepts_.push_back(std::move(handler));
-}
-
 void udp_engine::cancel_accepts() {
     while (!pending_accepts_.empty()) {
         auto h = std::move(pending_accepts_.front());

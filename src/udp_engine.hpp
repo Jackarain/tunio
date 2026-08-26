@@ -78,7 +78,8 @@ public:
     void on_packet(const ip_packet_info& ip, const uint8_t* payload, size_t len);
 
     // 等待新会话；完成回调签名 void(error_code, shared_ptr<udp_session>)
-    void async_accept(std::function<void(boost::system::error_code, std::shared_ptr<udp_session>)> handler);
+    template <typename Handler>
+    void async_accept(Handler handler);
     void cancel_accepts();
     void close_all();
     size_t session_count() const { return sessions_.size(); }
@@ -243,6 +244,23 @@ void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<ui
                     std::move(*sp)(ec, ec ? 0 : sent);
                 }));
     });
+}
+
+template <typename Handler>
+void udp_engine::async_accept(Handler handler) {
+    while (!pending_new_sessions_.empty()) {
+        auto s = std::move(pending_new_sessions_.front());
+        pending_new_sessions_.pop_front();
+        if (s->closed) {
+            continue;
+        }
+        s->accepted = true;
+        handler(boost::system::error_code{}, std::move(s));
+        return;
+    }
+    pending_accepts_.push_back(
+        std::function<void(boost::system::error_code, std::shared_ptr<udp_session>)>(
+            make_copyable(std::move(handler))));
 }
 
 void udp_session_close(std::shared_ptr<udp_session> session);

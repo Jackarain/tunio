@@ -45,22 +45,24 @@ public:
     net::any_io_executor strand() const noexcept { return strand_ex_; }
 
     // ---- accept 入口（自动派发到 Strand）----
-    void async_accept_tcp(std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)> handler) {
+    template <typename Handler>
+    void async_accept_tcp(Handler handler) {
         net::dispatch(strand_ex_, [tcp = tcp_, h = std::move(handler)]() mutable {
             if (tcp) {
                 tcp->async_accept(std::move(h));
             } else {
-                h(net::error::bad_descriptor, nullptr);
+                h(boost::system::error_code(net::error::bad_descriptor), nullptr);
             }
         });
     }
 
-    void async_accept_udp(std::function<void(boost::system::error_code, std::shared_ptr<udp_session>)> handler) {
+    template <typename Handler>
+    void async_accept_udp(Handler handler) {
         net::dispatch(strand_ex_, [udp = udp_, h = std::move(handler)]() mutable {
             if (udp) {
                 udp->async_accept(std::move(h));
             } else {
-                h(net::error::bad_descriptor, nullptr);
+                h(boost::system::error_code(net::error::bad_descriptor), nullptr);
             }
         });
     }

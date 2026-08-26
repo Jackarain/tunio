@@ -21,6 +21,7 @@
 #include "tunio/packet_buffer.hpp"
 #include "tunio/packet_device.hpp"
 #include "tunio/tun_config.hpp"
+#include "tunio/detail/handler_util.hpp"
 
 namespace tunio {
 namespace net = boost::asio;
@@ -67,11 +68,9 @@ public:
     auto async_write(packet_buffer&& buf, CompletionToken&& token) {
         return net::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
             [this](auto handler, packet_buffer buf) {
-                using handler_t = std::decay_t<decltype(handler)>;
-                auto sp = std::make_shared<handler_t>(std::move(handler));
-                std::function<void(boost::system::error_code, size_t)> f =
-                    [sp](boost::system::error_code ec, size_t n) mutable { std::move(*sp)(ec, n); };
-                queue_.push_back(entry{std::move(buf), std::move(f)});
+                queue_.push_back(entry{std::move(buf),
+                    std::function<void(boost::system::error_code, size_t)>(
+                        make_copyable(std::move(handler)))});
                 pump();
             },
             token,

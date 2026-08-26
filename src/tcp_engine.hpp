@@ -131,7 +131,8 @@ public:
     void on_packet(const ip_packet_info& ip, const uint8_t* payload, size_t len);
 
     // 等待新连接；完成回调签名 void(error_code, shared_ptr<tcp_flow>)
-    void async_accept(std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)> handler);
+    template <typename Handler>
+    void async_accept(Handler handler);
     void cancel_accepts();
     void close_all();
     void start_sweep();
@@ -255,6 +256,23 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow, std::vector<uint8_t> d
         flow.tx_bytes += flow.pending_writes.back().data.size();
         f->eng->flush_writes(flow);
     });
+}
+
+template <typename Handler>
+void tcp_engine::async_accept(Handler handler) {
+    while (!pending_flows_.empty()) {
+        auto f = std::move(pending_flows_.front());
+        pending_flows_.pop_front();
+        if (f->state == tcp_state::CLOSED) {
+            continue;
+        }
+        f->accepted = true;
+        handler(boost::system::error_code{}, std::move(f));
+        return;
+    }
+    pending_accepts_.push_back(
+        std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)>(
+            make_copyable(std::move(handler))));
 }
 
 void tcp_flow_shutdown_send(std::shared_ptr<tcp_flow> flow);
