@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -54,6 +55,15 @@ inline uint32_t ip(const char* s) {
     return ntohl(::inet_addr(s));
 }
 
+// ---- IPv6 地址辅助：字符串 -> 网络字节序字节 ----
+inline std::array<uint8_t, 16> v6(const char* s) {
+    std::array<uint8_t, 16> b{};
+    if (::inet_pton(AF_INET6, s, b.data()) != 1) {
+        throw std::runtime_error(std::string("bad ipv6 address: ") + s);
+    }
+    return b;
+}
+
 // ---- 独立校验和实现（与引擎实现相互验证）----
 inline uint32_t raw_sum(const uint8_t* d, size_t n) {
     uint32_t sum = 0;
@@ -76,6 +86,44 @@ inline uint32_t fold_sum(uint32_t sum) {
 
 inline uint16_t csum16(const uint8_t* d, size_t n, uint32_t init = 0) {
     return static_cast<uint16_t>(~fold_sum(raw_sum(d, n) + init));
+}
+
+// 独立校验一个完整 IPv6 报文的 TCP/UDP/ICMPv6 校验和（含伪头部）
+inline bool verify_packet6(const std::vector<uint8_t>& pkt) {
+    if (pkt.size() < 40 || (pkt[0] >> 4) != 6) {
+        return false;
+    }
+    const size_t plen = static_cast<size_t>((pkt[4] << 8) | pkt[5]);
+    if (40 + plen > pkt.size()) {
+        return false;
+    }
+    const uint8_t proto = pkt[6];
+    const uint8_t* seg = pkt.data() + 40;
+    uint32_t pseudo = 0;
+    for (size_t i = 0; i + 1 < 16; i += 2) {
+        pseudo += static_cast<uint16_t>((pkt[8 + i] << 8) | pkt[9 + i]);
+        pseudo += static_cast<uint16_t>((pkt[24 + i] << 8) | pkt[25 + i]);
+    }
+    if (proto == 6) {
+        if (plen < 20) {
+            return false;
+        }
+        return csum16(seg, plen, pseudo + 6 + plen) == 0;
+    }
+    if (proto == 17) {
+        if (plen < 8) {
+            return false;
+        }
+        const size_t ulen = static_cast<size_t>((seg[4] << 8) | seg[5]);
+        if (ulen < 8 || ulen > plen) {
+            return false;
+        }
+        return csum16(seg, ulen, pseudo + 17 + ulen) == 0;
+    }
+    if (proto == 58) {
+        return csum16(seg, plen, pseudo + 58 + plen) == 0;
+    }
+    return true;
 }
 
 // 独立校验一个完整 IPv4 报文的 IP 头校验和，以及 TCP/UDP/ICMP 校验和。
@@ -140,6 +188,105 @@ inline std::vector<uint8_t> make_ipv4(uint32_t src, uint32_t dst, uint8_t proto,
     pkt[11] = static_cast<uint8_t>(c & 0xff);
     pkt.insert(pkt.end(), payload.begin(), payload.end());
     return pkt;
+}
+
+// ---- IPv6 报文构造（网络字节序地址字节入参）----
+inline std::vector<uint8_t> make_ipv6(const std::array<uint8_t, 16>& src,
+                                      const std::array<uint8_t, 16>& dst, uint8_t proto,
+                                      const std::vector<uint8_t>& payload) {
+    std::vector<uint8_t> pkt(40, 0);
+    pkt[0] = 0x60;
+    const uint16_t plen = static_cast<uint16_t>(payload.size());
+    pkt[4] = static_cast<uint8_t>(plen >> 8);
+    pkt[5] = static_cast<uint8_t>(plen & 0xff);
+    pkt[6] = proto;
+    pkt[7] = 64; // hop limit
+    std::copy(src.begin(), src.end(), pkt.begin() + 8);
+    std::copy(dst.begin(), dst.end(), pkt.begin() + 24);
+    pkt.insert(pkt.end(), payload.begin(), payload.end());
+    return pkt;
+}
+
+inline std::vector<uint8_t> make_tcp6(const std::array<uint8_t, 16>& src,
+                                      const std::array<uint8_t, 16>& dst,
+                                      uint16_t sport, uint16_t dport, uint8_t flags,
+                                      uint32_t seq, uint32_t ack, uint16_t win,
+                                      const std::vector<uint8_t>& data, bool mss = false) {
+    const size_t hlen = mss ? 24 : 20;
+    std::vector<uint8_t> seg(hlen + data.size(), 0);
+    seg[0] = static_cast<uint8_t>(sport >> 8);
+    seg[1] = static_cast<uint8_t>(sport & 0xff);
+    seg[2] = static_cast<uint8_t>(dport >> 8);
+    seg[3] = static_cast<uint8_t>(dport & 0xff);
+    uint32_t s = htonl(seq), a = htonl(ack);
+    std::memcpy(&seg[4], &s, 4);
+    std::memcpy(&seg[8], &a, 4);
+    seg[12] = static_cast<uint8_t>((mss ? 6 : 5) << 4);
+    seg[13] = flags;
+    seg[14] = static_cast<uint8_t>(win >> 8);
+    seg[15] = static_cast<uint8_t>(win & 0xff);
+    if (mss) {
+        seg[20] = 2; // MSS 选项
+        seg[21] = 4;
+        seg[22] = 0x05;
+        seg[23] = 0xb4;
+    }
+    std::memcpy(seg.data() + hlen, data.data(), data.size());
+    uint32_t pseudo = 0;
+    for (size_t i = 0; i + 1 < 16; i += 2) {
+        pseudo += static_cast<uint16_t>((src[i] << 8) | src[i + 1]);
+        pseudo += static_cast<uint16_t>((dst[i] << 8) | dst[i + 1]);
+    }
+    uint16_t c = csum16(seg.data(), seg.size(), pseudo + 6 + seg.size());
+    seg[16] = static_cast<uint8_t>(c >> 8);
+    seg[17] = static_cast<uint8_t>(c & 0xff);
+    return make_ipv6(src, dst, 6, seg);
+}
+
+inline std::vector<uint8_t> make_udp6(const std::array<uint8_t, 16>& src,
+                                      const std::array<uint8_t, 16>& dst,
+                                      uint16_t sport, uint16_t dport,
+                                      const std::vector<uint8_t>& data) {
+    std::vector<uint8_t> seg(8 + data.size(), 0);
+    seg[0] = static_cast<uint8_t>(sport >> 8);
+    seg[1] = static_cast<uint8_t>(sport & 0xff);
+    seg[2] = static_cast<uint8_t>(dport >> 8);
+    seg[3] = static_cast<uint8_t>(dport & 0xff);
+    const uint16_t ulen = static_cast<uint16_t>(seg.size());
+    seg[4] = static_cast<uint8_t>(ulen >> 8);
+    seg[5] = static_cast<uint8_t>(ulen & 0xff);
+    std::memcpy(seg.data() + 8, data.data(), data.size());
+    uint32_t pseudo = 0;
+    for (size_t i = 0; i + 1 < 16; i += 2) {
+        pseudo += static_cast<uint16_t>((src[i] << 8) | src[i + 1]);
+        pseudo += static_cast<uint16_t>((dst[i] << 8) | dst[i + 1]);
+    }
+    uint16_t c = csum16(seg.data(), seg.size(), pseudo + 17 + seg.size());
+    seg[6] = static_cast<uint8_t>(c >> 8);
+    seg[7] = static_cast<uint8_t>(c & 0xff);
+    return make_ipv6(src, dst, 17, seg);
+}
+
+inline std::vector<uint8_t> make_icmp6_echo(const std::array<uint8_t, 16>& src,
+                                            const std::array<uint8_t, 16>& dst,
+                                            uint16_t id, uint16_t seqno,
+                                            const std::vector<uint8_t>& data) {
+    std::vector<uint8_t> icmp(8 + data.size(), 0);
+    icmp[0] = 128; // Echo Request
+    icmp[4] = static_cast<uint8_t>(id >> 8);
+    icmp[5] = static_cast<uint8_t>(id & 0xff);
+    icmp[6] = static_cast<uint8_t>(seqno >> 8);
+    icmp[7] = static_cast<uint8_t>(seqno & 0xff);
+    std::memcpy(icmp.data() + 8, data.data(), data.size());
+    uint32_t pseudo = 0;
+    for (size_t i = 0; i + 1 < 16; i += 2) {
+        pseudo += static_cast<uint16_t>((src[i] << 8) | src[i + 1]);
+        pseudo += static_cast<uint16_t>((dst[i] << 8) | dst[i + 1]);
+    }
+    uint16_t c = csum16(icmp.data(), icmp.size(), pseudo + 58 + icmp.size());
+    icmp[2] = static_cast<uint8_t>(c >> 8);
+    icmp[3] = static_cast<uint8_t>(c & 0xff);
+    return make_ipv6(src, dst, 58, icmp);
 }
 
 inline std::vector<uint8_t> make_tcp(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
@@ -217,6 +364,30 @@ struct ip_hdr_info {
     const uint8_t* payload = nullptr;
     size_t payload_len = 0;
 };
+
+struct ip6_hdr_info {
+    uint8_t proto = 0;
+    std::array<uint8_t, 16> src{};
+    std::array<uint8_t, 16> dst{};
+    size_t payload_len = 0;
+    const uint8_t* payload = nullptr;
+};
+
+inline bool parse_ip6(const std::vector<uint8_t>& pkt, ip6_hdr_info& out) {
+    if (pkt.size() < 40 || (pkt[0] >> 4) != 6) {
+        return false;
+    }
+    const size_t plen = static_cast<size_t>((pkt[4] << 8) | pkt[5]);
+    if (40 + plen > pkt.size()) {
+        return false;
+    }
+    out.proto = pkt[6];
+    std::copy(pkt.begin() + 8, pkt.begin() + 24, out.src.begin());
+    std::copy(pkt.begin() + 24, pkt.begin() + 40, out.dst.begin());
+    out.payload = pkt.data() + 40;
+    out.payload_len = plen;
+    return true;
+}
 
 inline bool parse_ip(const std::vector<uint8_t>& pkt, ip_hdr_info& out) {
     if (pkt.size() < 20 || (pkt[0] >> 4) != 4) {
@@ -321,14 +492,30 @@ public:
     bool read_packet(std::vector<uint8_t>& out, int timeout_ms = 3000) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         for (;;) {
-            while (stash_.size() >= 20) {
-                const uint16_t total = static_cast<uint16_t>((stash_[2] << 8) | stash_[3]);
-                if (total >= 20 && stash_.size() >= total) {
-                    out.assign(stash_.begin(), stash_.begin() + total);
-                    stash_.erase(stash_.begin(), stash_.begin() + total);
-                    return true;
+            while (stash_.size() >= 4) {
+                size_t total = 0;
+                switch (stash_[0] >> 4) {
+                case 4:
+                    if (stash_.size() < 20) {
+                        break;
+                    }
+                    total = static_cast<size_t>((stash_[2] << 8) | stash_[3]);
+                    break;
+                case 6:
+                    if (stash_.size() < 40) {
+                        break;
+                    }
+                    total = 40 + static_cast<size_t>((stash_[4] << 8) | stash_[5]);
+                    break;
+                default:
+                    break;
                 }
-                break;
+                if (total < 20 || stash_.size() < total) {
+                    break;
+                }
+                out.assign(stash_.begin(), stash_.begin() + total);
+                stash_.erase(stash_.begin(), stash_.begin() + total);
+                return true;
             }
             const auto now = std::chrono::steady_clock::now();
             if (now >= deadline) {
@@ -371,6 +558,8 @@ struct engine_env {
         cfg.external_mtu = mtu;
         cfg.ipv4_addr = "10.0.0.1";
         cfg.netmask = "255.255.255.0";
+        cfg.ipv6_addr = "fd00::1";
+        cfg.ipv6_prefix_len = 64;
         cfg.udp_idle_timeout = udp_timeout;
         cfg.tcp_accept_timeout = tcp_accept_timeout;
         boost::system::error_code ec;

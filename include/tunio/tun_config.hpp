@@ -11,9 +11,11 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <string>
 
@@ -33,19 +35,39 @@ inline constexpr native_handle_type invalid_native_handle =
     -1;
 #endif
 
-// 统一五元组，用于 NAT 查表与 Flow 索引，字段均为网络字节序
+// 统一五元组，用于 NAT 查表与 Flow 索引
+//
+// IP 地址以网络字节序原始字节保存（IPv4 仅前 4 字节有效），family 区分
+// 地址族（4 或 6），端口为网络字节序，可直接与报文头部字段比较。
 #pragma pack(push, 1)
 struct five_tuple {
-    uint32_t src_ip;      // 网络字节序
-    uint32_t dst_ip;      // 网络字节序
-    uint16_t src_port;    // 网络字节序
-    uint16_t dst_port;    // 网络字节序
-    uint8_t protocol;     // IPPROTO_TCP (6) 或 IPPROTO_UDP (17)
+    std::array<uint8_t, 16> src_ip{};  // 网络字节序（IPv4 仅前 4 字节有效）
+    std::array<uint8_t, 16> dst_ip{};
+    uint16_t src_port = 0;             // 网络字节序
+    uint16_t dst_port = 0;             // 网络字节序
+    uint8_t protocol = 0;              // IPPROTO_TCP (6) 或 IPPROTO_UDP (17)
+    uint8_t family = 0;                // 4 或 6
 };
 #pragma pack(pop)
 
+// 构造五元组：IP 为网络字节序字节，IPv4 仅拷贝前 4 字节
+inline five_tuple make_five_tuple(const uint8_t* src_ip, const uint8_t* dst_ip,
+                                  uint16_t src_port, uint16_t dst_port,
+                                  uint8_t protocol, uint8_t family) noexcept {
+    five_tuple k{};
+    k.family = family;
+    k.protocol = protocol;
+    k.src_port = src_port;
+    k.dst_port = dst_port;
+    const size_t n = family == 6 ? 16 : 4;
+    std::memcpy(k.src_ip.data(), src_ip, n);
+    std::memcpy(k.dst_ip.data(), dst_ip, n);
+    return k;
+}
+
 inline bool operator==(const five_tuple& lhs, const five_tuple& rhs) noexcept {
-    return lhs.src_ip == rhs.src_ip && lhs.dst_ip == rhs.dst_ip &&
+    return lhs.family == rhs.family && lhs.src_ip == rhs.src_ip &&
+           lhs.dst_ip == rhs.dst_ip &&
            lhs.src_port == rhs.src_port && lhs.dst_port == rhs.dst_port &&
            lhs.protocol == rhs.protocol;
 }
@@ -59,6 +81,8 @@ struct device_config {
     std::string name;
     std::string ipv4;
     std::string netmask;
+    std::string ipv6;              // 可选 IPv6 地址，如 "fd00::1"
+    uint8_t ipv6_prefix_len = 64;  // IPv6 前缀长度
     size_t mtu = 1500;
 };
 
@@ -68,6 +92,8 @@ struct tun_config {
     std::string dev_name;
     std::string ipv4_addr;
     std::string netmask;
+    std::string ipv6_addr;             // 可选 IPv6 地址，如 "fd00::1"
+    uint8_t ipv6_prefix_len = 64;      // IPv6 前缀长度
     size_t mtu = 1500;
 
     // ---- 外部句柄注入 ----
@@ -107,11 +133,17 @@ namespace std {
 template <>
 struct hash<tunio::five_tuple> {
     size_t operator()(const tunio::five_tuple& k) const noexcept {
-        size_t h = std::hash<uint32_t>{}(k.src_ip);
-        h ^= std::hash<uint32_t>{}(k.dst_ip) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        size_t h = 0;
+        for (uint8_t b : k.src_ip) {
+            h ^= std::hash<uint8_t>{}(b) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        }
+        for (uint8_t b : k.dst_ip) {
+            h ^= std::hash<uint8_t>{}(b) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        }
         h ^= std::hash<uint16_t>{}(k.src_port) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
         h ^= std::hash<uint16_t>{}(k.dst_port) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
         h ^= std::hash<uint8_t>{}(k.protocol) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= std::hash<uint8_t>{}(k.family) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
         return h;
     }
 };

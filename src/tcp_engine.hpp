@@ -115,7 +115,7 @@ public:
     ~tcp_engine();
 
     // 处理一个 TCP 报文段（Strand 上调用）
-    void on_packet(const ipv4_header& ip, const uint8_t* payload, size_t len);
+    void on_packet(const ip_packet_info& ip, const uint8_t* payload, size_t len);
 
     // 等待新连接；完成回调签名 void(error_code, shared_ptr<tcp_flow>)
     void async_accept(std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)> handler);
@@ -128,7 +128,7 @@ public:
     device_writer& writer() { return writer_; }
     engine_stats& stats() { return stats_; }
     buffer_accountant& account() { return *account_; }
-    size_t mss() const { return mss_; }
+    size_t mss(int family) const { return family == 6 ? mss6_ : mss4_; }
 
     // ---- 由 tcp_flow 调用的发送辅助 ----
     void send_segment(tcp_flow& f, uint32_t seq, uint8_t flags,
@@ -160,7 +160,8 @@ private:
     tun_config cfg_;
     engine_stats& stats_;
     std::shared_ptr<buffer_accountant> account_;
-    size_t mss_ = 1460;
+    size_t mss4_ = 536;   // IPv4 MSS = MTU - 20(IP) - 20(TCP)
+    size_t mss6_ = 1220;  // IPv6 MSS = MTU - 40(IP) - 20(TCP)
 
     std::unordered_map<five_tuple, std::shared_ptr<tcp_flow>> flows_;
     std::deque<std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)>> pending_accepts_;

@@ -10,6 +10,7 @@
 
 #include "tunio_impl.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 #include <boost/asio.hpp>
@@ -38,18 +39,35 @@ bool tunio_impl::open(const tun_config& cfg, boost::system::error_code& ec) {
     ec = {};
     cfg_ = cfg;
 
-    // 解析本地虚拟 IP（用于 ICMP 回显等），允许为空
+    // 解析本地虚拟 IP（用于 ICMP/ICMPv6 回显等），允许为空
+    have_ip4_ = false;
+    have_ip6_ = false;
+    local_ip_ = boost::asio::ip::address();
     if (!cfg.ipv4_addr.empty()) {
         boost::system::error_code parse_ec;
-        local_ip_ = boost::asio::ip::make_address_v4(cfg.ipv4_addr, parse_ec);
+        const auto v4 = boost::asio::ip::make_address_v4(cfg.ipv4_addr, parse_ec);
         if (parse_ec) {
             ec = parse_ec;
             return false;
         }
-        local_ip_net_ = htonl(local_ip_.to_uint());
-    } else {
-        local_ip_ = {};
-        local_ip_net_ = 0;
+        local_ip_ = v4;
+        const auto b = v4.to_bytes();
+        std::copy(b.begin(), b.end(), local_ip4_);
+        have_ip4_ = true;
+    }
+    if (!cfg.ipv6_addr.empty()) {
+        boost::system::error_code parse_ec;
+        const auto v6 = boost::asio::ip::make_address_v6(cfg.ipv6_addr, parse_ec);
+        if (parse_ec) {
+            ec = parse_ec;
+            return false;
+        }
+        if (!have_ip4_) {
+            local_ip_ = v6;
+        }
+        const auto b = v6.to_bytes();
+        std::copy(b.begin(), b.end(), local_ip6_);
+        have_ip6_ = true;
     }
 
     // 设备初始化：优先使用外部句柄注入
@@ -62,6 +80,8 @@ bool tunio_impl::open(const tun_config& cfg, boost::system::error_code& ec) {
         dc.name = cfg.dev_name;
         dc.ipv4 = cfg.ipv4_addr;
         dc.netmask = cfg.netmask;
+        dc.ipv6 = cfg.ipv6_addr;
+        dc.ipv6_prefix_len = cfg.ipv6_prefix_len;
         dc.mtu = cfg.mtu;
         if (!device_->open(dc, ec)) {
             return false;
@@ -128,12 +148,32 @@ void tunio_impl::on_read(const boost::system::error_code& ec, size_t n) {
     }
     read_buf_.commit(n);
     // 注：注入设备为字节流（如 socketpair）时，一次读取可能粘合多个报文；
-    // 按 IP 头中的总长度逐包解析，完整处理缓冲区内全部报文。
+    // 按 IP 头中的总长度逐包解析，完整处理缓冲区内全部报文（IPv4/IPv6 均支持）。
     const uint8_t* base = read_buf_.data();
     size_t offset = 0;
-    while (offset + sizeof(ipv4_header) <= n) {
-        const uint16_t total_len = static_cast<uint16_t>((base[offset + 2] << 8) | base[offset + 3]);
-        if (total_len < sizeof(ipv4_header) || offset + total_len > n) {
+    while (offset + 4 <= n) {
+        size_t total_len = 0;
+        switch (base[offset] >> 4) {
+        case 4:
+            if (offset + sizeof(ipv4_header) > n) {
+                break;
+            }
+            total_len = static_cast<size_t>((base[offset + 2] << 8) | base[offset + 3]);
+            if (total_len < sizeof(ipv4_header)) {
+                break;
+            }
+            break;
+        case 6:
+            if (offset + sizeof(ipv6_header) > n) {
+                break;
+            }
+            total_len = sizeof(ipv6_header) +
+                        static_cast<size_t>((base[offset + 4] << 8) | base[offset + 5]);
+            break;
+        default:
+            break;
+        }
+        if (total_len == 0 || offset + total_len > n) {
             break;
         }
         stats_.rx_packets.fetch_add(1, std::memory_order_relaxed);
@@ -144,38 +184,73 @@ void tunio_impl::on_read(const boost::system::error_code& ec, size_t n) {
 }
 
 void tunio_impl::handle_packet(const uint8_t* pkt, size_t len) {
-    if (len < sizeof(ipv4_header)) {
+    if (len < 20) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
-    ipv4_header ip;
-    std::memcpy(&ip, pkt, sizeof(ip));
-    if (ip.version() != 4) {
-        stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const size_t ihl = ip.header_len();
-    if (ihl < sizeof(ipv4_header) || ihl > len) {
-        stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const size_t total_len = ntohs(ip.total_len);
-    if (total_len < ihl || total_len > len) {
-        stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    // 校验 IP 头部校验和
-    if (verify_ipv4_checksum(pkt, ihl) != 0) {
+    ip_packet_info ip;
+    const uint8_t* payload = nullptr;
+    size_t payload_len = 0;
+
+    const uint8_t version = pkt[0] >> 4;
+    if (version == 4) {
+        if (len < sizeof(ipv4_header)) {
+            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        ipv4_header h;
+        std::memcpy(&h, pkt, sizeof(h));
+        const size_t ihl = h.header_len();
+        if (ihl < sizeof(ipv4_header) || ihl > len) {
+            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        const size_t total_len = ntohs(h.total_len);
+        if (total_len < ihl || total_len > len) {
+            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        // 校验 IP 头部校验和
+        if (verify_ipv4_checksum(pkt, ihl) != 0) {
+            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        ip.family = 4;
+        ip.protocol = h.protocol;
+        std::memcpy(ip.src_ip, pkt + 12, 4);
+        std::memcpy(ip.dst_ip, pkt + 16, 4);
+        payload = pkt + ihl;
+        payload_len = total_len - ihl;
+    } else if (version == 6) {
+        if (len < sizeof(ipv6_header)) {
+            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        ipv6_header h;
+        std::memcpy(&h, pkt, sizeof(h));
+        const size_t payload_len_field = ntohs(h.payload_len);
+        if (sizeof(ipv6_header) + payload_len_field > len) {
+            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        ip.family = 6;
+        ip.protocol = h.next_header;
+        std::memcpy(ip.src_ip, h.src_ip, 16);
+        std::memcpy(ip.dst_ip, h.dst_ip, 16);
+        payload = pkt + sizeof(ipv6_header);
+        payload_len = payload_len_field;
+    } else {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
-    const uint8_t* payload = pkt + ihl;
-    const size_t payload_len = total_len - ihl;
     switch (ip.protocol) {
     case IPPROTO_ICMP_V:
-        handle_icmp(pkt, total_len);
+        handle_icmp(ip, payload, payload_len);
+        break;
+    case IPPROTO_ICMPV6_V:
+        handle_icmpv6(ip, payload, payload_len);
         break;
     case IPPROTO_TCP_V:
         tcp_->on_packet(ip, payload, payload_len);
@@ -189,43 +264,66 @@ void tunio_impl::handle_packet(const uint8_t* pkt, size_t len) {
     }
 }
 
-void tunio_impl::handle_icmp(const uint8_t* pkt, size_t len) {
-    if (local_ip_net_ == 0) {
-        return;
-    }
-    ipv4_header ip;
-    std::memcpy(&ip, pkt, sizeof(ip));
-    const size_t ihl = ip.header_len();
-    if (len < ihl + 8) {
+void tunio_impl::handle_icmp(const ip_packet_info& ip, const uint8_t* icmp, size_t icmp_len) {
+    if (!have_ip4_ || icmp_len < 8) {
         return;
     }
     // 仅响应发往本地虚拟 IP 的 Echo Request
-    if (ip.dst_ip != local_ip_net_) {
+    if (std::memcmp(ip.dst_ip, local_ip4_, 4) != 0 || icmp[0] != 8) {
         return;
     }
-    const uint8_t* icmp = pkt + ihl;
-    if (icmp[0] != 8) { // Type = Echo Request
+    // 校验 ICMP 校验和
+    if (ip_checksum(icmp, icmp_len) != 0) {
         return;
     }
 
-    packet_buffer reply(len + 64, 64);
-    reply.resize(len);
+    packet_buffer reply(20 + icmp_len + 64, 64);
+    reply.resize(20 + icmp_len);
     uint8_t* out = reply.data();
 
-    auto* oip = reinterpret_cast<ipv4_header*>(out);
-    std::memcpy(oip, &ip, ihl);
-    oip->src_ip = ip.dst_ip;
-    oip->dst_ip = ip.src_ip;
-    oip->ttl = 64;
-    oip->checksum = 0;
-    oip->checksum = htons(ipv4_checksum(out, ihl));
+    build_ip_header(out, 4, ip.dst_ip, ip.src_ip, IPPROTO_ICMP_V,
+                    20 + icmp_len, writer_->alloc_ip_id());
 
-    uint8_t* oicmp = out + ihl;
-    std::memcpy(oicmp, icmp, len - ihl);
+    uint8_t* oicmp = out + 20;
+    std::memcpy(oicmp, icmp, icmp_len);
     oicmp[0] = 0; // Type = Echo Reply
     oicmp[2] = 0; // 清零校验和字段后再计算
     oicmp[3] = 0;
-    uint16_t csum = ip_checksum(oicmp, len - ihl);
+    const uint16_t csum = ip_checksum(oicmp, icmp_len);
+    oicmp[2] = static_cast<uint8_t>(csum >> 8);
+    oicmp[3] = static_cast<uint8_t>(csum & 0xff);
+
+    writer_->async_write(std::move(reply), net::bind_executor(strand_ex_, [](const boost::system::error_code&, size_t) {}));
+    stats_.icmp_replies.fetch_add(1, std::memory_order_relaxed);
+}
+
+void tunio_impl::handle_icmpv6(const ip_packet_info& ip, const uint8_t* icmp, size_t icmp_len) {
+    if (!have_ip6_ || icmp_len < 8) {
+        return;
+    }
+    // 仅响应发往本地虚拟 IP 的 Echo Request
+    if (std::memcmp(ip.dst_ip, local_ip6_, 16) != 0 || icmp[0] != 128) {
+        return;
+    }
+    // ICMPv6 校验和必须包含 IPv6 伪头部
+    if (tcp_udp_checksum(6, ip.src_ip, ip.dst_ip, IPPROTO_ICMPV6_V, icmp, icmp_len) != 0) {
+        return;
+    }
+
+    packet_buffer reply(40 + icmp_len + 64, 64);
+    reply.resize(40 + icmp_len);
+    uint8_t* out = reply.data();
+
+    build_ip_header(out, 6, ip.dst_ip, ip.src_ip, IPPROTO_ICMPV6_V,
+                    40 + icmp_len, 0);
+
+    uint8_t* oicmp = out + 40;
+    std::memcpy(oicmp, icmp, icmp_len);
+    oicmp[0] = 129; // Type = Echo Reply
+    oicmp[2] = 0;   // 清零校验和字段后再计算
+    oicmp[3] = 0;
+    const uint16_t csum = tcp_udp_checksum(6, ip.dst_ip, ip.src_ip, IPPROTO_ICMPV6_V,
+                                           oicmp, icmp_len);
     oicmp[2] = static_cast<uint8_t>(csum >> 8);
     oicmp[3] = static_cast<uint8_t>(csum & 0xff);
 

@@ -64,7 +64,7 @@ public:
     ~udp_engine();
 
     // 处理一个 UDP 数据报（Strand 上调用）
-    void on_packet(const ipv4_header& ip, const uint8_t* payload, size_t len);
+    void on_packet(const ip_packet_info& ip, const uint8_t* payload, size_t len);
 
     // 等待新会话；完成回调签名 void(error_code, shared_ptr<udp_session>)
     void async_accept(std::function<void(boost::system::error_code, std::shared_ptr<udp_session>)> handler);

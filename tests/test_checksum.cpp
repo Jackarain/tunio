@@ -63,6 +63,28 @@ int main() {
     const size_t ulen = udp.size() - 20;
     assert(tcp_udp_checksum(snet, dnet, 17, useg, ulen) == 0);
 
+    // ---- IPv6 伪头部校验（128 位地址）----
+    const auto s6 = test::v6("fd00::2");
+    const auto d6 = test::v6("2001:4860:4860::8888");
+
+    // TCP
+    std::vector<uint8_t> pkt6 = test::make_tcp6(s6, d6, 12345, 80, 0x10, 100, 200, 65535, {'a', 'b', 'c'});
+    const uint8_t* seg6 = pkt6.data() + 40;
+    const size_t seg6_len = pkt6.size() - 40;
+    assert(tcp_udp_checksum(6, s6.data(), d6.data(), 6, seg6, seg6_len) == 0);
+
+    // UDP
+    std::vector<uint8_t> udp6 = test::make_udp6(s6, d6, 53000, 53, {1, 2, 3, 4});
+    const uint8_t* useg6 = udp6.data() + 40;
+    const size_t ulen6 = udp6.size() - 40;
+    assert(tcp_udp_checksum(6, s6.data(), d6.data(), 17, useg6, ulen6) == 0);
+
+    // ICMPv6
+    std::vector<uint8_t> icmp6 = test::make_icmp6_echo(s6, d6, 0x1234, 1, {1, 2, 3});
+    const uint8_t* ic6 = icmp6.data() + 40;
+    const size_t ic6_len = icmp6.size() - 40;
+    assert(tcp_udp_checksum(6, s6.data(), d6.data(), 58, ic6, ic6_len) == 0);
+
     // 单字节边界（奇数长度）
     uint8_t odd[] = {0x01, 0x02, 0x03};
     uint16_t c1 = test::csum16(odd, sizeof(odd));

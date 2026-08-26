@@ -105,31 +105,57 @@ constexpr native_handle_type invalid_native_handle =
 
 #### 3.2 统一五元组
 
-用于 NAT 查表与 Flow 索引，基于纯内存块进行哈希计算以保证高性能，避免字符串分配。
+用于 NAT 查表与 Flow 索引，支持 IPv4 与 IPv6。IP 地址以网络字节序原始字节保存
+（IPv4 仅前 4 字节有效），`family` 字段区分地址族（4 或 6），端口为网络字节序，
+可直接与报文头部字段比较。基于纯内存块进行哈希计算以保证高性能，避免字符串分配。
 
 ```cpp
 #pragma pack(push, 1)
 struct five_tuple {
-    uint32_t src_ip;      // 网络字节序
-    uint32_t dst_ip;
-    uint16_t src_port;    // 网络字节序
-    uint16_t dst_port;
-    uint8_t  protocol;    // IPPROTO_TCP (6) 或 IPPROTO_UDP (17)
+    std::array<uint8_t, 16> src_ip{};  // 网络字节序（IPv4 仅前 4 字节有效）
+    std::array<uint8_t, 16> dst_ip{};
+    uint16_t src_port = 0;             // 网络字节序
+    uint16_t dst_port = 0;             // 网络字节序
+    uint8_t  protocol = 0;             // IPPROTO_TCP (6) 或 IPPROTO_UDP (17)
+    uint8_t  family = 0;               // 4 或 6
 };
 #pragma pack(pop)
 
-namespace std {
-    template<> struct hash<five_tuple> {
-        size_t operator()(const five_tuple& k) const noexcept {
-            const uint64_t* p = reinterpret_cast<const uint64_t*>(&k);
-            // 混合散列，充分利用 64 位字宽
-            return p[0] ^ (p[1] << 7) ^ (static_cast<uint64_t>(k.protocol) << 56);
-        }
-    };
-}
+// 构造五元组：IP 为网络字节序字节，IPv4 仅拷贝前 4 字节
+inline five_tuple make_five_tuple(const uint8_t* src_ip, const uint8_t* dst_ip,
+                                  uint16_t src_port, uint16_t dst_port,
+                                  uint8_t protocol, uint8_t family) noexcept;
 ```
 
-#### 3.3 零拷贝数据包缓冲区
+#### 3.3 IPv6 报文头与校验和
+
+引擎同时支持 IPv4 与 IPv6 报文。IPv6 头部固定 40 字节，无头部校验和；
+TCP/UDP/ICMPv6 的伪头部校验和基于 128 位地址计算，IPv6 下 UDP 与 ICMPv6
+校验和强制有效（不得为 0，若计算结果为 0 则以 0xffff 替代）。
+
+```cpp
+struct ipv6_header {
+    uint32_t vtc_flow;      // version(4) | traffic class(8) | flow label(20)
+    uint16_t payload_len;   // 不含 IPv6 头部的载荷长度
+    uint8_t  next_header;   // 上层协议号
+    uint8_t  hop_limit;
+    uint8_t  src_ip[16];    // 网络字节序
+    uint8_t  dst_ip[16];    // 网络字节序
+};
+
+// 引擎内统一 IP 层信息：地址族 + 网络字节序地址字节
+struct ip_packet_info {
+    uint8_t family = 0;     // 4 或 6
+    uint8_t protocol = 0;
+    uint8_t src_ip[16] = {};
+    uint8_t dst_ip[16] = {};
+};
+```
+
+IPv6 扩展头（Hop-by-Hop、Routing 等）不在支持范围内，携带扩展头的报文
+按未知协议丢弃；IPv6 jumbogram（超长载荷）亦不支持。
+
+#### 3.4 零拷贝数据包缓冲区
 
 支持头部预留（Headroom）机制，便于高效封装 IP/TCP 头部，避免频繁的内存分配与拷贝。
 
@@ -156,7 +182,7 @@ public:
 };
 ```
 
-#### 3.4 TCP 最小控制块
+#### 3.5 TCP 最小控制块
 
 引擎仅维护最精简的状态信息，用于生成正确的 ACK 与处理 RST/FIN。
 
@@ -199,6 +225,8 @@ struct device_config {
     std::string name;
     std::string ipv4;
     std::string netmask;
+    std::string ipv6;              // 可选 IPv6 地址，如 "fd00::1"
+    uint8_t ipv6_prefix_len = 64;  // IPv6 前缀长度
     size_t mtu = 1500;
 };
 
@@ -354,7 +382,8 @@ private:
 #### 5.1 握手阶段
 
 - 收到客户端 SYN 后，引擎分配一个 `tcp_minimal_state` 实例，记录 `irs = SYN.seq`。
-- 引擎立即回复 SYN-ACK，携带本端 `iss`（随机生成）与固定 MSS 值（由 MTU 推导，默认 `MSS = MTU - 40`）。
+- 引擎立即回复 SYN-ACK，携带本端 `iss`（随机生成）与固定 MSS 值（由 MTU 推导：
+  IPv4 默认 `MSS = MTU - 40`，IPv6 默认 `MSS = MTU - 60`，分别通告给对应地址族的连接）。
 - 收到客户端 ACK 后，状态切换为 `ESTABLISHED`，并触发 `tun_acceptor::async_accept` 完成事件。
 - 若应用层在 `tcp_accept_timeout`（默认 30 秒）内未通过 `async_accept` 领取该连接，引擎发送 RST 中断连接并回收资源，避免未领取连接长期驻留。
 
@@ -564,9 +593,12 @@ private:
 
 #### 8.2 ICMP Echo 响应
 
-引擎自动响应发往自身虚拟 IP 地址的 ICMP Echo Request（Ping）：
-- 识别 IP 协议字段为 1（ICMP）且 Type=8。
-- 直接构造 Type=0（Echo Reply）的 ICMP 包，计算校验和，通过 `packet_device::async_write_packet` 写回，不经过上层应用层。
+引擎自动响应发往自身虚拟 IP 地址的 ICMP/ICMPv6 Echo Request（Ping）：
+- IPv4：识别 IP 协议字段为 1（ICMP）且 Type=8，构造 Type=0（Echo Reply）并计算 ICMP 校验和。
+- IPv6：识别 Next Header 为 58（ICMPv6）且 Type=128，构造 Type=129（Echo Reply），
+  校验和必须包含 IPv6 伪头部（源/目的地址、载荷长度、Next Header=58）。
+- 回包不经过上层应用层，直接通过 `packet_device::async_write_packet` 写回；
+  仅响应发往引擎本地虚拟 IP 的 Echo Request。
 
 #### 8.3 统计接口
 
@@ -588,6 +620,20 @@ public:
 
 ---
 
+#### 8.4 双栈（IPv4/IPv6）数据通路
+
+- **收包解析**：`on_read` 依据报文首字节的版本字段（4/6）读取对应的长度字段
+  （IPv4 `total_len` / IPv6 `40 + payload_len`）逐包拆解，双栈报文可混合到达。
+- **五元组索引**：`five_tuple.family` 参与哈希与相等比较，IPv4 与 IPv6 会话
+  天然隔离，互不冲突。
+- **发送构造**：TCP/UDP 引擎按流所属地址族构建 IPv4/IPv6 头部；IPv4 计算头部
+  校验和，IPv6 无头部校验和但 TCP/UDP/ICMPv6 伪头部校验和强制有效。
+- **IPv6 地址配置**：Linux 自主打开模式下通过 netlink（`RTM_NEWADDR`）为 TUN
+  接口配置 IPv6 地址与前缀长度（`device_config.ipv6` / `ipv6_prefix_len`）。
+- **SOCKS5 代理**：`tun2socks` 示例中 SOCKS5 CONNECT 与 UDP ASSOCIATE 均支持
+  IPv6 目标（ATYP=4），引擎的 `original_destination()` / `remote_key()` 按
+  地址族返回 IPv6 端点。
+
 ### 9. 配置与资源限制
 
 ```cpp
@@ -596,6 +642,8 @@ struct tun_config {
     std::string dev_name;
     std::string ipv4_addr;
     std::string netmask;
+    std::string ipv6_addr;             // 可选 IPv6 地址，如 "fd00::1"
+    uint8_t ipv6_prefix_len = 64;      // IPv6 前缀长度
     size_t mtu = 1500;
 
     // ---- 外部句柄注入 ----
@@ -743,6 +791,7 @@ int main() {
 | **Phase 2：TCP/UDP 数据通路** | 1.5 周 | TCP 顺序转发与 Dup-ACK、UDP Datagram 收发、UDP 新会话通知与 `tun_udp_acceptor`。 |
 | **Phase 3：跨平台适配** | 1 周 | macOS utun、Windows Wintun，验证句柄注入。 |
 | **Phase 4：健壮性** | 1 周 | 资源上限、ICMP Ping、最小堆老化、统计接口、Strand 线程安全加固。 |
+| **Phase 5：IPv6 双栈** | 1 周 | 双栈报文解析与构造、ICMPv6 回显、netlink 地址配置、IPv6 测试覆盖。 |
 
 ---
 

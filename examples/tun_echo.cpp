@@ -39,6 +39,8 @@ struct options {
     std::string dev_name = "tun0";
     std::string ipv4_addr = "10.0.0.1";
     std::string netmask = "255.255.255.0";
+    std::string ipv6_addr;
+    uint8_t ipv6_prefix_len = 64;
     size_t mtu = 1500;
     uint16_t echo_port = 7;
     int inject_fd = -1;
@@ -60,6 +62,10 @@ options parse_args(int argc, char** argv) {
             opt.ipv4_addr = next();
         } else if (arg == "--netmask") {
             opt.netmask = next();
+        } else if (arg == "--ip6") {
+            opt.ipv6_addr = next();
+        } else if (arg == "--ip6-prefix") {
+            opt.ipv6_prefix_len = static_cast<uint8_t>(std::stoul(next()));
         } else if (arg == "--mtu") {
             opt.mtu = static_cast<size_t>(std::stoul(next()));
         } else if (arg == "--echo-port") {
@@ -121,9 +127,12 @@ net::awaitable<void> tcp_listener(tunio::tunio& engine, uint16_t echo_port) {
         if (ec) {
             co_return;
         }
-        net::co_spawn(ex, bidirectional_bridge(std::move(client),
-                                                {net::ip::address_v4::loopback(), echo_port}),
-                       net::detached);
+        // 按客户端目标地址族选择本机回环端点
+        const auto dest = client.original_destination();
+        const net::ip::tcp::endpoint target =
+            dest.address().is_v6() ? net::ip::tcp::endpoint(net::ip::address_v6::loopback(), echo_port)
+                                   : net::ip::tcp::endpoint(net::ip::address_v4::loopback(), echo_port);
+        net::co_spawn(ex, bidirectional_bridge(std::move(client), target), net::detached);
     }
 }
 
@@ -172,6 +181,8 @@ int main(int argc, char** argv) {
     cfg.dev_name = opt.dev_name;
     cfg.ipv4_addr = opt.ipv4_addr;
     cfg.netmask = opt.netmask;
+    cfg.ipv6_addr = opt.ipv6_addr;
+    cfg.ipv6_prefix_len = opt.ipv6_prefix_len;
     cfg.mtu = opt.mtu;
     if (opt.inject_fd >= 0) {
         cfg.external_handle = opt.inject_fd;
@@ -183,7 +194,8 @@ int main(int argc, char** argv) {
         std::cerr << "open TUN failed: " << ec.message() << std::endl;
         return 1;
     }
-    std::cout << "tun_echo: " << cfg.dev_name << " " << cfg.ipv4_addr << std::endl;
+    std::cout << "tun_echo: " << cfg.dev_name << " " << cfg.ipv4_addr
+              << (cfg.ipv6_addr.empty() ? "" : " / " + cfg.ipv6_addr) << std::endl;
 
     net::co_spawn(io, tcp_listener(engine, opt.echo_port), net::detached);
     net::co_spawn(io, udp_listener(engine), net::detached);

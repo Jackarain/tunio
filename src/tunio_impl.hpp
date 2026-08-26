@@ -39,7 +39,7 @@ public:
     bool is_open() const noexcept { return open_.load(std::memory_order_acquire); }
     size_t mtu() const noexcept { return mtu_; }
     boost::asio::ip::address local_address() const noexcept {
-        return boost::asio::ip::address(local_ip_);
+        return local_ip_;
     }
     engine_stats& stats() noexcept { return stats_; }
     boost::asio::any_io_executor strand() const noexcept { return strand_ex_; }
@@ -85,15 +85,19 @@ private:
     void start_read();
     void on_read(const boost::system::error_code& ec, size_t n);
     void handle_packet(const uint8_t* pkt, size_t len);
-    void handle_icmp(const uint8_t* pkt, size_t len);
+    void handle_icmp(const ip_packet_info& ip, const uint8_t* icmp, size_t icmp_len);
+    void handle_icmpv6(const ip_packet_info& ip, const uint8_t* icmp, size_t icmp_len);
 
     boost::asio::io_context& ctx_;
     boost::asio::any_io_executor strand_ex_;
     std::atomic<bool> open_{false};
     tun_config cfg_;
     engine_stats stats_;
-    boost::asio::ip::address_v4 local_ip_{};
-    uint32_t local_ip_net_ = 0;   // 网络字节序，用于与报文字段直接比较
+    boost::asio::ip::address local_ip_{};  // 用于 local_address()
+    uint8_t local_ip4_[4] = {};            // 网络字节序
+    uint8_t local_ip6_[16] = {};           // 网络字节序
+    bool have_ip4_ = false;
+    bool have_ip6_ = false;
     size_t mtu_ = 1500;
 
     std::unique_ptr<packet_device> device_;

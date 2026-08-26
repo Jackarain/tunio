@@ -37,7 +37,7 @@ udp_engine::~udp_engine() {
     expiry_timer_.cancel();
 }
 
-void udp_engine::on_packet(const ipv4_header& ip, const uint8_t* payload, size_t len) {
+void udp_engine::on_packet(const ip_packet_info& ip, const uint8_t* payload, size_t len) {
     if (len < sizeof(udp_header)) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -53,15 +53,18 @@ void udp_engine::on_packet(const ipv4_header& ip, const uint8_t* payload, size_t
     }
     len = udp_len; // 截断可能的填充字节
 
-    // 校验 UDP 校验和（0 表示发送方未计算，IPv4 下允许）
+    // 校验 UDP 校验和（IPv4 下 0 表示发送方未计算，允许；IPv6 下校验和强制）
     const uint16_t csum = ntohs(uh.checksum);
-    if (csum != 0 &&
-        tcp_udp_checksum(ip.src_ip, ip.dst_ip, IPPROTO_UDP_V, payload, len) != 0) {
+    const bool v6_zero_csum = ip.family == 6 && csum == 0;
+    if (v6_zero_csum ||
+        (csum != 0 &&
+         tcp_udp_checksum(ip.family, ip.src_ip, ip.dst_ip, IPPROTO_UDP_V, payload, len) != 0)) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
-    const five_tuple key{ip.src_ip, ip.dst_ip, uh.src_port, uh.dst_port, IPPROTO_UDP_V};
+    const five_tuple key = make_five_tuple(ip.src_ip, ip.dst_ip, uh.src_port, uh.dst_port,
+                                           IPPROTO_UDP_V, ip.family);
     std::vector<uint8_t> datagram(payload + sizeof(udp_header), payload + len);
 
     auto it = sessions_.find(key);
@@ -320,42 +323,40 @@ void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<ui
             handler(boost::asio::error::bad_descriptor, 0);
             return;
         }
+        const int family = s.key.family;
+        const size_t ip_hdr_len = ip_header_size(family);
         const size_t mtu = session->eng->mtu();
-        if (data.size() > mtu - 28) {
+        if (data.size() > mtu - ip_hdr_len - sizeof(udp_header)) {
             handler(boost::asio::error::message_size, 0);
             return;
         }
         session->eng->refresh_expiry(session);
 
         // 构造 IP + UDP 报文（源地址为客户端请求的目标地址）
-        const size_t total = 20 + sizeof(udp_header) + data.size();
+        const size_t total = ip_hdr_len + sizeof(udp_header) + data.size();
         packet_buffer pkt(mtu + 64, 64);
         pkt.resize(total);
         uint8_t* base = pkt.data();
 
-        auto* ip = reinterpret_cast<ipv4_header*>(base);
-        ip->version_ihl = 0x45;
-        ip->tos = 0;
-        ip->total_len = htons(static_cast<uint16_t>(total));
-        ip->id = htons(session->eng->writer().alloc_ip_id());
-        ip->frag_off = htons(0x4000); // DF
-        ip->ttl = 64;
-        ip->protocol = IPPROTO_UDP_V;
-        ip->checksum = 0;
-        ip->src_ip = s.key.dst_ip;
-        ip->dst_ip = s.key.src_ip;
-        ip->checksum = htons(ipv4_checksum(base, 20));
+        build_ip_header(base, family, s.key.dst_ip.data(), s.key.src_ip.data(), IPPROTO_UDP_V,
+                        total, session->eng->writer().alloc_ip_id());
 
-        auto* uh = reinterpret_cast<udp_header*>(base + 20);
+        auto* uh = reinterpret_cast<udp_header*>(base + ip_hdr_len);
         uh->src_port = s.key.dst_port;
         uh->dst_port = s.key.src_port;
         uh->length = htons(static_cast<uint16_t>(sizeof(udp_header) + data.size()));
         uh->checksum = 0;
         if (!data.empty()) {
-            std::memcpy(base + 20 + sizeof(udp_header), data.data(), data.size());
+            std::memcpy(base + ip_hdr_len + sizeof(udp_header), data.data(), data.size());
         }
-        uh->checksum = htons(tcp_udp_checksum(ip->src_ip, ip->dst_ip, IPPROTO_UDP_V, base + 20,
-                                              sizeof(udp_header) + data.size()));
+        uint16_t csum = tcp_udp_checksum(family, s.key.dst_ip.data(), s.key.src_ip.data(),
+                                         IPPROTO_UDP_V, base + ip_hdr_len,
+                                         sizeof(udp_header) + data.size());
+        // IPv6 下 UDP 校验和不可为 0；按 RFC 768/8200 以 0xffff 替代
+        if (csum == 0) {
+            csum = 0xffff;
+        }
+        uh->checksum = htons(csum);
 
         using handler_t = std::decay_t<decltype(handler)>;
         auto sp = std::make_shared<handler_t>(std::move(handler));

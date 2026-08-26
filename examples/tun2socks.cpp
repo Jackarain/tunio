@@ -44,6 +44,8 @@ struct options {
     std::string dev_name = "tun0";
     std::string ipv4_addr = "10.0.0.1";
     std::string netmask = "255.255.255.0";
+    std::string ipv6_addr;
+    uint8_t ipv6_prefix_len = 64;
     size_t mtu = 1500;
     std::string proxy_host = "127.0.0.1";
     uint16_t proxy_port = 1080;
@@ -57,6 +59,8 @@ void usage(const char* prog) {
               << "  --tun <name>           TUN 设备名（默认 tun0）\n"
               << "  --ip <addr>            本地虚拟 IP（默认 10.0.0.1）\n"
               << "  --netmask <mask>       子网掩码（默认 255.255.255.0）\n"
+              << "  --ip6 <addr>           本地虚拟 IPv6 地址（可选，如 fd00::1）\n"
+              << "  --ip6-prefix <len>     IPv6 前缀长度（默认 64）\n"
               << "  --mtu <bytes>          MTU（默认 1500）\n"
               << "  --proxy <host:port>    SOCKS5 代理地址（默认 127.0.0.1:1080）\n"
               << "  --no-udp               禁用 UDP 转发\n"
@@ -80,6 +84,10 @@ options parse_args(int argc, char** argv) {
             opt.ipv4_addr = next();
         } else if (arg == "--netmask") {
             opt.netmask = next();
+        } else if (arg == "--ip6") {
+            opt.ipv6_addr = next();
+        } else if (arg == "--ip6-prefix") {
+            opt.ipv6_prefix_len = static_cast<uint8_t>(std::stoul(next()));
         } else if (arg == "--mtu") {
             opt.mtu = static_cast<size_t>(std::stoul(next()));
         } else if (arg == "--proxy") {
@@ -182,8 +190,16 @@ net::awaitable<void> udp_bridge(tunio::tun_udp_socket session, net::ip::tcp::end
             for (;;) {
                 size_t n = co_await s->async_receive(net::buffer(buf), net::use_awaitable);
                 const auto key = s->remote_key();
-                net::ip::udp::endpoint target(
-                    net::ip::address_v4(ntohl(key.dst_ip)), ntohs(key.dst_port));
+                net::ip::udp::endpoint target;
+                if (key.family == 6) {
+                    net::ip::address_v6::bytes_type b{};
+                    std::copy(key.dst_ip.begin(), key.dst_ip.end(), b.begin());
+                    target = {net::ip::address_v6(b), ntohs(key.dst_port)};
+                } else {
+                    net::ip::address_v4::bytes_type b{};
+                    std::copy(key.dst_ip.begin(), key.dst_ip.begin() + 4, b.begin());
+                    target = {net::ip::address_v4(b), ntohs(key.dst_port)};
+                }
                 co_await relay->send_to(std::vector<uint8_t>(buf.data(), buf.data() + n), target);
             }
         } catch (...) {
@@ -238,6 +254,8 @@ int main(int argc, char** argv) {
     cfg.dev_name = opt.dev_name;
     cfg.ipv4_addr = opt.ipv4_addr;
     cfg.netmask = opt.netmask;
+    cfg.ipv6_addr = opt.ipv6_addr;
+    cfg.ipv6_prefix_len = opt.ipv6_prefix_len;
     cfg.mtu = opt.mtu;
     if (opt.inject_fd >= 0) {
         cfg.external_handle = opt.inject_fd;
@@ -250,6 +268,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::cout << "tun2socks 已启动: " << cfg.dev_name << " " << cfg.ipv4_addr
+              << (cfg.ipv6_addr.empty() ? "" : " / " + cfg.ipv6_addr)
               << " -> " << opt.proxy_host << ":" << opt.proxy_port << std::endl;
 
     net::ip::tcp::endpoint proxy(net::ip::make_address(opt.proxy_host), opt.proxy_port);

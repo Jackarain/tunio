@@ -40,7 +40,8 @@ tcp_engine::tcp_engine(boost::asio::any_io_executor strand, device_writer& write
       cfg_(cfg),
       stats_(stats),
       account_(std::move(account)),
-      mss_(cfg.mtu > 40 ? cfg.mtu - 40 : 536),
+      mss4_(cfg.mtu > 40 ? cfg.mtu - 40 : 536),
+      mss6_(cfg.mtu > 60 ? cfg.mtu - 60 : 1220),
       sweep_timer_(strand_) {}
 
 tcp_engine::~tcp_engine() {
@@ -88,7 +89,7 @@ void tcp_engine::on_sweep(const boost::system::error_code& ec) {
     start_sweep();
 }
 
-void tcp_engine::on_packet(const ipv4_header& ip, const uint8_t* payload, size_t len) {
+void tcp_engine::on_packet(const ip_packet_info& ip, const uint8_t* payload, size_t len) {
     if (len < sizeof(tcp_header)) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -98,7 +99,7 @@ void tcp_engine::on_packet(const ipv4_header& ip, const uint8_t* payload, size_t
     std::memcpy(&th, payload, sizeof(th));
 
     // 校验 TCP 校验和
-    if (tcp_udp_checksum(ip.src_ip, ip.dst_ip, IPPROTO_TCP_V, payload, len) != 0) {
+    if (tcp_udp_checksum(ip.family, ip.src_ip, ip.dst_ip, IPPROTO_TCP_V, payload, len) != 0) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -111,7 +112,8 @@ void tcp_engine::on_packet(const ipv4_header& ip, const uint8_t* payload, size_t
     }
 
     const bool is_syn = (th.flags & TCP_SYN) != 0 && (th.flags & TCP_ACK) == 0;
-    const five_tuple key{ip.src_ip, ip.dst_ip, th.src_port, th.dst_port, IPPROTO_TCP_V};
+    const five_tuple key = make_five_tuple(ip.src_ip, ip.dst_ip, th.src_port, th.dst_port,
+                                           IPPROTO_TCP_V, ip.family);
 
     auto it = flows_.find(key);
     std::shared_ptr<tcp_flow> f;
@@ -307,7 +309,7 @@ void tcp_engine::flush_writes(tcp_flow& f) {
         }
         const size_t remaining = op.data.size() - op.offset;
         const size_t chunk =
-            std::min({remaining, mss_, static_cast<size_t>(f.peer_wnd - in_flight)});
+            std::min({remaining, mss(f.key.family), static_cast<size_t>(f.peer_wnd - in_flight)});
         if (chunk == 0) {
             break;
         }
@@ -324,26 +326,18 @@ void tcp_engine::flush_writes(tcp_flow& f) {
 
 void tcp_engine::send_segment(tcp_flow& f, uint32_t seq, uint8_t flags,
                               const uint8_t* payload, size_t len, bool with_mss) {
+    const int family = f.key.family;
+    const size_t ip_hdr_len = ip_header_size(family);
     const size_t tcp_hdr_len = with_mss ? 24 : 20;
-    const size_t total = 20 + tcp_hdr_len + len;
+    const size_t total = ip_hdr_len + tcp_hdr_len + len;
     packet_buffer pkt(cfg_.mtu + 64, 64);
     pkt.resize(total);
     uint8_t* base = pkt.data();
 
-    auto* ip = reinterpret_cast<ipv4_header*>(base);
-    ip->version_ihl = 0x45;
-    ip->tos = 0;
-    ip->total_len = htons(static_cast<uint16_t>(total));
-    ip->id = htons(writer_.alloc_ip_id());
-    ip->frag_off = htons(0x4000); // DF
-    ip->ttl = 64;
-    ip->protocol = IPPROTO_TCP_V;
-    ip->checksum = 0;
-    ip->src_ip = f.key.dst_ip;
-    ip->dst_ip = f.key.src_ip;
-    ip->checksum = htons(ipv4_checksum(base, 20));
+    build_ip_header(base, family, f.key.dst_ip.data(), f.key.src_ip.data(), IPPROTO_TCP_V,
+                    total, writer_.alloc_ip_id());
 
-    auto* th = reinterpret_cast<tcp_header*>(base + 20);
+    auto* th = reinterpret_cast<tcp_header*>(base + ip_hdr_len);
     th->src_port = f.key.dst_port;
     th->dst_port = f.key.src_port;
     th->seq = htonl(seq);
@@ -355,16 +349,18 @@ void tcp_engine::send_segment(tcp_flow& f, uint32_t seq, uint8_t flags,
     th->urgent = 0;
 
     if (with_mss) {
-        uint8_t* opt = base + 20 + 20;
+        uint8_t* opt = base + ip_hdr_len + 20;
         opt[0] = 2; // kind = MSS
         opt[1] = 4; // len = 4
-        opt[2] = static_cast<uint8_t>(mss_ >> 8);
-        opt[3] = static_cast<uint8_t>(mss_ & 0xff);
+        const size_t mss = this->mss(family);
+        opt[2] = static_cast<uint8_t>(mss >> 8);
+        opt[3] = static_cast<uint8_t>(mss & 0xff);
     }
     if (len > 0) {
-        std::memcpy(base + 20 + tcp_hdr_len, payload, len);
+        std::memcpy(base + ip_hdr_len + tcp_hdr_len, payload, len);
     }
-    th->checksum = htons(tcp_udp_checksum(ip->src_ip, ip->dst_ip, IPPROTO_TCP_V, base + 20,
+    th->checksum = htons(tcp_udp_checksum(family, f.key.dst_ip.data(), f.key.src_ip.data(),
+                                          IPPROTO_TCP_V, base + ip_hdr_len,
                                           tcp_hdr_len + len));
 
     writer_.async_write(std::move(pkt),
@@ -618,7 +614,14 @@ bool tcp_flow_is_open(const std::shared_ptr<tcp_flow>& flow) {
 }
 
 boost::asio::ip::tcp::endpoint tcp_flow::original_destination() const {
-    return {boost::asio::ip::address_v4(ntohl(key.dst_ip)), ntohs(key.dst_port)};
+    if (key.family == 6) {
+        boost::asio::ip::address_v6::bytes_type b{};
+        std::copy(key.dst_ip.begin(), key.dst_ip.end(), b.begin());
+        return {boost::asio::ip::address_v6(b), ntohs(key.dst_port)};
+    }
+    boost::asio::ip::address_v4::bytes_type b{};
+    std::copy(key.dst_ip.begin(), key.dst_ip.begin() + 4, b.begin());
+    return {boost::asio::ip::address_v4(b), ntohs(key.dst_port)};
 }
 
 bool tcp_flow::is_open() const {

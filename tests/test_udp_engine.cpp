@@ -46,8 +46,11 @@ static void test_datagram_roundtrip() {
     auto aec = future_get(accept_done.get_future());
     assert(!aec);
     auto key = session.remote_key();
-    assert(key.src_ip == htonl(CLIENT_IP));
-    assert(key.dst_ip == htonl(DEST_IP));
+    const uint32_t csrc = htonl(CLIENT_IP);
+    const uint32_t cdst = htonl(DEST_IP);
+    assert(key.family == 4);
+    assert(std::memcmp(key.src_ip.data(), &csrc, 4) == 0);
+    assert(std::memcmp(key.dst_ip.data(), &cdst, 4) == 0);
     assert(key.src_port == htons(53000));
     assert(key.dst_port == htons(53));
     assert(key.protocol == 17);
