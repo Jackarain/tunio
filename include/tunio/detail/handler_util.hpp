@@ -12,12 +12,12 @@
 
 #include <boost/asio.hpp>
 
-namespace asio = boost::asio;
 #include <functional>
 #include <memory>
 #include <utility>
 
 namespace tunio {
+namespace net = boost::asio;
 namespace detail {
 
 // 将任意 CompletionHandler（含 move-only，如 use_awaitable 续体）包装为可拷贝形式
@@ -34,7 +34,7 @@ inline auto make_copyable(Handler&& handler) {
 template <typename Handler>
 inline std::function<void(boost::system::error_code, size_t)>
 bind_handler(boost::asio::any_io_executor ex, Handler&& handler) {
-    auto sp = std::make_shared<std::decay_t<Handler>>(asio::bind_executor(ex, std::forward<Handler>(handler)));
+    auto sp = std::make_shared<std::decay_t<Handler>>(net::bind_executor(ex, std::forward<Handler>(handler)));
     return [sp](boost::system::error_code ec, size_t n) mutable {
         std::move(*sp)(ec, n);
     };

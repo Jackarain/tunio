@@ -12,7 +12,6 @@
 
 #include <boost/asio.hpp>
 
-namespace asio = boost::asio;
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -22,13 +21,14 @@ namespace asio = boost::asio;
 #include "tunio/tun_udp_socket.hpp"
 
 namespace tunio {
+namespace net = boost::asio;
 
 namespace detail {
 
 struct udp_session;
 
 void udp_session_start_receive(std::shared_ptr<udp_session> session,
-                               std::shared_ptr<std::vector<asio::mutable_buffer>> buffers,
+                               std::shared_ptr<std::vector<net::mutable_buffer>> buffers,
                                size_t total,
                                std::function<void(boost::system::error_code, size_t)> handler);
 
@@ -41,7 +41,7 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
 template <typename MutableBufferSequence>
 void tun_udp_socket::do_receive(MutableBufferSequence&& buffers,
                                 std::function<void(boost::system::error_code, size_t)> handler) {
-    auto seq = std::make_shared<std::vector<asio::mutable_buffer>>();
+    auto seq = std::make_shared<std::vector<net::mutable_buffer>>();
     size_t total = 0;
     for (const auto& b : buffers) {
         seq->push_back(b);
@@ -51,7 +51,7 @@ void tun_udp_socket::do_receive(MutableBufferSequence&& buffers,
     auto session = session_;
     if (!session) {
         auto ex = ex_;
-        asio::post(ex, [handler = std::move(handler)]() mutable {
+        net::post(ex, [handler = std::move(handler)]() mutable {
             handler(boost::asio::error::bad_descriptor, 0);
         });
         return;
@@ -78,7 +78,7 @@ void tun_udp_socket::do_send(ConstBufferSequence&& buffers,
     auto session = session_;
     if (!session) {
         auto ex = ex_;
-        asio::post(ex, [handler = std::move(handler)]() mutable {
+        net::post(ex, [handler = std::move(handler)]() mutable {
             handler(boost::asio::error::bad_descriptor, 0);
         });
         return;

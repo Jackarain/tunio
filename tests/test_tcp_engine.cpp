@@ -19,9 +19,9 @@
 #include "test_harness.hpp"
 
 using namespace test;
-namespace asio = boost::asio;
 
 namespace {
+namespace net = boost::asio;
 constexpr uint32_t CLIENT_IP = 0x0a000002; // 10.0.0.2
 constexpr uint32_t DEST_IP = 0x08080808;   // 8.8.8.8
 constexpr uint16_t CLIENT_PORT = 12345;
@@ -77,7 +77,7 @@ static void test_handshake_data_fin() {
     // 应用读取到字节流
     std::promise<std::pair<boost::system::error_code, size_t>> read_done;
     char buf[64];
-    peer.async_read_some(asio::buffer(buf), [&](boost::system::error_code ec, size_t n) {
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec, size_t n) {
         read_done.set_value({ec, n});
     });
     auto [rec, rn] = future_get(read_done.get_future());
@@ -96,7 +96,7 @@ static void test_handshake_data_fin() {
     // 应用写入 "world"，设备收到数据段
     const std::string world = "world";
     std::promise<std::pair<boost::system::error_code, size_t>> write_done;
-    peer.async_write_some(asio::buffer(world), [&](boost::system::error_code ec, size_t n) {
+    peer.async_write_some(net::buffer(world), [&](boost::system::error_code ec, size_t n) {
         write_done.set_value({ec, n});
     });
     auto [wec, wn] = future_get(write_done.get_future());
@@ -119,7 +119,7 @@ static void test_handshake_data_fin() {
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x11, 1001 + hello.size(),
                           engine_iss + 1 + world.size(), 65535, {}));
     std::promise<std::pair<boost::system::error_code, size_t>> eof_done;
-    peer.async_read_some(asio::buffer(buf), [&](boost::system::error_code ec, size_t n) {
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec, size_t n) {
         eof_done.set_value({ec, n});
     });
     auto [eec, en] = future_get(eof_done.get_future());
@@ -183,7 +183,7 @@ static void test_zero_window_flow_control() {
 
     // 写入应因窗口为 0 而挂起
     std::promise<std::pair<boost::system::error_code, size_t>> write_done;
-    peer.async_write_some(asio::buffer("x", 1), [&](boost::system::error_code ec, size_t n) {
+    peer.async_write_some(net::buffer("x", 1), [&](boost::system::error_code ec, size_t n) {
         write_done.set_value({ec, n});
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -235,7 +235,7 @@ static void test_rst() {
     // 挂起读取，等待 RST
     std::promise<std::pair<boost::system::error_code, size_t>> read_done;
     char buf[64];
-    peer.async_read_some(asio::buffer(buf), [&](boost::system::error_code ec, size_t n) {
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec, size_t n) {
         read_done.set_value({ec, n});
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -315,7 +315,7 @@ static void test_data_with_fin() {
     // 应用读到数据
     std::promise<std::pair<boost::system::error_code, size_t>> read_done;
     char buf[64];
-    peer.async_read_some(asio::buffer(buf), [&](boost::system::error_code ec, size_t n) {
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec, size_t n) {
         read_done.set_value({ec, n});
     });
     auto [rec, rn] = future_get(read_done.get_future());
@@ -324,7 +324,7 @@ static void test_data_with_fin() {
 
     // 再次读取应得到 EOF（同段 FIN 已被正确处理）
     std::promise<std::pair<boost::system::error_code, size_t>> eof_done;
-    peer.async_read_some(asio::buffer(buf), [&](boost::system::error_code ec, size_t n) {
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec, size_t n) {
         eof_done.set_value({ec, n});
     });
     auto [eec, en] = future_get(eof_done.get_future());
@@ -385,7 +385,7 @@ static void test_write_after_shutdown_send() {
 
     // 之后写入应被拒绝（fin_sent 已置位）
     std::promise<std::pair<boost::system::error_code, size_t>> write_done;
-    peer.async_write_some(asio::buffer("x", 1), [&](boost::system::error_code ec, size_t n) {
+    peer.async_write_some(net::buffer("x", 1), [&](boost::system::error_code ec, size_t n) {
         write_done.set_value({ec, n});
     });
     auto [wec, wn] = future_get(write_done.get_future());

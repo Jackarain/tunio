@@ -49,7 +49,7 @@ tcp_engine::~tcp_engine() {
 
 void tcp_engine::start_sweep() {
     sweep_timer_.expires_after(std::chrono::seconds(1));
-    sweep_timer_.async_wait(asio::bind_executor(strand_, [self = shared_from_this()](const boost::system::error_code& ec) {
+    sweep_timer_.async_wait(net::bind_executor(strand_, [self = shared_from_this()](const boost::system::error_code& ec) {
         self->on_sweep(ec);
     }));
 }
@@ -368,7 +368,7 @@ void tcp_engine::send_segment(tcp_flow& f, uint32_t seq, uint8_t flags,
                                           tcp_hdr_len + len));
 
     writer_.async_write(std::move(pkt),
-                        asio::bind_executor(strand_, [](const boost::system::error_code&, size_t) {}));
+                        net::bind_executor(strand_, [](const boost::system::error_code&, size_t) {}));
 }
 
 void tcp_engine::send_ack(tcp_flow& f) {
@@ -485,14 +485,14 @@ void tcp_engine::close_all() {
 // ---- tun_stream 入口 ----
 
 void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
-                         std::shared_ptr<std::vector<asio::mutable_buffer>> buffers,
+                         std::shared_ptr<std::vector<net::mutable_buffer>> buffers,
                          size_t total,
                          std::function<void(boost::system::error_code, size_t)> handler) {
     if (!flow || !flow->eng) {
         handler(boost::asio::error::bad_descriptor, 0);
         return;
     }
-    asio::dispatch(flow->eng->strand(), [flow, buffers = std::move(buffers), total,
+    net::dispatch(flow->eng->strand(), [flow, buffers = std::move(buffers), total,
                                          handler = std::move(handler)]() mutable {
         auto& f = *flow;
         if (f.state == tcp_state::CLOSED || f.app_closed || f.rx_shutdown) {
@@ -518,7 +518,7 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow, std::vector<uint8_t> d
         handler(boost::asio::error::bad_descriptor, 0);
         return;
     }
-    asio::dispatch(flow->eng->strand(), [flow, data = std::move(data),
+    net::dispatch(flow->eng->strand(), [flow, data = std::move(data),
                                          handler = std::move(handler)]() mutable {
         auto& f = *flow;
         if (f.state == tcp_state::CLOSED || f.app_closed || f.fin_sent) {
@@ -542,7 +542,7 @@ void tcp_flow_shutdown_send(std::shared_ptr<tcp_flow> flow) {
     if (!flow || !flow->eng) {
         return;
     }
-    asio::dispatch(flow->eng->strand(), [flow]() {
+    net::dispatch(flow->eng->strand(), [flow]() {
         auto& f = *flow;
         if (f.state == tcp_state::CLOSED || f.app_closed) {
             return;
@@ -555,7 +555,7 @@ void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow) {
     if (!flow || !flow->eng) {
         return;
     }
-    asio::dispatch(flow->eng->strand(), [flow]() {
+    net::dispatch(flow->eng->strand(), [flow]() {
         auto& f = *flow;
         if (f.state == tcp_state::CLOSED) {
             return;
@@ -577,7 +577,7 @@ void tcp_flow_close(std::shared_ptr<tcp_flow> flow) {
     if (!flow || !flow->eng) {
         return;
     }
-    asio::dispatch(flow->eng->strand(), [flow]() {
+    net::dispatch(flow->eng->strand(), [flow]() {
         auto& f = *flow;
         if (f.state == tcp_state::CLOSED || f.app_closed) {
             return;
@@ -604,7 +604,7 @@ void tcp_flow_reset(std::shared_ptr<tcp_flow> flow) {
     if (!flow || !flow->eng) {
         return;
     }
-    asio::dispatch(flow->eng->strand(), [flow]() {
+    net::dispatch(flow->eng->strand(), [flow]() {
         auto& f = *flow;
         if (f.state == tcp_state::CLOSED || f.app_closed) {
             return;

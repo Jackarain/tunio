@@ -172,7 +172,7 @@ void udp_engine::arm_expiry_timer() {
     armed_target_ = target;
     timer_waiting_ = true;
     expiry_timer_.expires_at(target);
-    expiry_timer_.async_wait(asio::bind_executor(strand_, [self = shared_from_this(), gen](const boost::system::error_code& ec) {
+    expiry_timer_.async_wait(net::bind_executor(strand_, [self = shared_from_this(), gen](const boost::system::error_code& ec) {
         if (gen != self->wait_gen_) {
             return;
         }
@@ -264,14 +264,14 @@ void udp_engine::close_all() {
 // ---- tun_udp_socket 入口 ----
 
 void udp_session_start_receive(std::shared_ptr<udp_session> session,
-                               std::shared_ptr<std::vector<asio::mutable_buffer>> buffers,
+                               std::shared_ptr<std::vector<net::mutable_buffer>> buffers,
                                size_t total,
                                std::function<void(boost::system::error_code, size_t)> handler) {
     if (!session || !session->eng) {
         handler(boost::asio::error::bad_descriptor, 0);
         return;
     }
-    asio::dispatch(session->eng->strand(), [session, buffers = std::move(buffers), total,
+    net::dispatch(session->eng->strand(), [session, buffers = std::move(buffers), total,
                                             handler = std::move(handler)]() mutable {
         auto& s = *session;
         if (s.closed) {
@@ -313,7 +313,7 @@ void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<ui
         handler(boost::asio::error::bad_descriptor, 0);
         return;
     }
-    asio::dispatch(session->eng->strand(), [session, data = std::move(data),
+    net::dispatch(session->eng->strand(), [session, data = std::move(data),
                                             handler = std::move(handler)]() mutable {
         auto& s = *session;
         if (s.closed) {
@@ -361,7 +361,7 @@ void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<ui
         auto sp = std::make_shared<handler_t>(std::move(handler));
         const size_t sent = data.size();
         session->eng->writer().async_write(
-            std::move(pkt), asio::bind_executor(session->eng->strand(), [sp, sent](const boost::system::error_code&, size_t) {
+            std::move(pkt), net::bind_executor(session->eng->strand(), [sp, sent](const boost::system::error_code&, size_t) {
                 std::move(*sp)(boost::system::error_code{}, sent);
             }));
     });
@@ -371,7 +371,7 @@ void udp_session_close(std::shared_ptr<udp_session> session) {
     if (!session || !session->eng) {
         return;
     }
-    asio::dispatch(session->eng->strand(), [session]() {
+    net::dispatch(session->eng->strand(), [session]() {
         session->eng->remove_session(session);
     });
 }
@@ -380,7 +380,7 @@ void udp_session_set_timeout(std::shared_ptr<udp_session> session, std::chrono::
     if (!session || !session->eng) {
         return;
     }
-    asio::dispatch(session->eng->strand(), [session, timeout]() {
+    net::dispatch(session->eng->strand(), [session, timeout]() {
         if (session->closed) {
             return;
         }

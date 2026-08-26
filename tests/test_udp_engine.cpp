@@ -20,9 +20,9 @@
 #include "test_harness.hpp"
 
 using namespace test;
-namespace asio = boost::asio;
 
 namespace {
+namespace net = boost::asio;
 constexpr uint32_t CLIENT_IP = 0x0a000002; // 10.0.0.2
 constexpr uint32_t DEST_IP = 0x08080808;   // 8.8.8.8
 } // namespace
@@ -55,7 +55,7 @@ static void test_datagram_roundtrip() {
     // 接收完整数据报
     std::promise<std::pair<boost::system::error_code, size_t>> recv_done;
     char buf[512];
-    session.async_receive(asio::buffer(buf), [&](boost::system::error_code ec, size_t n) {
+    session.async_receive(net::buffer(buf), [&](boost::system::error_code ec, size_t n) {
         recv_done.set_value({ec, n});
     });
     auto [rec, rn] = future_get(recv_done.get_future());
@@ -65,7 +65,7 @@ static void test_datagram_roundtrip() {
     // 发送回复数据报
     const std::string reply = "dns-answer";
     std::promise<std::pair<boost::system::error_code, size_t>> send_done;
-    session.async_send(asio::buffer(reply), [&](boost::system::error_code ec, size_t n) {
+    session.async_send(net::buffer(reply), [&](boost::system::error_code ec, size_t n) {
         send_done.set_value({ec, n});
     });
     auto [sec, sn] = future_get(send_done.get_future());
@@ -105,7 +105,7 @@ static void test_session_timeout() {
     // 消费首个数据报
     std::promise<std::pair<boost::system::error_code, size_t>> first_read;
     char buf[512];
-    session.async_receive(asio::buffer(buf), [&](boost::system::error_code ec, size_t n) {
+    session.async_receive(net::buffer(buf), [&](boost::system::error_code ec, size_t n) {
         first_read.set_value({ec, n});
     });
     auto [fec, fn] = future_get(first_read.get_future());
@@ -113,7 +113,7 @@ static void test_session_timeout() {
 
     // 挂起第二个读取，等待空闲超时唤醒
     std::promise<std::pair<boost::system::error_code, size_t>> timeout_read;
-    session.async_receive(asio::buffer(buf), [&](boost::system::error_code ec, size_t n) {
+    session.async_receive(net::buffer(buf), [&](boost::system::error_code ec, size_t n) {
         timeout_read.set_value({ec, n});
     });
     auto [tec, tn] = future_get(timeout_read.get_future(), 5000);

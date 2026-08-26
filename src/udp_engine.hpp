@@ -12,7 +12,6 @@
 
 #include <boost/asio.hpp>
 
-namespace asio = boost::asio;
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -25,6 +24,7 @@ namespace asio = boost::asio;
 #include "ip_headers.hpp"
 
 namespace tunio {
+namespace net = boost::asio;
 namespace detail {
 
 class device_writer;
@@ -47,7 +47,7 @@ struct udp_session : public std::enable_shared_from_this<udp_session> {
     size_t rx_bytes = 0;
 
     struct read_op {
-        std::shared_ptr<std::vector<asio::mutable_buffer>> buffers;
+        std::shared_ptr<std::vector<net::mutable_buffer>> buffers;
         size_t total = 0;
         std::function<void(boost::system::error_code, size_t)> handler;
     };
@@ -81,7 +81,7 @@ public:
 private:
     friend struct udp_session;
     friend void udp_session_start_receive(
-        std::shared_ptr<udp_session>, std::shared_ptr<std::vector<asio::mutable_buffer>>,
+        std::shared_ptr<udp_session>, std::shared_ptr<std::vector<net::mutable_buffer>>,
         size_t, std::function<void(boost::system::error_code, size_t)>);
     friend void udp_session_start_send(std::shared_ptr<udp_session>, std::vector<uint8_t>,
                                        std::function<void(boost::system::error_code, size_t)>);
@@ -125,7 +125,7 @@ private:
 
 // ---- 供 tun_udp_socket 调用的入口（内部自动派发到 Strand）----
 void udp_session_start_receive(std::shared_ptr<udp_session> session,
-                               std::shared_ptr<std::vector<asio::mutable_buffer>> buffers,
+                               std::shared_ptr<std::vector<net::mutable_buffer>> buffers,
                                size_t total,
                                std::function<void(boost::system::error_code, size_t)> handler);
 

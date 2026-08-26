@@ -12,7 +12,6 @@
 
 #include <boost/asio.hpp>
 
-namespace asio = boost::asio;
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -27,6 +26,7 @@ namespace asio = boost::asio;
 #include "udp_engine.hpp"
 
 namespace tunio {
+namespace net = boost::asio;
 namespace detail {
 
 class tunio_impl : public std::enable_shared_from_this<tunio_impl> {
@@ -46,7 +46,7 @@ public:
 
     // ---- accept 入口（自动派发到 Strand）----
     void async_accept_tcp(std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)> handler) {
-        asio::dispatch(strand_ex_, [tcp = tcp_, h = std::move(handler)]() mutable {
+        net::dispatch(strand_ex_, [tcp = tcp_, h = std::move(handler)]() mutable {
             if (tcp) {
                 tcp->async_accept(std::move(h));
             } else {
@@ -56,7 +56,7 @@ public:
     }
 
     void async_accept_udp(std::function<void(boost::system::error_code, std::shared_ptr<udp_session>)> handler) {
-        asio::dispatch(strand_ex_, [udp = udp_, h = std::move(handler)]() mutable {
+        net::dispatch(strand_ex_, [udp = udp_, h = std::move(handler)]() mutable {
             if (udp) {
                 udp->async_accept(std::move(h));
             } else {
@@ -66,7 +66,7 @@ public:
     }
 
     void cancel_tcp_accepts() {
-        asio::dispatch(strand_ex_, [tcp = tcp_]() {
+        net::dispatch(strand_ex_, [tcp = tcp_]() {
             if (tcp) {
                 tcp->cancel_accepts();
             }
@@ -74,7 +74,7 @@ public:
     }
 
     void cancel_udp_accepts() {
-        asio::dispatch(strand_ex_, [udp = udp_]() {
+        net::dispatch(strand_ex_, [udp = udp_]() {
             if (udp) {
                 udp->cancel_accepts();
             }

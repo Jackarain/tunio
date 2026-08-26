@@ -27,7 +27,7 @@ struct tcp_flow;
 // TCP 虚拟流套接字
 //
 // 表示一条已由引擎完成 TCP 三次握手的虚拟连接。应用层可像使用
-// asio::ip::tcp::socket 一样进行异步读写，数据经引擎封装为 IP/TCP
+// net::ip::tcp::socket 一样进行异步读写，数据经引擎封装为 IP/TCP
 // 报文后写入 TUN 设备，发往虚拟网内的客户端。
 class tun_stream {
 public:

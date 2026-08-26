@@ -24,81 +24,81 @@
 #include "test_harness.hpp"
 
 using namespace test;
-namespace asio = boost::asio;
 
 namespace {
+namespace net = boost::asio;
 constexpr uint32_t CLIENT_IP = 0x0a000002; // 10.0.0.2
 constexpr uint32_t DEST_IP = 0x08080808;   // 8.8.8.8
 constexpr uint16_t CLIENT_PORT = 20000;
 constexpr uint16_t DEST_PORT = 8080;
 } // namespace
 
-static asio::awaitable<void> echo_server(asio::ip::tcp::acceptor& srv) {
-    auto ex = co_await asio::this_coro::executor;
-    asio::ip::tcp::socket s(ex);
+static net::awaitable<void> echo_server(net::ip::tcp::acceptor& srv) {
+    auto ex = co_await net::this_coro::executor;
+    net::ip::tcp::socket s(ex);
     boost::system::error_code ec;
-    co_await srv.async_accept(s, asio::redirect_error(asio::use_awaitable, ec));
+    co_await srv.async_accept(s, net::redirect_error(net::use_awaitable, ec));
     if (ec) {
         co_return;
     }
     std::array<char, 4096> buf;
     for (;;) {
-        size_t n = co_await s.async_read_some(asio::buffer(buf), asio::redirect_error(asio::use_awaitable, ec));
+        size_t n = co_await s.async_read_some(net::buffer(buf), net::redirect_error(net::use_awaitable, ec));
         if (ec) {
             co_return;
         }
-        co_await asio::async_write(s, asio::buffer(buf, n), asio::redirect_error(asio::use_awaitable, ec));
+        co_await net::async_write(s, net::buffer(buf, n), net::redirect_error(net::use_awaitable, ec));
         if (ec) {
             co_return;
         }
     }
 }
 
-static asio::awaitable<void> bridge(tun_stream client, asio::ip::tcp::endpoint target) {
-    auto ex = co_await asio::this_coro::executor;
+static net::awaitable<void> bridge(tun_stream client, net::ip::tcp::endpoint target) {
+    auto ex = co_await net::this_coro::executor;
     auto c = std::make_shared<tun_stream>(std::move(client));
-    auto p = std::make_shared<asio::ip::tcp::socket>(ex);
+    auto p = std::make_shared<net::ip::tcp::socket>(ex);
     boost::system::error_code ec;
 
-    co_await p->async_connect(target, asio::redirect_error(asio::use_awaitable, ec));
+    co_await p->async_connect(target, net::redirect_error(net::use_awaitable, ec));
     if (ec) {
         c->reset(); // 后端连接失败：RST 客户端
         co_return;
     }
 
     // 客户端 -> 后端
-    asio::co_spawn(ex, [c, p]() -> asio::awaitable<void> {
+    net::co_spawn(ex, [c, p]() -> net::awaitable<void> {
         std::array<char, 8192> buf;
         boost::system::error_code ec;
         for (;;) {
-            size_t n = co_await c->async_read_some(asio::buffer(buf), asio::redirect_error(asio::use_awaitable, ec));
+            size_t n = co_await c->async_read_some(net::buffer(buf), net::redirect_error(net::use_awaitable, ec));
             if (ec || n == 0) {
                 break;
             }
-            co_await asio::async_write(*p, asio::buffer(buf, n), asio::redirect_error(asio::use_awaitable, ec));
+            co_await net::async_write(*p, net::buffer(buf, n), net::redirect_error(net::use_awaitable, ec));
             if (ec) {
                 break;
             }
         }
-        p->shutdown(asio::ip::tcp::socket::shutdown_send, ec);
-    }, asio::detached);
+        p->shutdown(net::ip::tcp::socket::shutdown_send, ec);
+    }, net::detached);
 
     // 后端 -> 客户端
-    asio::co_spawn(ex, [c, p]() -> asio::awaitable<void> {
+    net::co_spawn(ex, [c, p]() -> net::awaitable<void> {
         std::array<char, 8192> buf;
         boost::system::error_code ec;
         for (;;) {
-            size_t n = co_await p->async_read_some(asio::buffer(buf), asio::redirect_error(asio::use_awaitable, ec));
+            size_t n = co_await p->async_read_some(net::buffer(buf), net::redirect_error(net::use_awaitable, ec));
             if (ec || n == 0) {
                 break;
             }
-            co_await asio::async_write(*c, asio::buffer(buf, n), asio::redirect_error(asio::use_awaitable, ec));
+            co_await net::async_write(*c, net::buffer(buf, n), net::redirect_error(net::use_awaitable, ec));
             if (ec) {
                 break;
             }
         }
         c->close();
-    }, asio::detached);
+    }, net::detached);
 }
 
 int main() {
@@ -106,23 +106,23 @@ int main() {
     auto& io = env.io;
 
     // 本地回显服务
-    asio::ip::tcp::acceptor srv(io, {asio::ip::tcp::v4(), 0});
+    net::ip::tcp::acceptor srv(io, {net::ip::tcp::v4(), 0});
     const uint16_t port = srv.local_endpoint().port();
-    asio::co_spawn(io, echo_server(srv), asio::detached);
+    net::co_spawn(io, echo_server(srv), net::detached);
 
     // 桥接器：接受虚拟连接并转发到回显服务
     tun_acceptor acceptor(env.engine);
-    asio::co_spawn(io, [&]() -> asio::awaitable<void> {
-        auto ex = co_await asio::this_coro::executor;
+    net::co_spawn(io, [&]() -> net::awaitable<void> {
+        auto ex = co_await net::this_coro::executor;
         tun_stream client(ex);
         boost::system::error_code ec;
-        co_await acceptor.async_accept(client, asio::redirect_error(asio::use_awaitable, ec));
+        co_await acceptor.async_accept(client, net::redirect_error(net::use_awaitable, ec));
         if (ec) {
             co_return;
         }
         (void)client.original_destination(); // 原始目标（本例忽略，固定转发到本地服务）
-        asio::co_spawn(ex, bridge(std::move(client), {asio::ip::address_v4::loopback(), port}), asio::detached);
-    }, asio::detached);
+        net::co_spawn(ex, bridge(std::move(client), {net::ip::address_v4::loopback(), port}), net::detached);
+    }, net::detached);
 
     // ---- 客户端握手 ----
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x02, 5000, 0, 65535, {}));

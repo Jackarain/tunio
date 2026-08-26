@@ -87,7 +87,7 @@ void tunio_impl::close() {
     if (!open_.exchange(false, std::memory_order_acq_rel)) {
         return;
     }
-    asio::dispatch(strand_ex_, [self = shared_from_this()]() {
+    net::dispatch(strand_ex_, [self = shared_from_this()]() {
         if (self->tcp_) {
             self->tcp_->close_all();
         }
@@ -110,7 +110,7 @@ void tunio_impl::start_read() {
     reading_ = true;
     read_buf_.reset();
     auto self = shared_from_this();
-    device_->async_read_packet(read_buf_, asio::bind_executor(strand_ex_, [self](const boost::system::error_code& ec, size_t n) {
+    device_->async_read_packet(read_buf_, net::bind_executor(strand_ex_, [self](const boost::system::error_code& ec, size_t n) {
         self->on_read(ec, n);
     }));
 }
@@ -229,7 +229,7 @@ void tunio_impl::handle_icmp(const uint8_t* pkt, size_t len) {
     oicmp[2] = static_cast<uint8_t>(csum >> 8);
     oicmp[3] = static_cast<uint8_t>(csum & 0xff);
 
-    writer_->async_write(std::move(reply), asio::bind_executor(strand_ex_, [](const boost::system::error_code&, size_t) {}));
+    writer_->async_write(std::move(reply), net::bind_executor(strand_ex_, [](const boost::system::error_code&, size_t) {}));
     stats_.icmp_replies.fetch_add(1, std::memory_order_relaxed);
 }
 

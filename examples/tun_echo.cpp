@@ -31,9 +31,9 @@
 #include "tunio/tun_udp_acceptor.hpp"
 #include "tunio/tun_udp_socket.hpp"
 
-namespace asio = boost::asio;
 
 namespace {
+namespace net = boost::asio;
 
 struct options {
     std::string dev_name = "tun0";
@@ -74,83 +74,83 @@ options parse_args(int argc, char** argv) {
 }
 
 // ---- TCP 全双工数据泵（DESIGN.md §10.1）----
-asio::awaitable<void> bidirectional_bridge(tunio::tun_stream client, asio::ip::tcp::endpoint target) {
-    auto ex = co_await asio::this_coro::executor;
-    auto proxy = std::make_shared<asio::ip::tcp::socket>(ex);
+net::awaitable<void> bidirectional_bridge(tunio::tun_stream client, net::ip::tcp::endpoint target) {
+    auto ex = co_await net::this_coro::executor;
+    auto proxy = std::make_shared<net::ip::tcp::socket>(ex);
     boost::system::error_code ec;
-    co_await proxy->async_connect(target, asio::redirect_error(asio::use_awaitable, ec));
+    co_await proxy->async_connect(target, net::redirect_error(net::use_awaitable, ec));
     if (ec) {
         client.reset();
         co_return;
     }
     auto c = std::make_shared<tunio::tun_stream>(std::move(client));
 
-    asio::co_spawn(ex, [c, proxy]() -> asio::awaitable<void> {
+    net::co_spawn(ex, [c, proxy]() -> net::awaitable<void> {
         std::array<char, 8192> buf;
         try {
             for (;;) {
-                size_t n = co_await c->async_read_some(asio::buffer(buf), asio::use_awaitable);
-                co_await asio::async_write(*proxy, asio::buffer(buf, n), asio::use_awaitable);
+                size_t n = co_await c->async_read_some(net::buffer(buf), net::use_awaitable);
+                co_await net::async_write(*proxy, net::buffer(buf, n), net::use_awaitable);
             }
         } catch (...) {
         }
         boost::system::error_code sec;
-        proxy->shutdown(asio::ip::tcp::socket::shutdown_send, sec);
-    }, asio::detached);
+        proxy->shutdown(net::ip::tcp::socket::shutdown_send, sec);
+    }, net::detached);
 
-    asio::co_spawn(ex, [c, proxy]() -> asio::awaitable<void> {
+    net::co_spawn(ex, [c, proxy]() -> net::awaitable<void> {
         std::array<char, 8192> buf;
         try {
             for (;;) {
-                size_t n = co_await proxy->async_read_some(asio::buffer(buf), asio::use_awaitable);
-                co_await asio::async_write(*c, asio::buffer(buf, n), asio::use_awaitable);
+                size_t n = co_await proxy->async_read_some(net::buffer(buf), net::use_awaitable);
+                co_await net::async_write(*c, net::buffer(buf, n), net::use_awaitable);
             }
         } catch (...) {
             c->close();
         }
-    }, asio::detached);
+    }, net::detached);
 }
 
-asio::awaitable<void> tcp_listener(tunio::tunio& engine, uint16_t echo_port) {
-    auto ex = co_await asio::this_coro::executor;
+net::awaitable<void> tcp_listener(tunio::tunio& engine, uint16_t echo_port) {
+    auto ex = co_await net::this_coro::executor;
     tunio::tun_acceptor acceptor(engine);
     for (;;) {
         tunio::tun_stream client(ex);
         boost::system::error_code ec;
-        co_await acceptor.async_accept(client, asio::redirect_error(asio::use_awaitable, ec));
+        co_await acceptor.async_accept(client, net::redirect_error(net::use_awaitable, ec));
         if (ec) {
             co_return;
         }
-        asio::co_spawn(ex, bidirectional_bridge(std::move(client),
-                                                {asio::ip::address_v4::loopback(), echo_port}),
-                       asio::detached);
+        net::co_spawn(ex, bidirectional_bridge(std::move(client),
+                                                {net::ip::address_v4::loopback(), echo_port}),
+                       net::detached);
     }
 }
 
 // ---- UDP 回显会话（DESIGN.md §10.2）----
-asio::awaitable<void> udp_echo_handler(tunio::tun_udp_socket session) {
+net::awaitable<void> udp_echo_handler(tunio::tun_udp_socket session) {
     std::array<char, 2048> buf;
     try {
         for (;;) {
-            size_t n = co_await session.async_receive(asio::buffer(buf), asio::use_awaitable);
-            co_await session.async_send(asio::buffer(buf, n), asio::use_awaitable);
+            size_t n = co_await session.async_receive(net::buffer(buf), net::use_awaitable);
+            co_await session.async_send(net::buffer(buf, n), net::use_awaitable);
         }
     } catch (...) {
         session.close();
     }
 }
 
-asio::awaitable<void> udp_listener(tunio::tunio& engine) {
-    auto ex = co_await asio::this_coro::executor;
+net::awaitable<void> udp_listener(tunio::tunio& engine) {
+    auto ex = co_await net::this_coro::executor;
     tunio::tun_udp_acceptor acceptor(engine);
     for (;;) {
         tunio::tun_udp_socket session(ex);
         boost::system::error_code ec;
-        co_await acceptor.async_accept(session, asio::redirect_error(asio::use_awaitable, ec));
+        co_await acceptor.async_accept(session, net::redirect_error(net::use_awaitable, ec));
         if (ec) {
             co_return;
         }
-        asio::co_spawn(ex, udp_echo_handler(std::move(session)), asio::detached);
+        net::co_spawn(ex, udp_echo_handler(std::move(session)), net::detached);
     }
 }
 
@@ -165,7 +165,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    asio::io_context io(1);
+    net::io_context io(1);
     tunio::tunio engine(io);
 
     tunio::tun_config cfg;
@@ -185,10 +185,10 @@ int main(int argc, char** argv) {
     }
     std::cout << "tun_echo: " << cfg.dev_name << " " << cfg.ipv4_addr << std::endl;
 
-    asio::co_spawn(io, tcp_listener(engine, opt.echo_port), asio::detached);
-    asio::co_spawn(io, udp_listener(engine), asio::detached);
+    net::co_spawn(io, tcp_listener(engine, opt.echo_port), net::detached);
+    net::co_spawn(io, udp_listener(engine), net::detached);
 
-    asio::signal_set signals(io, SIGINT, SIGTERM);
+    net::signal_set signals(io, SIGINT, SIGTERM);
     signals.async_wait([&](const boost::system::error_code&, int) {
         engine.close();
     });
