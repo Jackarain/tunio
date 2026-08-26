@@ -1,4 +1,14 @@
-﻿// 端到端集成测试：模拟 tun2socks 的桥接模式
+﻿//
+// test_integration.cpp
+// ~~~~~~~~~~~~~~~~~~~~
+//
+// Copyright (c) 2026 Jack (jack dot wgm at gmail dot com)
+//
+// Distributed under the Boost Software License, Version 1.0. (See accompanying
+// file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+//
+
+// 端到端集成测试：模拟 tun2socks 的桥接模式
 //
 // 客户端（经虚拟设备）通过引擎建立 TCP 连接，应用层把虚拟连接桥接到
 // 本地回显服务，验证完整数据通路与 C++20 协程 API。

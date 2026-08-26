@@ -1,4 +1,14 @@
-﻿#pragma once
+﻿//
+// socks5_client.hpp
+// ~~~~~~~~~~~~~~~~~
+//
+// Copyright (c) 2026 Jack (jack dot wgm at gmail dot com)
+//
+// Distributed under the Boost Software License, Version 1.0. (See accompanying
+// file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+//
+
+#pragma once
 
 // SOCKS5 客户端（示例应用层，仅依赖 Boost.Asio + C++20 协程）
 //

@@ -1,4 +1,14 @@
-﻿// tun_echo：DESIGN.md §10 的回显示例 —— TCP 桥接本地服务 + UDP 回显
+﻿//
+// tun_echo.cpp
+// ~~~~~~~~~~~~
+//
+// Copyright (c) 2026 Jack (jack dot wgm at gmail dot com)
+//
+// Distributed under the Boost Software License, Version 1.0. (See accompanying
+// file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+//
+
+// tun_echo：DESIGN.md §10 的回显示例 —— TCP 桥接本地服务 + UDP 回显
 //
 // 用法示例：
 //   sudo ./tun_echo --tun tun0 --ip 10.0.0.1 --netmask 255.255.255.0

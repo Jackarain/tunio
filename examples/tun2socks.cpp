@@ -1,4 +1,14 @@
-﻿// tun2socks：通过 tunio 库实现的 SOCKS5 透明代理
+﻿//
+// tun2socks.cpp
+// ~~~~~~~~~~~~~
+//
+// Copyright (c) 2026 Jack (jack dot wgm at gmail dot com)
+//
+// Distributed under the Boost Software License, Version 1.0. (See accompanying
+// file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+//
+
+// tun2socks：通过 tunio 库实现的 SOCKS5 透明代理
 //
 // 用法示例：
 //   sudo ./tun2socks --tun tun0 --ip 10.0.0.1 --netmask 255.255.255.0 \
