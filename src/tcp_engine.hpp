@@ -107,6 +107,7 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow> {
         std::function<void(boost::system::error_code, size_t)> handler;
     };
     std::deque<write_op> pending_writes;
+    size_t tx_bytes = 0;  // 排队待发送的字节数（含未发送部分）
 
     boost::asio::ip::tcp::endpoint original_destination() const;
     bool is_open() const;
@@ -134,6 +135,7 @@ public:
     engine_stats& stats() { return stats_; }
     buffer_accountant& account() { return *account_; }
     size_t mss(int family) const { return family == 6 ? mss6_ : mss4_; }
+    size_t max_tx_queue() const { return cfg_.max_tx_queue_per_flow; }
 
     // ---- 由 tcp_flow 调用的发送辅助 ----
     void send_segment(tcp_flow& f, uint32_t seq, uint8_t flags,

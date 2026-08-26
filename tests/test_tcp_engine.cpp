@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cassert>
+#include <csignal>
 #include <cstdint>
 #include <cstring>
 #include <future>
@@ -520,7 +521,138 @@ static void test_unaccepted_connection_cleanup() {
     assert((ti.flags & 0x04) != 0); // RST
 }
 
+static void test_write_queue_limit() {
+    // 发送队列字节数上限：窗口为 0 时排队写满上限后应返回 no_buffer_space
+    engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30), 1024 * 1024, 16);
+    auto& io = env.io;
+    tun_acceptor acceptor(env.engine);
+    tun_stream peer(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        accept_done.set_value(ec);
+    });
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12352, DEST_PORT, 0x02, 8000, 0, 0, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    const uint32_t engine_iss = ti.seq;
+    // 客户端 ACK（窗口 0）
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12352, DEST_PORT, 0x10, 8001, engine_iss + 1, 0, {}));
+    future_get(accept_done.get_future());
+
+    // 两个 8 字节写排队（合计 16 字节 = 上限）
+    std::promise<std::pair<boost::system::error_code, size_t>> w1, w2;
+    peer.async_write_some(net::buffer("aaaaaaaa", 8), [&](boost::system::error_code ec, size_t n) {
+        w1.set_value({ec, n});
+    });
+    peer.async_write_some(net::buffer("bbbbbbbb", 8), [&](boost::system::error_code ec, size_t n) {
+        w2.set_value({ec, n});
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // 第三个写超出上限：立即返回 no_buffer_space
+    std::promise<std::pair<boost::system::error_code, size_t>> w3;
+    peer.async_write_some(net::buffer("c", 1), [&](boost::system::error_code ec, size_t n) {
+        w3.set_value({ec, n});
+    });
+    auto [w3ec, w3n] = future_get(w3.get_future());
+    assert(w3ec == boost::asio::error::no_buffer_space);
+    assert(w3n == 0);
+
+    // 窗口更新后，前两个写完成
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12352, DEST_PORT, 0x10, 8001, engine_iss + 1, 4096, {}));
+    auto [w1ec, w1n] = future_get(w1.get_future());
+    assert(!w1ec && w1n == 8);
+    auto [w2ec, w2n] = future_get(w2.get_future());
+    assert(!w2ec && w2n == 8);
+    peer.close();
+}
+
+static void test_close_reopen() {
+    // close 后立即重新 open：旧异步清理不得误关新引擎（epoch 代际保护）。
+    // 注意：引擎 close 会关闭注入的 fd，因此重新 open 需使用新的注入句柄。
+    engine_env env;
+    auto& io = env.io;
+
+    env.engine.close();
+    fake_device dev2;
+    tun_config cfg;
+    cfg.external_handle = dev2.inject_fd();
+    cfg.external_mtu = 1500;
+    cfg.ipv4_addr = "10.0.0.1";
+    cfg.netmask = "255.255.255.0";
+    boost::system::error_code ec;
+    if (!env.engine.open(cfg, ec)) {
+        throw std::runtime_error("reopen failed: " + ec.message());
+    }
+
+    // 验证新引擎数据通路正常：完成一次握手（经 dev2）
+    tun_acceptor acceptor(env.engine);
+    tun_stream peer(io.get_executor());
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code e) {
+        accept_done.set_value(e);
+    });
+    dev2.send(make_tcp(CLIENT_IP, DEST_IP, 12353, DEST_PORT, 0x02, 9000, 0, 65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!dev2.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK after reopen");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    dev2.send(make_tcp(CLIENT_IP, DEST_IP, 12353, DEST_PORT, 0x10, 9001, ti.seq + 1, 65535, {}));
+    auto aec = future_get(accept_done.get_future());
+    assert(!aec);
+    assert(peer.is_open());
+    peer.close();
+}
+
+static void test_fragmented_packet_dropped() {
+    // IPv4 分片包（MF 标志）应被引擎丢弃，不得建立流或回复
+    engine_env env;
+
+    // 构造带 MF 标志的 SYN 分片包（frag_off = 0x2000）
+    std::vector<uint8_t> pkt = make_tcp(CLIENT_IP, DEST_IP, 12354, DEST_PORT, 0x02, 10000, 0, 65535, {});
+    pkt[6] = 0x20;
+    pkt[7] = 0x00;
+    const uint16_t c = test::csum16(pkt.data(), 20);
+    pkt[10] = static_cast<uint8_t>(c >> 8);
+    pkt[11] = static_cast<uint8_t>(c & 0xff);
+    env.dev.send(pkt);
+
+    // 引擎不应回复 SYN-ACK
+    if (env.dev.read_packet(pkt, 300)) {
+        throw std::runtime_error("fragmented SYN should be dropped");
+    }
+    assert(env.engine.stats().rx_dropped.load() >= 1);
+}
+
 int main() {
+    // socketpair 注入场景下，关闭读端后引擎仍可能写回（FIN 等），忽略 SIGPIPE
+    std::signal(SIGPIPE, SIG_IGN);
     test_handshake_data_fin();
     test_data_with_fin();
     test_zero_window_flow_control();
@@ -528,5 +660,8 @@ int main() {
     test_app_reset();
     test_write_after_shutdown_send();
     test_unaccepted_connection_cleanup();
+    test_write_queue_limit();
+    test_close_reopen();
+    test_fragmented_packet_dropped();
     return 0;
 }

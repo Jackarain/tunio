@@ -362,8 +362,9 @@ void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<ui
         auto sp = std::make_shared<handler_t>(std::move(handler));
         const size_t sent = data.size();
         session->eng->writer().async_write(
-            std::move(pkt), net::bind_executor(session->eng->strand(), [sp, sent](const boost::system::error_code&, size_t) {
-                std::move(*sp)(boost::system::error_code{}, sent);
+            std::move(pkt), net::bind_executor(session->eng->strand(), [sp, sent](const boost::system::error_code& ec, size_t) {
+                // 设备写失败时透传错误码，避免向调用方误报成功
+                std::move(*sp)(ec, ec ? 0 : sent);
             }));
     });
 }

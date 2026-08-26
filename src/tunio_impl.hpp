@@ -91,6 +91,8 @@ private:
     boost::asio::io_context& ctx_;
     boost::asio::any_io_executor strand_ex_;
     std::atomic<bool> open_{false};
+    uint64_t epoch_ = 0;  // 代际计数：close 的异步清理据此判断是否已被重新 open
+    uint64_t read_epoch_ = 0;  // 当前读操作发起时的代际，用于识别旧设备的迟到回调
     tun_config cfg_;
     engine_stats stats_;
     boost::asio::ip::address local_ip_{};  // 用于 local_address()

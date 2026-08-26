@@ -65,8 +65,8 @@ void tcp_engine::on_sweep(const boost::system::error_code& ec) {
     std::vector<std::shared_ptr<tcp_flow>> victims;
     for (const auto& [key, f] : flows_) {
         (void)key;
-        if (f->state == tcp_state::SYN_RCVD && now - f->created_at > std::chrono::seconds(30)) {
-            // 未完成握手的半开连接，30 秒后清理
+        if (f->state == tcp_state::SYN_RCVD && now - f->created_at > cfg_.tcp_syn_timeout) {
+            // 未完成握手的半开连接，超时后清理
             victims.push_back(f);
         } else if (f->state == tcp_state::ESTABLISHED && !f->accepted &&
                    now - f->created_at > cfg_.tcp_accept_timeout) {
@@ -76,8 +76,8 @@ void tcp_engine::on_sweep(const boost::system::error_code& ec) {
             victims.push_back(f);
         } else if ((f->state == tcp_state::FIN_WAIT_1 || f->state == tcp_state::FIN_WAIT_2 ||
                     f->state == tcp_state::LAST_ACK) &&
-                   now - f->created_at > std::chrono::seconds(30)) {
-            // 关闭流程长期未完成（对端未确认 FIN / 未回复 FIN），30 秒后强制清理
+                   now - f->created_at > cfg_.tcp_close_timeout) {
+            // 关闭流程长期未完成（对端未确认 FIN / 未回复 FIN），超时后强制清理
             victims.push_back(f);
         }
     }
@@ -361,6 +361,7 @@ void tcp_engine::flush_writes(tcp_flow& f) {
         }
         send_segment(f, f.snd_nxt, TCP_ACK | TCP_PSH, op.data.data() + op.offset, chunk, false);
         f.snd_nxt += static_cast<uint32_t>(chunk);
+        f.tx_bytes -= chunk;
         op.offset += chunk;
         if (op.offset == op.data.size()) {
             auto h = std::move(op.handler);
@@ -498,6 +499,7 @@ void tcp_engine::close_flow(tcp_flow& f, const boost::system::error_code& err) {
         op.handler(err, 0);
     }
     f.pending_writes.clear();
+    f.tx_bytes = 0;
     if (f.rx_bytes > 0) {
         account_->release(f.rx_bytes);
         f.rx_bytes = 0;
@@ -613,7 +615,13 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow, std::vector<uint8_t> d
             handler(boost::system::error_code{}, 0);
             return;
         }
+        if (f.tx_bytes + data.size() > flow->eng->max_tx_queue()) {
+            // 发送队列积压超限：拒绝本次写入以施加背压，避免内存无限增长
+            handler(boost::asio::error::no_buffer_space, 0);
+            return;
+        }
         f.pending_writes.push_back({std::move(data), 0, std::move(handler)});
+        f.tx_bytes += f.pending_writes.back().data.size();
         flow->eng->flush_writes(f);
     });
 }
@@ -672,6 +680,7 @@ void tcp_flow_close(std::shared_ptr<tcp_flow> flow) {
             op.handler(boost::asio::error::operation_aborted, 0);
         }
         f.pending_writes.clear();
+        f.tx_bytes = 0;
         if (f.rx_bytes > 0) {
             flow->eng->account().release(f.rx_bytes);
             f.rx_bytes = 0;

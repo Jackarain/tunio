@@ -132,6 +132,8 @@ inline five_tuple make_five_tuple(const uint8_t* src_ip, const uint8_t* dst_ip,
 引擎同时支持 IPv4 与 IPv6 报文。IPv6 头部固定 40 字节，无头部校验和；
 TCP/UDP/ICMPv6 的伪头部校验和基于 128 位地址计算，IPv6 下 UDP 与 ICMPv6
 校验和强制有效（不得为 0，若计算结果为 0 则以 0xffff 替代）。
+校验和求和在支持 SSE2 的平台上使用 8 路 32 位累加器向量化（RFC 1071
+语义不变），是收方向每段必经的固定成本之一。
 
 ```cpp
 struct ipv6_header {
@@ -390,6 +392,7 @@ private:
 #### 5.2 数据接收与转发
 
 - **设备读取**：`tunio` 内部读泵以 Strand 串行执行 `async_read_packet`。注入设备为字节流（如 socketpair）时，一次读取可能粘合或拆散多个报文：引擎按 IP 头长度逐包解析，未凑成完整报文的尾部字节保留在 `packet_buffer` 中（`rewind`），与下一次读取拼接后继续解析；真实 TUN 设备为包语义，天然每次恰好一个报文。
+- **IP 分片策略**：引擎不做 IP 重组，收到 IPv4 分片包（带分片偏移或 MF 标志）或带 Fragment 扩展头（Next Header = 44）的 IPv6 报文时直接丢弃并计入 `rx_dropped`。
 
 - **顺序检查**：收到数据段后，检查 `SEQ == rcv_nxt`。
   - **若顺序正确**：提取应用层 Payload，追加到 `tun_stream` 的连续接收缓冲（`vector<uint8_t>` + 头部消费偏移，应用读取后按需压缩，避免逐字节队列），唤醒挂起的 `async_read` 操作；随后 `rcv_nxt += payload_len`，并启用 **delayed ACK**：每累计 2 个数据段立即确认一次，单段由 40ms ACK 定时器兜底；引擎发送的任何出段都会捎带最新 `rcv_nxt`，视为完成一次确认。
@@ -400,6 +403,7 @@ private:
 
 - 应用层调用 `tun_stream::async_write` 时，引擎直接获取数据，封装为 TCP 载荷，分配 `snd_nxt` 序列号，构造 IP 包后通过 `packet_device::async_write_packet` 写入 TUN 设备。
 - 发送缓冲由 `device_writer` 维护的 Strand 内自由列表池化复用（写完成后回收，容量不足时新建），避免每个报文一次堆分配。
+- **发送队列上限**：每条连接排队待发送的字节数受 `max_tx_queue_per_flow` 约束。客户端接收窗口为 0 或队列积压时，应用层持续写入会导致排队数据增长，超限后新写入以 `no_buffer_space` 立即完成，避免内存无限增长（施加背压）。
 - **不维护重传队列，不设置 RTO 定时器**（40ms ACK 延迟定时器仅用于合并确认，不属于重传定时器）。如果该数据包在传输途中丢失，客户端未收到响应时会主动重发之前的请求，引擎收到重发的请求后再重新生成响应，或由上层代理逻辑处理超时。
 
 #### 5.4 接收窗口
@@ -412,6 +416,9 @@ private:
 - 收到 FIN 段时，引擎回复 ACK，状态进入 `CLOSE_WAIT`，并向应用层指示 `EOF`。FIN 可与数据同段（其序号为 `SEQ + 载荷长度`），引擎按 RFC 语义一并确认。
 - 当应用层关闭 `tun_stream` 时，引擎发送 FIN 段，完成四次挥手。
 - 收到 RST 段时，直接销毁 TCB 并通知应用层连接重置。
+- 半开连接（`SYN_RCVD`）在 `tcp_syn_timeout`（默认 30 秒）后清理；关闭流程
+  （`FIN_WAIT_1` / `FIN_WAIT_2` / `LAST_ACK`）在 `tcp_close_timeout`（默认 30 秒）
+  后强制清理，避免对端异常时控制块长期驻留。
 
 ---
 
@@ -657,11 +664,15 @@ struct tun_config {
     size_t max_tcp_flows = 65536;
     size_t max_udp_flows = 65536;
     size_t max_rx_queue_per_flow = 1024 * 1024;
+    size_t max_tx_queue_per_flow = 1024 * 1024;  // 每条 TCP 连接排队待发送的字节数上限
     size_t max_total_buffer = 512 * 1024 * 1024;
 
     // ---- 超时策略 ----
     std::chrono::seconds udp_idle_timeout{30};
     std::chrono::seconds tcp_time_wait_timeout{10};
+    std::chrono::seconds tcp_accept_timeout{30}; // 已建立但未被 async_accept 领取的连接超时
+    std::chrono::seconds tcp_syn_timeout{30};    // 未完成握手的半开连接超时
+    std::chrono::seconds tcp_close_timeout{30};  // 关闭流程（FIN 挥手）未完成时的强制清理超时
 
     // ---- 可选 Checksum 硬件卸载控制 ----
     bool enable_checksum_offload = true;
@@ -672,6 +683,17 @@ struct tun_config {
 1. 若 `external_handle != invalid_native_handle`，引擎调用 `packet_device::assign(external_handle, external_mtu, ec)`。
 2. 否则，引擎调用 `packet_device::open(cfg)`。
 3. 所有内部表、定时器及 Strand 在构造时初始化。
+
+**资源上限说明**：
+- `max_rx_queue_per_flow` 限制每条 TCP 连接的接收队列与每条 UDP 会话的
+  数据报队列字节数；`max_tx_queue_per_flow` 限制每条 TCP 连接排队待发送的
+  字节数（客户端接收窗口为 0 时，应用层持续写入会触发队列积压，超限后
+  新写入以 `no_buffer_space` 完成，避免内存无限增长）。
+- `max_total_buffer` 为跨 TCP/UDP 队列的全局缓冲记账上限，发送侧排队缓冲
+  不占用该记账（仅受 `max_tx_queue_per_flow` 约束）。
+- 半开连接（`SYN_RCVD`）在 `tcp_syn_timeout` 后清理；关闭流程
+  （`FIN_WAIT_1` / `FIN_WAIT_2` / `LAST_ACK`）在 `tcp_close_timeout` 后
+  强制清理。
 
 ---
 

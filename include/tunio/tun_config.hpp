@@ -104,17 +104,20 @@ struct tun_config {
     size_t max_tcp_flows = 65536;
     size_t max_udp_flows = 65536;
     size_t max_rx_queue_per_flow = 1024 * 1024;
+    size_t max_tx_queue_per_flow = 1024 * 1024;  // 每条 TCP 连接排队待发送的字节数上限
     size_t max_total_buffer = 512 * 1024 * 1024;
 
     // ---- 超时策略 ----
     std::chrono::seconds udp_idle_timeout{30};
     std::chrono::seconds tcp_time_wait_timeout{10};
     std::chrono::seconds tcp_accept_timeout{30}; // 已建立但未被 async_accept 领取的连接超时
+    std::chrono::seconds tcp_syn_timeout{30};    // 未完成握手的半开连接超时
+    std::chrono::seconds tcp_close_timeout{30};  // 关闭流程（FIN 挥手）未完成时的强制清理超时
 
     // ---- 可选 Checksum 控制 ----
     // 用户态 TUN 收发的报文必须由本引擎计算校验和，该开关保留用于兼容设计文档；
-    // 引擎始终计算并校验 IP/TCP/UDP 校验和。
-    bool enable_checksum_offload = true;
+    // 引擎始终计算并校验 IP/TCP/UDP 校验和。当前实现不使用该字段（兼容占位）。
+    [[maybe_unused]] bool enable_checksum_offload = true;
 };
 
 // 引擎统计信息

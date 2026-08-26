@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <future>
 
 #include <boost/asio.hpp>
 
@@ -33,8 +34,29 @@ tunio_impl::~tunio_impl() {
 }
 
 bool tunio_impl::open(const tun_config& cfg, boost::system::error_code& ec) {
-    if (open_.load(std::memory_order_acquire)) {
-        close();
+    // 重建前先同步收尾上一代实例（含 close() 后立即 reopen 的场景）：
+    // close() 的异步清理会因 epoch 失效而放弃，旧引擎的定时器与读循环
+    // 必须在此处于 Strand 上同步停止，否则 io_context 将残留任务无法退出。
+    const bool had_engine = open_.exchange(false, std::memory_order_acq_rel) ||
+                            tcp_ || udp_ || writer_ || device_->is_open();
+    if (had_engine) {
+        std::promise<void> done;
+        net::dispatch(strand_ex_, [this, &done]() {
+            if (tcp_) {
+                tcp_->close_all();
+            }
+            if (udp_) {
+                udp_->close_all();
+            }
+            if (writer_) {
+                writer_->cancel_all();
+            }
+            if (device_) {
+                device_->close();
+            }
+            done.set_value();
+        });
+        done.get_future().wait();
     }
     ec = {};
     cfg_ = cfg;
@@ -98,6 +120,7 @@ bool tunio_impl::open(const tun_config& cfg, boost::system::error_code& ec) {
     udp_ = std::make_shared<udp_engine>(strand_ex_, *writer_, cfg_, stats_, account_);
     tcp_->start_sweep();
 
+    ++epoch_;  // 递增代际：使任何在途的 close 清理任务失效，避免误关新实例
     open_.store(true, std::memory_order_release);
     start_read();
     return true;
@@ -107,18 +130,28 @@ void tunio_impl::close() {
     if (!open_.exchange(false, std::memory_order_acq_rel)) {
         return;
     }
-    net::dispatch(strand_ex_, [self = shared_from_this()]() {
-        if (self->tcp_) {
-            self->tcp_->close_all();
+    const uint64_t epoch = epoch_;
+    // 捕获当前（旧）引擎：即使随后被重新 open 替换，旧引擎也可能被自身的
+    // 定时器回调（self 捕获）保活，必须通过捕获的 shared_ptr 在 Strand 上
+    // 取消其定时器并清理，否则 io_context 将因挂起定时器永不退出。
+    auto tcp = tcp_;
+    auto udp = udp_;
+    net::dispatch(strand_ex_, [self = shared_from_this(), epoch, tcp, udp]() {
+        if (tcp) {
+            tcp->close_all();
         }
-        if (self->udp_) {
-            self->udp_->close_all();
+        if (udp) {
+            udp->close_all();
         }
-        if (self->writer_) {
-            self->writer_->cancel_all();
-        }
-        if (self->device_) {
-            self->device_->close();
+        // 设备与写队列指向共享成员（reopen 后可能已指向新实例），
+        // 仅当未被重新 open 时才允许关闭，避免误关新引擎。
+        if (epoch == self->epoch_) {
+            if (self->writer_) {
+                self->writer_->cancel_all();
+            }
+            if (self->device_) {
+                self->device_->close();
+            }
         }
     });
 }
@@ -128,6 +161,7 @@ void tunio_impl::start_read() {
         return;
     }
     reading_ = true;
+    read_epoch_ = epoch_;
     auto self = shared_from_this();
     device_->async_read_packet(read_buf_, net::bind_executor(strand_ex_, [self](const boost::system::error_code& ec, size_t n) {
         self->on_read(ec, n);
@@ -137,7 +171,9 @@ void tunio_impl::start_read() {
 void tunio_impl::on_read(const boost::system::error_code& ec, size_t n) {
     reading_ = false;
     if (ec) {
-        if (ec != boost::asio::error::operation_aborted) {
+        // 仅当错误来自当前代际的读操作时才视为当前引擎的设备故障；
+        // 旧设备（重新 open 前）的迟到回调（如 bad_descriptor）不得关闭新引擎。
+        if (read_epoch_ == epoch_ && ec != boost::asio::error::operation_aborted) {
             open_.store(false, std::memory_order_release);
         }
         if (open_.load(std::memory_order_acquire)) {
@@ -222,6 +258,12 @@ void tunio_impl::handle_packet(const uint8_t* pkt, size_t len) {
             stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
             return;
         }
+        // 丢弃分片包（带分片偏移或 MF 标志）：引擎不做 IP 重组
+        const uint16_t frag = ntohs(h.frag_off);
+        if ((frag & 0x1fff) != 0 || (frag & 0x2000) != 0) {
+            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
         // 校验 IP 头部校验和
         if (verify_ipv4_checksum(pkt, ihl) != 0) {
             stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
@@ -242,6 +284,11 @@ void tunio_impl::handle_packet(const uint8_t* pkt, size_t len) {
         std::memcpy(&h, pkt, sizeof(h));
         const size_t payload_len_field = ntohs(h.payload_len);
         if (sizeof(ipv6_header) + payload_len_field > len) {
+            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        // 丢弃带 Fragment 扩展头（Next Header = 44）的报文：引擎不做 IP 重组
+        if (h.next_header == 44) {
             stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
             return;
         }
@@ -304,7 +351,7 @@ void tunio_impl::handle_icmp(const ip_packet_info& ip, const uint8_t* icmp, size
     oicmp[2] = static_cast<uint8_t>(csum >> 8);
     oicmp[3] = static_cast<uint8_t>(csum & 0xff);
 
-    writer_->async_write(std::move(reply), net::bind_executor(strand_ex_, [](const boost::system::error_code&, size_t) {}));
+    writer_->async_write_and_forget(std::move(reply));
     stats_.icmp_replies.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -338,7 +385,7 @@ void tunio_impl::handle_icmpv6(const ip_packet_info& ip, const uint8_t* icmp, si
     oicmp[2] = static_cast<uint8_t>(csum >> 8);
     oicmp[3] = static_cast<uint8_t>(csum & 0xff);
 
-    writer_->async_write(std::move(reply), net::bind_executor(strand_ex_, [](const boost::system::error_code&, size_t) {}));
+    writer_->async_write_and_forget(std::move(reply));
     stats_.icmp_replies.fetch_add(1, std::memory_order_relaxed);
 }
 

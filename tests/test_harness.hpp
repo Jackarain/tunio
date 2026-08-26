@@ -556,16 +556,19 @@ private:
 };
 
 // ---- 引擎测试环境：io_context 线程 + 注入设备 ----
+// 使用 executor_work_guard 保持 io 持续运行：close() 会清空引擎挂起工作，
+// 若无 guard，io.run() 将返回导致线程退出（真实应用同样需要持续 run）。
 struct engine_env {
     boost::asio::io_context io;
     engine_type engine;
     fake_device dev;
     std::thread thread;
+    boost::asio::executor_work_guard<boost::asio::io_context::executor_type> guard;
 
     explicit engine_env(size_t mtu = 1500, std::chrono::seconds udp_timeout = std::chrono::seconds(1),
                         std::chrono::seconds tcp_accept_timeout = std::chrono::seconds(30),
-                        size_t max_rx_queue = 1024 * 1024)
-        : engine(io) {
+                        size_t max_rx_queue = 1024 * 1024, size_t max_tx_queue = 1024 * 1024)
+        : engine(io), guard(boost::asio::make_work_guard(io)) {
         tun_config cfg;
         cfg.external_handle = dev.inject_fd();
         cfg.external_mtu = mtu;
@@ -576,6 +579,7 @@ struct engine_env {
         cfg.udp_idle_timeout = udp_timeout;
         cfg.tcp_accept_timeout = tcp_accept_timeout;
         cfg.max_rx_queue_per_flow = max_rx_queue;
+        cfg.max_tx_queue_per_flow = max_tx_queue;
         boost::system::error_code ec;
         if (!engine.open(cfg, ec)) {
             throw std::runtime_error("engine open failed: " + ec.message());
@@ -585,6 +589,7 @@ struct engine_env {
 
     ~engine_env() {
         engine.close();
+        guard.reset();
         if (thread.joinable()) {
             thread.join();
         }

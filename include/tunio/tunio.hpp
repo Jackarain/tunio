@@ -31,6 +31,12 @@ class udp_engine;
 //
 // 生命周期要求：引擎必须在所有 tun_stream / tun_udp_socket 销毁之后、
 // io_context 停止运行之前销毁（与 Boost.Asio 对 socket 的约束一致）。
+// open() 会同步重建引擎内部状态，必须在 io_context 开始运行（io.run()）之前
+// 首次调用；若在运行期间调用 open()，请通过 get_executor() 派发屏障任务，
+// 确保与引擎 Strand 上的任务串行，避免与数据通路回调产生数据竞争。
+// 对已打开（或 close 后尚未完成异步清理）的引擎再次调用 open() 时，
+// io_context 必须正在运行：open() 会在 Strand 上同步收尾上一代实例，
+// io_context 未运行时该收尾任务无法执行，将导致调用线程阻塞等待。
 class tunio {
 public:
     using executor_type = boost::asio::any_io_executor;

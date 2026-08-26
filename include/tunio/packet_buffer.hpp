@@ -27,7 +27,11 @@ public:
           capacity_(capacity),
           headroom_(headroom),
           data_offset_(headroom),
-          data_size_(0) {}
+          data_size_(0) {
+        if (capacity == 0 || headroom >= capacity) {
+            throw std::invalid_argument("packet_buffer: headroom must be less than capacity");
+        }
+    }
 
     uint8_t* data() noexcept { return storage_.get() + data_offset_; }
     const uint8_t* data() const noexcept { return storage_.get() + data_offset_; }
