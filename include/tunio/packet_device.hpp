@@ -48,13 +48,16 @@ public:
     size_t mtu() const { return mtu_; }
     bool is_open() const { return open_; }
 
-    void async_read(packet_buffer& buf, std::function<void(boost::system::error_code, size_t)> handler) {
+    template <typename Handler>
+    void async_read(packet_buffer& buf, Handler&& handler) {
         desc_.async_read_some(boost::asio::buffer(buf.writable_data(), buf.writable_size()),
-                              std::move(handler));
+                              std::forward<Handler>(handler));
     }
 
-    void async_write(packet_buffer& buf, std::function<void(boost::system::error_code, size_t)> handler) {
-        desc_.async_write_some(boost::asio::buffer(buf.data(), buf.size()), std::move(handler));
+    template <typename Handler>
+    void async_write(packet_buffer& buf, Handler&& handler) {
+        desc_.async_write_some(boost::asio::buffer(buf.data(), buf.size()),
+                               std::forward<Handler>(handler));
     }
 
     boost::asio::posix::stream_descriptor desc_;
@@ -92,13 +95,16 @@ public:
     size_t mtu() const { return mtu_; }
     bool is_open() const { return open_; }
 
-    void async_read(packet_buffer& buf, std::function<void(boost::system::error_code, size_t)> handler) {
+    template <typename Handler>
+    void async_read(packet_buffer& buf, Handler&& handler) {
         handle_.async_read_some_at(0, boost::asio::buffer(buf.writable_data(), buf.writable_size()),
-                                   std::move(handler));
+                                   std::forward<Handler>(handler));
     }
 
-    void async_write(packet_buffer& buf, std::function<void(boost::system::error_code, size_t)> handler) {
-        handle_.async_write_some_at(0, boost::asio::buffer(buf.data(), buf.size()), std::move(handler));
+    template <typename Handler>
+    void async_write(packet_buffer& buf, Handler&& handler) {
+        handle_.async_write_some_at(0, boost::asio::buffer(buf.data(), buf.size()),
+                                    std::forward<Handler>(handler));
     }
 
     boost::asio::windows::overlapped_handle handle_;
@@ -129,12 +135,14 @@ public:
     size_t mtu() const { return 0; }
     bool is_open() const { return false; }
 
-    void async_read(packet_buffer&, std::function<void(boost::system::error_code, size_t)> handler) {
-        handler(boost::asio::error::bad_descriptor, 0);
+    template <typename Handler>
+    void async_read(packet_buffer&, Handler&& handler) {
+        std::forward<Handler>(handler)(boost::asio::error::bad_descriptor, 0);
     }
 
-    void async_write(packet_buffer&, std::function<void(boost::system::error_code, size_t)> handler) {
-        handler(boost::asio::error::bad_descriptor, 0);
+    template <typename Handler>
+    void async_write(packet_buffer&, Handler&& handler) {
+        std::forward<Handler>(handler)(boost::asio::error::bad_descriptor, 0);
     }
 };
 
@@ -197,12 +205,8 @@ public:
     auto async_read_packet(packet_buffer& buf, CompletionToken&& token) {
         return boost::asio::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
             [this, &buf](auto handler) {
-                using handler_t = std::decay_t<decltype(handler)>;
-                auto sp = std::make_shared<handler_t>(std::move(handler));
-                std::visit([&buf, sp](auto& impl) {
-                    impl.async_read(buf, [sp](boost::system::error_code ec, size_t n) mutable {
-                        std::move(*sp)(ec, n);
-                    });
+                std::visit([&buf, h = std::move(handler)](auto& impl) mutable {
+                    impl.async_read(buf, std::move(h));
                 }, impl_);
             },
             token);
@@ -213,12 +217,8 @@ public:
     auto async_write_packet(packet_buffer& buf, CompletionToken&& token) {
         return boost::asio::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
             [this, &buf](auto handler) {
-                using handler_t = std::decay_t<decltype(handler)>;
-                auto sp = std::make_shared<handler_t>(std::move(handler));
-                std::visit([&buf, sp](auto& impl) {
-                    impl.async_write(buf, [sp](boost::system::error_code ec, size_t n) mutable {
-                        std::move(*sp)(ec, n);
-                    });
+                std::visit([&buf, h = std::move(handler)](auto& impl) mutable {
+                    impl.async_write(buf, std::move(h));
                 }, impl_);
             },
             token);

@@ -69,9 +69,9 @@ void udp_engine::on_packet(const ip_packet_info& ip, const uint8_t* payload, siz
 
     auto it = sessions_.find(key);
     if (it != sessions_.end()) {
-        auto s = it->second;
+        const auto& s = it->second;
         if (!s->closed) {
-            deliver_datagram(std::move(s), std::move(datagram));
+            deliver_datagram(s, std::move(datagram));
             return;
         }
         sessions_.erase(it);
@@ -104,7 +104,7 @@ void udp_engine::on_packet(const ip_packet_info& ip, const uint8_t* payload, siz
     }
 }
 
-void udp_engine::deliver_datagram(std::shared_ptr<udp_session> s, std::vector<uint8_t> datagram) {
+void udp_engine::deliver_datagram(const std::shared_ptr<udp_session>& s, std::vector<uint8_t> datagram) {
     if (s->closed) {
         return;
     }
@@ -116,7 +116,7 @@ void udp_engine::deliver_datagram(std::shared_ptr<udp_session> s, std::vector<ui
             op.handler(boost::asio::error::message_size, 0);
         } else {
             size_t copied = 0;
-            for (auto& buf : *op.buffers) {
+            for (auto& buf : op.buffers) {
                 if (copied >= datagram.size()) {
                     break;
                 }
@@ -137,7 +137,7 @@ void udp_engine::deliver_datagram(std::shared_ptr<udp_session> s, std::vector<ui
     s->rx_bytes += s->rx_datagrams.back().size();
 }
 
-void udp_engine::refresh_expiry(std::shared_ptr<udp_session> s) {
+void udp_engine::refresh_expiry(const std::shared_ptr<udp_session>& s) {
     if (s->closed) {
         return;
     }
@@ -267,17 +267,18 @@ void udp_engine::close_all() {
 // ---- tun_udp_socket 入口 ----
 
 void udp_session_start_receive(std::shared_ptr<udp_session> session,
-                               std::shared_ptr<std::vector<net::mutable_buffer>> buffers,
+                               std::vector<net::mutable_buffer> buffers,
                                size_t total,
                                std::function<void(boost::system::error_code, size_t)> handler) {
     if (!session || !session->eng) {
         handler(boost::asio::error::bad_descriptor, 0);
         return;
     }
-    net::dispatch(session->eng->strand(), [session, buffers = std::move(buffers), total,
-                                            handler = std::move(handler)]() mutable {
-        auto& s = *session;
-        if (s.closed) {
+    auto strand = session->eng->strand();
+    net::dispatch(strand, [s = std::move(session), buffers = std::move(buffers), total,
+                           handler = std::move(handler)]() mutable {
+        auto& session = *s;
+        if (session.closed) {
             handler(boost::asio::error::bad_descriptor, 0);
             return;
         }
@@ -285,17 +286,17 @@ void udp_session_start_receive(std::shared_ptr<udp_session> session,
             handler(boost::system::error_code{}, 0);
             return;
         }
-        if (!s.rx_datagrams.empty()) {
-            auto dg = std::move(s.rx_datagrams.front());
-            s.rx_datagrams.pop_front();
-            s.rx_bytes -= dg.size();
-            session->eng->account().release(dg.size());
+        if (!session.rx_datagrams.empty()) {
+            auto dg = std::move(session.rx_datagrams.front());
+            session.rx_datagrams.pop_front();
+            session.rx_bytes -= dg.size();
+            s->eng->account().release(dg.size());
             if (dg.size() > total) {
                 handler(boost::asio::error::message_size, 0);
                 return;
             }
             size_t copied = 0;
-            for (auto& buf : *buffers) {
+            for (auto& buf : buffers) {
                 if (copied >= dg.size()) {
                     break;
                 }
@@ -306,7 +307,7 @@ void udp_session_start_receive(std::shared_ptr<udp_session> session,
             handler(boost::system::error_code{}, dg.size());
             return;
         }
-        s.pending_reads.push_back({std::move(buffers), total, std::move(handler)});
+        session.pending_reads.push_back({std::move(buffers), total, std::move(handler)});
     });
 }
 
@@ -316,40 +317,41 @@ void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<ui
         handler(boost::asio::error::bad_descriptor, 0);
         return;
     }
-    net::dispatch(session->eng->strand(), [session, data = std::move(data),
-                                            handler = std::move(handler)]() mutable {
-        auto& s = *session;
-        if (s.closed) {
+    auto strand = session->eng->strand();
+    net::dispatch(strand, [s = std::move(session), data = std::move(data),
+                           handler = std::move(handler)]() mutable {
+        auto& session = *s;
+        if (session.closed) {
             handler(boost::asio::error::bad_descriptor, 0);
             return;
         }
-        const int family = s.key.family;
+        const int family = session.key.family;
         const size_t ip_hdr_len = ip_header_size(family);
-        const size_t mtu = session->eng->mtu();
+        const size_t mtu = s->eng->mtu();
         if (data.size() > mtu - ip_hdr_len - sizeof(udp_header)) {
             handler(boost::asio::error::message_size, 0);
             return;
         }
-        session->eng->refresh_expiry(session);
+        s->eng->refresh_expiry(s);
 
         // 构造 IP + UDP 报文（源地址为客户端请求的目标地址）
         const size_t total = ip_hdr_len + sizeof(udp_header) + data.size();
-        packet_buffer pkt = session->eng->writer().acquire(mtu + 64, 64);
+        packet_buffer pkt = s->eng->writer().acquire(mtu + 64, 64);
         pkt.resize(total);
         uint8_t* base = pkt.data();
 
-        build_ip_header(base, family, s.key.dst_ip.data(), s.key.src_ip.data(), IPPROTO_UDP_V,
-                        total, session->eng->writer().alloc_ip_id());
+        build_ip_header(base, family, session.key.dst_ip.data(), session.key.src_ip.data(), IPPROTO_UDP_V,
+                        total, s->eng->writer().alloc_ip_id());
 
         auto* uh = reinterpret_cast<udp_header*>(base + ip_hdr_len);
-        uh->src_port = s.key.dst_port;
-        uh->dst_port = s.key.src_port;
+        uh->src_port = session.key.dst_port;
+        uh->dst_port = session.key.src_port;
         uh->length = htons(static_cast<uint16_t>(sizeof(udp_header) + data.size()));
         uh->checksum = 0;
         if (!data.empty()) {
             std::memcpy(base + ip_hdr_len + sizeof(udp_header), data.data(), data.size());
         }
-        uint16_t csum = tcp_udp_checksum(family, s.key.dst_ip.data(), s.key.src_ip.data(),
+        uint16_t csum = tcp_udp_checksum(family, session.key.dst_ip.data(), session.key.src_ip.data(),
                                          IPPROTO_UDP_V, base + ip_hdr_len,
                                          sizeof(udp_header) + data.size());
         // IPv6 下 UDP 校验和不可为 0；按 RFC 768/8200 以 0xffff 替代
@@ -361,8 +363,8 @@ void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<ui
         using handler_t = std::decay_t<decltype(handler)>;
         auto sp = std::make_shared<handler_t>(std::move(handler));
         const size_t sent = data.size();
-        session->eng->writer().async_write(
-            std::move(pkt), net::bind_executor(session->eng->strand(), [sp, sent](const boost::system::error_code& ec, size_t) {
+        s->eng->writer().async_write(
+            std::move(pkt), net::bind_executor(s->eng->strand(), [sp, sent](const boost::system::error_code& ec, size_t) {
                 // 设备写失败时透传错误码，避免向调用方误报成功
                 std::move(*sp)(ec, ec ? 0 : sent);
             }));

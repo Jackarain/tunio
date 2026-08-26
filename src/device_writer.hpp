@@ -88,7 +88,9 @@ public:
             auto e = std::move(queue_.front());
             queue_.pop_front();
             recycle(std::move(e.buf));
-            e.handler(net::error::operation_aborted, 0);
+            if (e.handler) {
+                e.handler(net::error::operation_aborted, 0);
+            }
         }
     }
 

@@ -30,14 +30,12 @@ inline auto make_copyable(Handler&& handler) {
     };
 }
 
-// 将完成回调绑定到调用方执行器，返回可拷贝的 std::function
+// 将完成回调绑定到调用方执行器，返回可拷贝的 std::function；
+// 调用点均传入可拷贝的 std::function，直接构造免去一次堆分配。
 template <typename Handler>
 inline std::function<void(boost::system::error_code, size_t)>
 bind_handler(boost::asio::any_io_executor ex, Handler&& handler) {
-    auto sp = std::make_shared<std::decay_t<Handler>>(net::bind_executor(ex, std::forward<Handler>(handler)));
-    return [sp](boost::system::error_code ec, size_t n) mutable {
-        std::move(*sp)(ec, n);
-    };
+    return net::bind_executor(ex, std::forward<Handler>(handler));
 }
 
 } // namespace detail

@@ -47,7 +47,7 @@ struct udp_session : public std::enable_shared_from_this<udp_session> {
     size_t rx_bytes = 0;
 
     struct read_op {
-        std::shared_ptr<std::vector<net::mutable_buffer>> buffers;
+        std::vector<net::mutable_buffer> buffers;
         size_t total = 0;
         std::function<void(boost::system::error_code, size_t)> handler;
     };
@@ -81,15 +81,15 @@ public:
 private:
     friend struct udp_session;
     friend void udp_session_start_receive(
-        std::shared_ptr<udp_session>, std::shared_ptr<std::vector<net::mutable_buffer>>,
+        std::shared_ptr<udp_session>, std::vector<net::mutable_buffer>,
         size_t, std::function<void(boost::system::error_code, size_t)>);
     friend void udp_session_start_send(std::shared_ptr<udp_session>, std::vector<uint8_t>,
                                        std::function<void(boost::system::error_code, size_t)>);
     friend void udp_session_close(std::shared_ptr<udp_session>);
     friend void udp_session_set_timeout(std::shared_ptr<udp_session>, std::chrono::seconds);
 
-    void deliver_datagram(std::shared_ptr<udp_session> s, std::vector<uint8_t> datagram);
-    void refresh_expiry(std::shared_ptr<udp_session> s);
+    void deliver_datagram(const std::shared_ptr<udp_session>& s, std::vector<uint8_t> datagram);
+    void refresh_expiry(const std::shared_ptr<udp_session>& s);
     void arm_expiry_timer();
     void on_expiry_timer(const boost::system::error_code& ec);
     void remove_session(std::shared_ptr<udp_session> s);
@@ -125,7 +125,7 @@ private:
 
 // ---- 供 tun_udp_socket 调用的入口（内部自动派发到 Strand）----
 void udp_session_start_receive(std::shared_ptr<udp_session> session,
-                               std::shared_ptr<std::vector<net::mutable_buffer>> buffers,
+                               std::vector<net::mutable_buffer> buffers,
                                size_t total,
                                std::function<void(boost::system::error_code, size_t)> handler);
 

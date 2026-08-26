@@ -28,7 +28,7 @@ namespace detail {
 struct tcp_flow;
 
 void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
-                         std::shared_ptr<std::vector<net::mutable_buffer>> buffers,
+                         std::vector<net::mutable_buffer> buffers,
                          size_t total,
                          std::function<void(boost::system::error_code, size_t)> handler);
 
@@ -41,10 +41,10 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow,
 template <typename MutableBufferSequence>
 void tun_stream::do_read_some(MutableBufferSequence&& buffers,
                               std::function<void(boost::system::error_code, size_t)> handler) {
-    auto seq = std::make_shared<std::vector<net::mutable_buffer>>();
+    std::vector<net::mutable_buffer> seq;
     size_t total = 0;
     for (const auto& b : buffers) {
-        seq->push_back(b);
+        seq.push_back(b);
         total += b.size();
     }
 

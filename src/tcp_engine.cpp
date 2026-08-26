@@ -118,7 +118,6 @@ void tcp_engine::on_packet(const ip_packet_info& ip, const uint8_t* payload, siz
                                            IPPROTO_TCP_V, ip.family);
 
     auto it = flows_.find(key);
-    std::shared_ptr<tcp_flow> f;
     if (it == flows_.end()) {
         if (!is_syn) {
             // 未知流且非 SYN：丢弃
@@ -128,7 +127,7 @@ void tcp_engine::on_packet(const ip_packet_info& ip, const uint8_t* payload, siz
             stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        f = std::make_shared<tcp_flow>();
+        auto f = std::make_shared<tcp_flow>();
         f->key = key;
         f->eng = this;
         f->irs = ntohl(th.seq);
@@ -145,7 +144,7 @@ void tcp_engine::on_packet(const ip_packet_info& ip, const uint8_t* payload, siz
         f->snd_nxt = f->iss + 1; // SYN 消耗一个序号
         return;
     }
-    f = it->second;
+    const std::shared_ptr<tcp_flow>& f = it->second;
 
     const uint8_t* data = payload + hlen;
     size_t data_len = len - hlen;
@@ -271,7 +270,7 @@ void tcp_engine::deliver_data(tcp_flow& f, const uint8_t* data, size_t len) {
         f.pending_reads.pop_front();
         const size_t n = std::min(op.total, len);
         size_t copied = 0;
-        for (auto& buf : *op.buffers) {
+        for (auto& buf : op.buffers) {
             if (copied >= n) {
                 break;
             }
@@ -316,7 +315,7 @@ void tcp_engine::flush_reads(tcp_flow& f) {
         f.pending_reads.pop_front();
         const size_t n = std::min(op.total, f.rx_bytes);
         size_t copied = 0;
-        for (auto& buf : *op.buffers) {
+        for (auto& buf : op.buffers) {
             if (copied >= n) {
                 break;
             }
@@ -567,21 +566,22 @@ void tcp_engine::close_all() {
 // ---- tun_stream 入口 ----
 
 void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
-                         std::shared_ptr<std::vector<net::mutable_buffer>> buffers,
+                         std::vector<net::mutable_buffer> buffers,
                          size_t total,
                          std::function<void(boost::system::error_code, size_t)> handler) {
     if (!flow || !flow->eng) {
         handler(boost::asio::error::bad_descriptor, 0);
         return;
     }
-    net::dispatch(flow->eng->strand(), [flow, buffers = std::move(buffers), total,
-                                         handler = std::move(handler)]() mutable {
-        auto& f = *flow;
-        if (f.state == tcp_state::CLOSED || f.app_closed || f.rx_shutdown) {
+    auto strand = flow->eng->strand();
+    net::dispatch(strand, [f = std::move(flow), buffers = std::move(buffers), total,
+                           handler = std::move(handler)]() mutable {
+        auto& flow = *f;
+        if (flow.state == tcp_state::CLOSED || flow.app_closed || flow.rx_shutdown) {
             handler(boost::asio::error::bad_descriptor, 0);
             return;
         }
-        if (f.rst) {
+        if (flow.rst) {
             handler(boost::asio::error::connection_reset, 0);
             return;
         }
@@ -589,8 +589,8 @@ void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
             handler(boost::system::error_code{}, 0);
             return;
         }
-        f.pending_reads.push_back({std::move(buffers), total, std::move(handler)});
-        flow->eng->flush_reads(f);
+        flow.pending_reads.push_back({std::move(buffers), total, std::move(handler)});
+        f->eng->flush_reads(flow);
     });
 }
 
@@ -600,14 +600,15 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow, std::vector<uint8_t> d
         handler(boost::asio::error::bad_descriptor, 0);
         return;
     }
-    net::dispatch(flow->eng->strand(), [flow, data = std::move(data),
-                                         handler = std::move(handler)]() mutable {
-        auto& f = *flow;
-        if (f.state == tcp_state::CLOSED || f.app_closed || f.fin_sent) {
+    auto strand = flow->eng->strand();
+    net::dispatch(strand, [f = std::move(flow), data = std::move(data),
+                           handler = std::move(handler)]() mutable {
+        auto& flow = *f;
+        if (flow.state == tcp_state::CLOSED || flow.app_closed || flow.fin_sent) {
             handler(boost::asio::error::bad_descriptor, 0);
             return;
         }
-        if (f.rst) {
+        if (flow.rst) {
             handler(boost::asio::error::connection_reset, 0);
             return;
         }
@@ -615,14 +616,14 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow, std::vector<uint8_t> d
             handler(boost::system::error_code{}, 0);
             return;
         }
-        if (f.tx_bytes + data.size() > flow->eng->max_tx_queue()) {
+        if (flow.tx_bytes + data.size() > f->eng->max_tx_queue()) {
             // 发送队列积压超限：拒绝本次写入以施加背压，避免内存无限增长
             handler(boost::asio::error::no_buffer_space, 0);
             return;
         }
-        f.pending_writes.push_back({std::move(data), 0, std::move(handler)});
-        f.tx_bytes += f.pending_writes.back().data.size();
-        flow->eng->flush_writes(f);
+        flow.pending_writes.push_back({std::move(data), 0, std::move(handler)});
+        flow.tx_bytes += flow.pending_writes.back().data.size();
+        f->eng->flush_writes(flow);
     });
 }
 

@@ -95,7 +95,7 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow> {
 
     // ---- 挂起操作 ----
     struct read_op {
-        std::shared_ptr<std::vector<net::mutable_buffer>> buffers;
+        std::vector<net::mutable_buffer> buffers;
         size_t total = 0;
         std::function<void(boost::system::error_code, size_t)> handler;
     };
@@ -147,7 +147,7 @@ public:
 private:
     friend struct tcp_flow;
     friend void tcp_flow_start_read(std::shared_ptr<tcp_flow>,
-                                    std::shared_ptr<std::vector<net::mutable_buffer>>,
+                                    std::vector<net::mutable_buffer>,
                                     size_t,
                                     std::function<void(boost::system::error_code, size_t)>);
     friend void tcp_flow_start_write(std::shared_ptr<tcp_flow>, std::vector<uint8_t>,
