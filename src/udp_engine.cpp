@@ -334,7 +334,7 @@ void udp_session_start_send(std::shared_ptr<udp_session> session, std::vector<ui
 
         // 构造 IP + UDP 报文（源地址为客户端请求的目标地址）
         const size_t total = ip_hdr_len + sizeof(udp_header) + data.size();
-        packet_buffer pkt(mtu + 64, 64);
+        packet_buffer pkt = session->eng->writer().acquire(mtu + 64, 64);
         pkt.resize(total);
         uint8_t* base = pkt.data();
 

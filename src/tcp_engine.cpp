@@ -42,10 +42,12 @@ tcp_engine::tcp_engine(boost::asio::any_io_executor strand, device_writer& write
       account_(std::move(account)),
       mss4_(cfg.mtu > 40 ? cfg.mtu - 40 : 536),
       mss6_(cfg.mtu > 60 ? cfg.mtu - 60 : 1220),
-      sweep_timer_(strand_) {}
+      sweep_timer_(strand_),
+      ack_timer_(strand_) {}
 
 tcp_engine::~tcp_engine() {
     sweep_timer_.cancel();
+    ack_timer_.cancel();
 }
 
 void tcp_engine::start_sweep() {
@@ -265,7 +267,14 @@ void tcp_engine::deliver_data(tcp_flow& f, const uint8_t* data, size_t len) {
     f.rx_data.insert(f.rx_data.end(), data, data + len);
     f.rx_bytes += len;
     f.rcv_nxt += len;
-    send_ack(f);
+    // delayed ACK：每 2 个数据段确认一次；单段交由 40ms 定时器兜底，
+    // 期间引擎发送的任何段都会捎带最新 rcv_nxt（见 send_segment）。
+    if (++f.ack_pending >= 2) {
+        send_ack(f);
+        f.ack_pending = 0;
+    } else {
+        defer_ack(f);
+    }
     flush_reads(f);
 }
 
@@ -280,14 +289,19 @@ void tcp_engine::flush_reads(tcp_flow& f) {
                 break;
             }
             const size_t take = std::min(buf.size(), n - copied);
-            uint8_t* dst = static_cast<uint8_t*>(buf.data());
-            std::copy_n(f.rx_data.begin(), take, dst);
-            f.rx_data.erase(f.rx_data.begin(), f.rx_data.begin() + static_cast<std::ptrdiff_t>(take));
+            std::memcpy(buf.data(), f.rx_data.data() + f.rx_head + copied, take);
             copied += take;
         }
+        f.rx_head += copied;
         f.rx_bytes -= copied;
         account_->release(copied);
         op.handler(boost::system::error_code{}, copied);
+    }
+    // 头部偏移过大时压缩连续缓冲，保持内存占用与 cache 友好
+    if (f.rx_head > 0 && (f.rx_head == f.rx_data.size() || f.rx_head >= 65536)) {
+        f.rx_data.erase(f.rx_data.begin(),
+                        f.rx_data.begin() + static_cast<std::ptrdiff_t>(f.rx_head));
+        f.rx_head = 0;
     }
     // 数据耗尽后处理 EOF
     if (f.rx_bytes == 0 && f.fin_received) {
@@ -326,11 +340,13 @@ void tcp_engine::flush_writes(tcp_flow& f) {
 
 void tcp_engine::send_segment(tcp_flow& f, uint32_t seq, uint8_t flags,
                               const uint8_t* payload, size_t len, bool with_mss) {
+    // 任何段都携带最新 rcv_nxt，视为已完成一次数据确认
+    f.ack_pending = 0;
     const int family = f.key.family;
     const size_t ip_hdr_len = ip_header_size(family);
     const size_t tcp_hdr_len = with_mss ? 24 : 20;
     const size_t total = ip_hdr_len + tcp_hdr_len + len;
-    packet_buffer pkt(cfg_.mtu + 64, 64);
+    packet_buffer pkt = writer_.acquire(cfg_.mtu + 64, 64);
     pkt.resize(total);
     uint8_t* base = pkt.data();
 
@@ -369,6 +385,39 @@ void tcp_engine::send_segment(tcp_flow& f, uint32_t seq, uint8_t flags,
 
 void tcp_engine::send_ack(tcp_flow& f) {
     send_segment(f, f.snd_nxt, TCP_ACK, nullptr, 0, false);
+}
+
+void tcp_engine::defer_ack(tcp_flow& f) {
+    if (f.ack_deferred) {
+        return;
+    }
+    f.ack_deferred = true;
+    ack_deferred_.push_back(f.shared_from_this());
+    if (ack_timer_waiting_) {
+        return;
+    }
+    ack_timer_waiting_ = true;
+    ack_timer_.expires_after(std::chrono::milliseconds(40));
+    ack_timer_.async_wait(net::bind_executor(strand_, [self = shared_from_this()](const boost::system::error_code& ec) {
+        self->on_ack_timer(ec);
+    }));
+}
+
+void tcp_engine::on_ack_timer(const boost::system::error_code& ec) {
+    ack_timer_waiting_ = false;
+    if (ec) {
+        return;
+    }
+    std::deque<std::shared_ptr<tcp_flow>> deferred;
+    deferred.swap(ack_deferred_);
+    for (auto& f : deferred) {
+        f->ack_deferred = false;
+        if (f->state == tcp_state::CLOSED || f->ack_pending == 0) {
+            continue;
+        }
+        send_ack(*f);
+        f->ack_pending = 0;
+    }
 }
 
 void tcp_engine::send_fin(tcp_flow& f) {
@@ -423,6 +472,7 @@ void tcp_engine::close_flow(tcp_flow& f, const boost::system::error_code& err) {
         f.rx_bytes = 0;
     }
     f.rx_data.clear();
+    f.rx_head = 0;
     if (f.state != tcp_state::SYN_RCVD) {
         stats_.tcp_connections.fetch_sub(1, std::memory_order_relaxed);
     }
@@ -465,6 +515,9 @@ void tcp_engine::cancel_accepts() {
 
 void tcp_engine::close_all() {
     sweep_timer_.cancel();
+    ack_timer_.cancel();
+    ack_timer_waiting_ = false;
+    ack_deferred_.clear();
     std::vector<std::shared_ptr<tcp_flow>> all;
     all.reserve(flows_.size());
     for (auto& [key, f] : flows_) {
@@ -566,6 +619,7 @@ void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow) {
             f.rx_bytes = 0;
         }
         f.rx_data.clear();
+        f.rx_head = 0;
     });
 }
 
@@ -592,6 +646,7 @@ void tcp_flow_close(std::shared_ptr<tcp_flow> flow) {
             f.rx_bytes = 0;
         }
         f.rx_data.clear();
+        f.rx_head = 0;
         flow->eng->send_fin(f);
     });
 }

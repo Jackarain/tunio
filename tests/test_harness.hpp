@@ -231,7 +231,9 @@ inline std::vector<uint8_t> make_tcp6(const std::array<uint8_t, 16>& src,
         seg[22] = 0x05;
         seg[23] = 0xb4;
     }
-    std::memcpy(seg.data() + hlen, data.data(), data.size());
+    if (!data.empty()) {
+        std::memcpy(seg.data() + hlen, data.data(), data.size());
+    }
     uint32_t pseudo = 0;
     for (size_t i = 0; i + 1 < 16; i += 2) {
         pseudo += static_cast<uint16_t>((src[i] << 8) | src[i + 1]);
@@ -255,7 +257,9 @@ inline std::vector<uint8_t> make_udp6(const std::array<uint8_t, 16>& src,
     const uint16_t ulen = static_cast<uint16_t>(seg.size());
     seg[4] = static_cast<uint8_t>(ulen >> 8);
     seg[5] = static_cast<uint8_t>(ulen & 0xff);
-    std::memcpy(seg.data() + 8, data.data(), data.size());
+    if (!data.empty()) {
+        std::memcpy(seg.data() + 8, data.data(), data.size());
+    }
     uint32_t pseudo = 0;
     for (size_t i = 0; i + 1 < 16; i += 2) {
         pseudo += static_cast<uint16_t>((src[i] << 8) | src[i + 1]);
@@ -277,7 +281,9 @@ inline std::vector<uint8_t> make_icmp6_echo(const std::array<uint8_t, 16>& src,
     icmp[5] = static_cast<uint8_t>(id & 0xff);
     icmp[6] = static_cast<uint8_t>(seqno >> 8);
     icmp[7] = static_cast<uint8_t>(seqno & 0xff);
-    std::memcpy(icmp.data() + 8, data.data(), data.size());
+    if (!data.empty()) {
+        std::memcpy(icmp.data() + 8, data.data(), data.size());
+    }
     uint32_t pseudo = 0;
     for (size_t i = 0; i + 1 < 16; i += 2) {
         pseudo += static_cast<uint16_t>((src[i] << 8) | src[i + 1]);
@@ -311,7 +317,9 @@ inline std::vector<uint8_t> make_tcp(uint32_t src, uint32_t dst, uint16_t sport,
         seg[22] = 0x05;
         seg[23] = 0xb4;
     }
-    std::memcpy(seg.data() + hlen, data.data(), data.size());
+    if (!data.empty()) {
+        std::memcpy(seg.data() + hlen, data.data(), data.size());
+    }
     const uint32_t pseudo = (src >> 16) + (src & 0xffff) +
                             (dst >> 16) + (dst & 0xffff) + 6 + seg.size();
     uint16_t c = csum16(seg.data(), seg.size(), pseudo);
@@ -330,7 +338,9 @@ inline std::vector<uint8_t> make_udp(uint32_t src, uint32_t dst, uint16_t sport,
     const uint16_t ulen = static_cast<uint16_t>(seg.size());
     seg[4] = static_cast<uint8_t>(ulen >> 8);
     seg[5] = static_cast<uint8_t>(ulen & 0xff);
-    std::memcpy(seg.data() + 8, data.data(), data.size());
+    if (!data.empty()) {
+        std::memcpy(seg.data() + 8, data.data(), data.size());
+    }
     const uint32_t pseudo = (src >> 16) + (src & 0xffff) +
                             (dst >> 16) + (dst & 0xffff) + 17 + seg.size();
     uint16_t c = csum16(seg.data(), seg.size(), pseudo);
@@ -348,7 +358,9 @@ inline std::vector<uint8_t> make_icmp_echo(uint32_t src, uint32_t dst, uint16_t 
     icmp[5] = static_cast<uint8_t>(id & 0xff);
     icmp[6] = static_cast<uint8_t>(seqno >> 8);
     icmp[7] = static_cast<uint8_t>(seqno & 0xff);
-    std::memcpy(icmp.data() + 8, data.data(), data.size());
+    if (!data.empty()) {
+        std::memcpy(icmp.data() + 8, data.data(), data.size());
+    }
     uint16_t c = csum16(icmp.data(), icmp.size());
     icmp[2] = static_cast<uint8_t>(c >> 8);
     icmp[3] = static_cast<uint8_t>(c & 0xff);
@@ -551,7 +563,8 @@ struct engine_env {
     std::thread thread;
 
     explicit engine_env(size_t mtu = 1500, std::chrono::seconds udp_timeout = std::chrono::seconds(1),
-                        std::chrono::seconds tcp_accept_timeout = std::chrono::seconds(30))
+                        std::chrono::seconds tcp_accept_timeout = std::chrono::seconds(30),
+                        size_t max_rx_queue = 1024 * 1024)
         : engine(io) {
         tun_config cfg;
         cfg.external_handle = dev.inject_fd();
@@ -562,6 +575,7 @@ struct engine_env {
         cfg.ipv6_prefix_len = 64;
         cfg.udp_idle_timeout = udp_timeout;
         cfg.tcp_accept_timeout = tcp_accept_timeout;
+        cfg.max_rx_queue_per_flow = max_rx_queue;
         boost::system::error_code ec;
         if (!engine.open(cfg, ec)) {
             throw std::runtime_error("engine open failed: " + ec.message());

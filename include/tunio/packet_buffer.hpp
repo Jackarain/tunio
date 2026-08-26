@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 
@@ -43,6 +44,19 @@ public:
     void reset() noexcept {
         data_offset_ = headroom_;
         data_size_ = 0;
+    }
+
+    // 流式拆包续读：保留尾部 keep 字节（尚未组成完整报文的部分），
+    // 将保留数据移到缓冲区头部，供下一次 async_read_packet 继续写入。
+    void rewind(size_t keep) noexcept {
+        if (keep == data_size_) {
+            data_offset_ = headroom_;
+            return;
+        }
+        std::memmove(storage_.get() + headroom_,
+                     storage_.get() + data_offset_ + data_size_ - keep, keep);
+        data_offset_ = headroom_;
+        data_size_ = keep;
     }
 
     // 异步读取完成后推进数据长度

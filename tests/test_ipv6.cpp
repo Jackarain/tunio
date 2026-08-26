@@ -52,12 +52,18 @@ static void test_tcp6_handshake_data_fin() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no IPv6 SYN-ACK");
     }
-    assert(verify_packet6(pkt));
+    if (!verify_packet6(pkt)) {
+        throw std::runtime_error("verify_packet6 failed");
+    }
     ip6_hdr_info i6;
-    assert(parse_ip6(pkt, i6));
+    if (!parse_ip6(pkt, i6)) {
+        throw std::runtime_error("parse_ip6 failed");
+    }
     assert(i6.src == DEST_V6 && i6.dst == CLIENT_V6 && i6.proto == 6);
     tcp_hdr_info ti;
-    assert(parse_tcp(i6.payload, i6.payload_len, ti));
+    if (!parse_tcp(i6.payload, i6.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
     assert((ti.flags & 0x12) == 0x12); // SYN|ACK
     assert(ti.ack == 1001);
     const uint32_t engine_iss = ti.seq;
@@ -95,9 +101,15 @@ static void test_tcp6_handshake_data_fin() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no IPv6 data ack");
     }
-    assert(verify_packet6(pkt));
-    assert(parse_ip6(pkt, i6));
-    assert(parse_tcp(i6.payload, i6.payload_len, ti));
+    if (!verify_packet6(pkt)) {
+        throw std::runtime_error("verify_packet6 failed");
+    }
+    if (!parse_ip6(pkt, i6)) {
+        throw std::runtime_error("parse_ip6 failed");
+    }
+    if (!parse_tcp(i6.payload, i6.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
     assert((ti.flags & 0x10) != 0 && ti.ack == 1006);
 
     // 客户端发送 FIN（与数据同段序号语义：FIN 序号 = 1001 + 5）
@@ -105,9 +117,15 @@ static void test_tcp6_handshake_data_fin() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no IPv6 FIN ack");
     }
-    assert(verify_packet6(pkt));
-    assert(parse_ip6(pkt, i6));
-    assert(parse_tcp(i6.payload, i6.payload_len, ti));
+    if (!verify_packet6(pkt)) {
+        throw std::runtime_error("verify_packet6 failed");
+    }
+    if (!parse_ip6(pkt, i6)) {
+        throw std::runtime_error("parse_ip6 failed");
+    }
+    if (!parse_tcp(i6.payload, i6.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
     assert((ti.flags & 0x10) != 0 && ti.ack == 1007);
 
     // 应用关闭后引擎应发送 FIN
@@ -118,8 +136,12 @@ static void test_tcp6_handshake_data_fin() {
         if (!env.dev.read_packet(pkt, 2000)) {
             break;
         }
-        assert(parse_ip6(pkt, i6));
-        assert(parse_tcp(i6.payload, i6.payload_len, ti));
+        if (!parse_ip6(pkt, i6)) {
+            throw std::runtime_error("parse_ip6 failed");
+        }
+        if (!parse_tcp(i6.payload, i6.payload_len, ti)) {
+            throw std::runtime_error("parse_tcp failed");
+        }
         if ((ti.flags & 0x01) != 0) {
             fin_seen = true;
         }
@@ -179,12 +201,18 @@ static void test_udp6_roundtrip() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no IPv6 UDP reply packet");
     }
-    assert(verify_packet6(pkt));
+    if (!verify_packet6(pkt)) {
+        throw std::runtime_error("verify_packet6 failed");
+    }
     ip6_hdr_info i6;
-    assert(parse_ip6(pkt, i6));
+    if (!parse_ip6(pkt, i6)) {
+        throw std::runtime_error("parse_ip6 failed");
+    }
     assert(i6.src == DEST_V6 && i6.dst == CLIENT_V6 && i6.proto == 17);
     udp_hdr_info ui;
-    assert(parse_udp(i6.payload, i6.payload_len, ui));
+    if (!parse_udp(i6.payload, i6.payload_len, ui)) {
+        throw std::runtime_error("parse_udp failed");
+    }
     assert(ui.sport == 53 && ui.dport == 53000);
     assert(std::string(reinterpret_cast<const char*>(ui.data), ui.n) == reply);
 
@@ -205,9 +233,13 @@ static void test_icmp6_echo() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no ICMPv6 reply");
     }
-    assert(verify_packet6(pkt));
+    if (!verify_packet6(pkt)) {
+        throw std::runtime_error("verify_packet6 failed");
+    }
     ip6_hdr_info i6;
-    assert(parse_ip6(pkt, i6));
+    if (!parse_ip6(pkt, i6)) {
+        throw std::runtime_error("parse_ip6 failed");
+    }
     assert(i6.src == local && i6.dst == CLIENT_V6 && i6.proto == 58);
 
     // Echo Reply：type=129，ID/序号/数据保持
@@ -242,8 +274,9 @@ static void test_v4_v6_coexist() {
     env.dev.send(make_udp(0x0a000002, 0x08080808, 53000, 53, {1, 2, 3}));
     env.dev.send(make_udp6(CLIENT_V6, DEST_V6, 53000, 53, {4, 5, 6}));
 
-    assert(!future_get(a4.get_future()));
-    assert(!future_get(a6.get_future()));
+    const auto a4ec = future_get(a4.get_future());
+    const auto a6ec = future_get(a6.get_future());
+    assert(!a4ec && !a6ec);
     assert(s4.remote_key().family == 4);
     assert(s6.remote_key().family == 6);
 

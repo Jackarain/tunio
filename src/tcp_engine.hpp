@@ -84,9 +84,14 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow> {
     std::chrono::steady_clock::time_point created_at;
     std::chrono::steady_clock::time_point destroy_at;
 
-    // ---- 接收队列（已按序确认的字节流）----
-    std::deque<uint8_t> rx_data;
-    size_t rx_bytes = 0;
+    // ---- 接收队列（已按序确认的字节流，连续缓冲 + 消费偏移）----
+    std::vector<uint8_t> rx_data;
+    size_t rx_head = 0;   // 已消费偏移（rx_data 头部）
+    size_t rx_bytes = 0;  // 未消费字节数
+
+    // ---- delayed ACK ----
+    uint8_t ack_pending = 0;  // 待确认的数据段计数
+    bool ack_deferred = false;
 
     // ---- 挂起操作 ----
     struct read_op {
@@ -149,6 +154,8 @@ private:
     void handle_segment(std::shared_ptr<tcp_flow> f, const tcp_header& th,
                         const uint8_t* data, size_t data_len);
     void send_ack(tcp_flow& f);
+    void defer_ack(tcp_flow& f);
+    void on_ack_timer(const boost::system::error_code& ec);
     void deliver_data(tcp_flow& f, const uint8_t* data, size_t len);
     void flush_reads(tcp_flow& f);
     void flush_writes(tcp_flow& f);
@@ -167,6 +174,9 @@ private:
     std::deque<std::function<void(boost::system::error_code, std::shared_ptr<tcp_flow>)>> pending_accepts_;
     std::deque<std::shared_ptr<tcp_flow>> pending_flows_;
     boost::asio::steady_timer sweep_timer_;
+    boost::asio::steady_timer ack_timer_;
+    std::deque<std::shared_ptr<tcp_flow>> ack_deferred_;
+    bool ack_timer_waiting_ = false;
 };
 
 // ---- 供 tun_stream 调用的入口（内部自动派发到 Strand）----

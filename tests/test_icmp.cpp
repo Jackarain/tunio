@@ -30,9 +30,13 @@ int main() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no ICMP reply");
     }
-    assert(verify_packet(pkt));
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
     ip_hdr_info ipi;
-    assert(parse_ip(pkt, ipi));
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
     assert(ipi.src == 0x0a000001 && ipi.dst == 0x0a000002 && ipi.proto == 1);
 
     // Echo Reply：type=0，ID/序号/数据保持

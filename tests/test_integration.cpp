@@ -132,8 +132,12 @@ int main() {
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
-    assert(parse_ip(pkt, ipi));
-    assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x10, 5001, engine_iss + 1, 65535, {}));
 
@@ -142,23 +146,27 @@ int main() {
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x18, 5001, engine_iss + 1, 65535,
                           std::vector<uint8_t>(msg.begin(), msg.end())));
 
-    // 第一个包：引擎对客户端数据的 ACK
-    if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no ack");
+    // 回显数据段携带对客户端数据的 ACK（delayed ACK 合并，可能先出现纯 ACK）
+    bool echo_seen = false;
+    for (int i = 0; i < 4 && !echo_seen; ++i) {
+        if (!env.dev.read_packet(pkt)) {
+            throw std::runtime_error("no echo packet");
+        }
+        if (!parse_ip(pkt, ipi)) {
+            throw std::runtime_error("parse_ip failed");
+        }
+        if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+            throw std::runtime_error("parse_tcp failed");
+        }
+        assert((ti.flags & 0x10) != 0 && ti.ack == 5001 + msg.size());
+        if (ti.len > 0) {
+            assert(ipi.src == DEST_IP && ipi.dst == CLIENT_IP);
+            assert(ti.sport == DEST_PORT && ti.dport == CLIENT_PORT);
+            assert(std::string(reinterpret_cast<const char*>(ti.data), ti.len) == msg);
+            echo_seen = true;
+        }
     }
-    assert(parse_ip(pkt, ipi));
-    assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
-    assert((ti.flags & 0x10) != 0 && ti.ack == 5001 + msg.size());
-
-    // 第二个包：回显数据（后端 -> 客户端）
-    if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no echo packet");
-    }
-    assert(parse_ip(pkt, ipi));
-    assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
-    assert(ipi.src == DEST_IP && ipi.dst == CLIENT_IP);
-    assert(ti.sport == DEST_PORT && ti.dport == CLIENT_PORT);
-    assert(std::string(reinterpret_cast<const char*>(ti.data), ti.len) == msg);
+    assert(echo_seen);
 
     // ---- 客户端 FIN 关闭 ----
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x11, 5001 + msg.size(),
@@ -166,8 +174,12 @@ int main() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no fin ack");
     }
-    assert(parse_ip(pkt, ipi));
-    assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
     assert((ti.flags & 0x10) != 0 && ti.ack == 5001 + msg.size() + 1);
 
     // 引擎应最终发送 FIN（桥接器检测到 EOF 后关闭虚拟流）
@@ -176,8 +188,12 @@ int main() {
         if (!env.dev.read_packet(pkt, 2000)) {
             break;
         }
-        assert(parse_ip(pkt, ipi));
-        assert(parse_tcp(ipi.payload, ipi.payload_len, ti));
+        if (!parse_ip(pkt, ipi)) {
+            throw std::runtime_error("parse_ip failed");
+        }
+        if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+            throw std::runtime_error("parse_tcp failed");
+        }
         if ((ti.flags & 0x01) != 0) {
             fin_seen = true;
         }

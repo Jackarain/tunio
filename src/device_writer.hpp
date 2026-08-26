@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "tunio/packet_buffer.hpp"
 #include "tunio/packet_device.hpp"
@@ -33,6 +34,26 @@ class device_writer {
 public:
     device_writer(net::any_io_executor strand, packet_device& dev, engine_stats& stats)
         : strand_(std::move(strand)), dev_(dev), stats_(stats) {}
+
+    // 从池中获取发送缓冲：池内存在容量足够的缓冲则复用，否则新建
+    packet_buffer acquire(size_t capacity, size_t headroom) {
+        while (!pool_.empty()) {
+            auto b = std::move(pool_.back());
+            pool_.pop_back();
+            if (b.capacity() >= capacity) {
+                return b;
+            }
+        }
+        return packet_buffer(capacity, headroom);
+    }
+
+    // 写完成后回收发送缓冲（必须在 Strand 上调用）
+    void recycle(packet_buffer&& buf) {
+        buf.reset();
+        if (pool_.size() < k_pool_max) {
+            pool_.push_back(std::move(buf));
+        }
+    }
 
     // 将数据包加入写队列；完成回调在调用方绑定执行器上触发
     template <typename CompletionToken>
@@ -59,6 +80,7 @@ public:
         while (!queue_.empty()) {
             auto e = std::move(queue_.front());
             queue_.pop_front();
+            recycle(std::move(e.buf));
             e.handler(net::error::operation_aborted, 0);
         }
     }
@@ -74,19 +96,21 @@ private:
             return;
         }
         writing_ = true;
-        auto& front = queue_.front();
-        dev_.async_write_packet(front.buf, net::bind_executor(strand_, [this](boost::system::error_code ec, size_t n) {
-            auto e = std::move(queue_.front());
-            queue_.pop_front();
+        // 写操作持有 entry（shared_ptr 保活 buffer），cancel_all 清空队列时
+        // 正在进行的写不会访问到已析构的缓冲。
+        auto e = std::make_shared<entry>(std::move(queue_.front()));
+        queue_.pop_front();
+        dev_.async_write_packet(e->buf, net::bind_executor(strand_, [this, e](boost::system::error_code ec, size_t n) {
             writing_ = false;
             if (!ec) {
                 stats_.tx_packets.fetch_add(1, std::memory_order_relaxed);
             }
             if (cancelled_) {
-                e.handler(net::error::operation_aborted, 0);
+                e->handler(net::error::operation_aborted, 0);
             } else {
-                e.handler(ec, n);
+                e->handler(ec, n);
             }
+            recycle(std::move(e->buf));
             pump();
         }));
     }
@@ -95,9 +119,12 @@ private:
     packet_device& dev_;
     engine_stats& stats_;
     std::deque<entry> queue_;
+    std::vector<packet_buffer> pool_;
     bool writing_ = false;
     bool cancelled_ = false;
     uint16_t ip_id_ = 0;
+
+    static constexpr size_t k_pool_max = 64;  // 池上限，避免长期闲置占用内存
 };
 
 } // namespace detail

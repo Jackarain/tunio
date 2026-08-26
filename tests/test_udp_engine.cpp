@@ -78,12 +78,18 @@ static void test_datagram_roundtrip() {
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no UDP reply packet");
     }
-    assert(verify_packet(pkt));
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
     ip_hdr_info ipi;
-    assert(parse_ip(pkt, ipi));
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
     assert(ipi.src == DEST_IP && ipi.dst == CLIENT_IP && ipi.proto == 17);
     udp_hdr_info ui;
-    assert(parse_udp(ipi.payload, ipi.payload_len, ui));
+    if (!parse_udp(ipi.payload, ipi.payload_len, ui)) {
+        throw std::runtime_error("parse_udp failed");
+    }
     assert(ui.sport == 53 && ui.dport == 53000);
     assert(std::string(reinterpret_cast<const char*>(ui.data), ui.n) == reply);
 

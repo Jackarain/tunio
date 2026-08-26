@@ -128,7 +128,6 @@ void tunio_impl::start_read() {
         return;
     }
     reading_ = true;
-    read_buf_.reset();
     auto self = shared_from_this();
     device_->async_read_packet(read_buf_, net::bind_executor(strand_ex_, [self](const boost::system::error_code& ec, size_t n) {
         self->on_read(ec, n);
@@ -147,38 +146,50 @@ void tunio_impl::on_read(const boost::system::error_code& ec, size_t n) {
         return;
     }
     read_buf_.commit(n);
-    // 注：注入设备为字节流（如 socketpair）时，一次读取可能粘合多个报文；
-    // 按 IP 头中的总长度逐包解析，完整处理缓冲区内全部报文（IPv4/IPv6 均支持）。
+    // 注：注入设备为字节流（如 socketpair）时，一次读取可能粘合/拆散多个报文；
+    // 按 IP 头中的总长度逐包解析，完整处理缓冲区内全部报文（IPv4/IPv6 均支持），
+    // 未凑成完整报文的尾部字节保留在缓冲区内，与下一次读取拼接后继续解析。
     const uint8_t* base = read_buf_.data();
+    const size_t avail = read_buf_.size();
     size_t offset = 0;
-    while (offset + 4 <= n) {
+    while (offset + 4 <= avail) {
         size_t total_len = 0;
-        switch (base[offset] >> 4) {
-        case 4:
-            if (offset + sizeof(ipv4_header) > n) {
-                break;
+        const uint8_t version = base[offset] >> 4;
+        if (version == 4) {
+            if (offset + sizeof(ipv4_header) > avail) {
+                break; // 头部不完整，等待续读
             }
             total_len = static_cast<size_t>((base[offset + 2] << 8) | base[offset + 3]);
             if (total_len < sizeof(ipv4_header)) {
-                break;
+                ++offset; // 非法长度：跳过该字节继续扫描
+                continue;
             }
-            break;
-        case 6:
-            if (offset + sizeof(ipv6_header) > n) {
-                break;
+        } else if (version == 6) {
+            if (offset + sizeof(ipv6_header) > avail) {
+                break; // 头部不完整，等待续读
             }
             total_len = sizeof(ipv6_header) +
                         static_cast<size_t>((base[offset + 4] << 8) | base[offset + 5]);
-            break;
-        default:
-            break;
+            if (total_len < sizeof(ipv6_header)) {
+                ++offset; // 非法长度：跳过该字节继续扫描
+                continue;
+            }
+        } else {
+            ++offset; // 非 IP 报文：跳过该字节继续扫描
+            continue;
         }
-        if (total_len == 0 || offset + total_len > n) {
-            break;
+        if (offset + total_len > avail) {
+            break; // 报文体不完整，等待续读
         }
         stats_.rx_packets.fetch_add(1, std::memory_order_relaxed);
         handle_packet(base + offset, total_len);
         offset += total_len;
+    }
+    const size_t kept = avail - offset;
+    if (kept > 0) {
+        read_buf_.rewind(kept);
+    } else {
+        read_buf_.reset();
     }
     start_read();
 }
@@ -277,7 +288,7 @@ void tunio_impl::handle_icmp(const ip_packet_info& ip, const uint8_t* icmp, size
         return;
     }
 
-    packet_buffer reply(20 + icmp_len + 64, 64);
+    packet_buffer reply = writer_->acquire(20 + icmp_len + 64, 64);
     reply.resize(20 + icmp_len);
     uint8_t* out = reply.data();
 
@@ -310,7 +321,7 @@ void tunio_impl::handle_icmpv6(const ip_packet_info& ip, const uint8_t* icmp, si
         return;
     }
 
-    packet_buffer reply(40 + icmp_len + 64, 64);
+    packet_buffer reply = writer_->acquire(40 + icmp_len + 64, 64);
     reply.resize(40 + icmp_len);
     uint8_t* out = reply.data();
 
