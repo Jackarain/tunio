@@ -60,13 +60,19 @@ target_include_directories(tunio PUBLIC
 
 # Wintun 所需编译定义及系统库.
 if(WIN32 AND USE_WINTUN_DRIVER)
-  target_compile_definitions(tunio PRIVATE USE_WINTUN_DRIVER)
+  # 头文件按 USE_WINTUN_DRIVER 选择设备实现 (packet_device.hpp), 必须
+  # 对链接 tunio 的使用方可见, 否则使用方会选到 windows overlapped 实现.
+  target_compile_definitions(tunio PUBLIC USE_WINTUN_DRIVER)
   # 链接 Wintun 所需的 Windows 系统库.
   target_link_libraries(tunio PRIVATE iphlpapi cfgmgr32 setupapi ws2_32)
 endif()
 
 target_link_libraries(tunio PUBLIC ${TUNIO_BOOST_LIBS})
-target_compile_options(tunio PRIVATE -Wall -Wextra)
+if(MSVC)
+  target_compile_options(tunio PRIVATE /W4)
+else()
+  target_compile_options(tunio PRIVATE -Wall -Wextra)
+endif()
 
 option(TUNIO_BUILD_TESTS "构建单元测试" ON)
 option(TUNIO_BUILD_EXAMPLES "构建示例程序" ON)
