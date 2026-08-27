@@ -88,7 +88,7 @@ void tcp_engine::on_sweep(const boost::system::error_code &ec)
         } else if ((f->state == tcp_state::FIN_WAIT_1 ||
                     f->state == tcp_state::FIN_WAIT_2 ||
                     f->state == tcp_state::LAST_ACK) &&
-                   now - f->created_at > cfg_.tcp_close_timeout) {
+                   now - f->close_started_at > cfg_.tcp_close_timeout) {
             // 关闭流程长期未完成（对端未确认 FIN / 未回复 FIN），超时后强制清理
             victims.push_back(f);
         }
@@ -145,7 +145,7 @@ void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
         }
         auto f = std::make_shared<tcp_flow>();
         f->key = key;
-        f->eng = this;
+        f->eng = shared_from_this();
         f->irs = ntohl(th.seq);
         f->iss = random_iss();
         f->rcv_nxt = f->irs + 1;
@@ -272,9 +272,8 @@ void tcp_engine::handle_segment(const std::shared_ptr<tcp_flow> &f,
                 break;
             }
             flush_reads(*f);
-        } else if (f->state == tcp_state::TIME_WAIT &&
-                   fin_seq == f->rcv_nxt - 1) {
-            // 对端重传 FIN：重新确认
+        } else if (f->fin_received && fin_seq == f->rcv_nxt - 1) {
+            // 对端重传 FIN：重新确认（避免客户端长时间重复重传）
             send_ack(*f);
         }
     }
@@ -518,11 +517,13 @@ void tcp_engine::send_fin(tcp_flow &f)
     switch (f.state) {
     case tcp_state::ESTABLISHED:
         f.state = tcp_state::FIN_WAIT_1;
+        f.close_started_at = std::chrono::steady_clock::now();
         send_segment(f, f.snd_nxt, TCP_ACK | TCP_FIN, nullptr, 0, false);
         f.snd_nxt += 1;
         break;
     case tcp_state::CLOSE_WAIT:
         f.state = tcp_state::LAST_ACK;
+        f.close_started_at = std::chrono::steady_clock::now();
         send_segment(f, f.snd_nxt, TCP_ACK | TCP_FIN, nullptr, 0, false);
         f.snd_nxt += 1;
         break;

@@ -68,7 +68,9 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     static constexpr uint32_t fixed_rcv_wnd = 65535;
 
     five_tuple key;
-    tcp_engine *eng = nullptr;
+    // 持强引用保持引擎存活：应用层流对象（tun_stream）可能晚于引擎销毁
+    // （如 io_context 停止时序），裸指针会导致 use-after-free。
+    std::shared_ptr<tcp_engine> eng;
 
     // ---- 序列号跟踪（主机字节序）----
     uint32_t snd_nxt = 0; // 本端将要发送的下一个序列号
@@ -88,6 +90,22 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     bool accepted = false;    // 已交付给 accept
     std::chrono::steady_clock::time_point created_at;
     std::chrono::steady_clock::time_point destroy_at;
+    // 关闭流程开始时间（发送 FIN 时记录），用于 FIN_WAIT/LAST_ACK 强制清理
+    // 超时计时；避免以连接创建时间为基准导致长连接关闭时立即被清理。
+    std::chrono::steady_clock::time_point close_started_at;
+
+    // 客户端（虚拟网内）端点：key 中的源地址与源端口
+    net::ip::tcp::endpoint remote_endpoint() const
+    {
+        if (key.family == 6) {
+            net::ip::address_v6::bytes_type b{};
+            std::copy(key.src_ip.begin(), key.src_ip.end(), b.begin());
+            return {net::ip::address_v6(b), ntohs(key.src_port)};
+        }
+        net::ip::address_v4::bytes_type b{};
+        std::copy(key.src_ip.begin(), key.src_ip.begin() + 4, b.begin());
+        return {net::ip::address_v4(b), ntohs(key.src_port)};
+    }
 
     // ---- 接收队列（已按序确认的字节流，连续缓冲 + 消费偏移）----
     std::vector<uint8_t> rx_data;

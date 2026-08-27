@@ -23,8 +23,7 @@ namespace tunio {
 namespace detail {
 
 tunio_impl::tunio_impl(net::io_context &ctx)
-    : ctx_(ctx)
-    , strand_ex_(net::make_strand(ctx))
+    : strand_ex_(net::make_strand(ctx))
     , device_(std::make_unique<packet_device>(ctx))
     , read_buf_(2048, 64)
 {

@@ -29,9 +29,12 @@ void tun_udp_socket::do_receive_from(MutableBufferSequence &&buffers,
 {
     std::vector<net::mutable_buffer> seq;
     size_t total = 0;
-    for (const auto &b : buffers) {
-        seq.push_back(b);
-        total += b.size();
+    // 兼容单缓冲区（net::buffer(char[]) 返回 mutable_buffer）与
+    // 缓冲区序列两种调用形式，语义与 Boost.Asio async_receive_from 一致.
+    for (auto it = net::buffer_sequence_begin(buffers);
+         it != net::buffer_sequence_end(buffers); ++it) {
+        seq.push_back(*it);
+        total += it->size();
     }
 
     auto session = session_;
@@ -49,9 +52,12 @@ void tun_udp_socket::do_send_to(const net::ip::udp::endpoint &remote,
 {
     std::vector<net::const_buffer> seq;
     size_t total = 0;
-    for (const auto &b : buffers) {
-        seq.push_back(b);
-        total += b.size();
+    // 兼容单缓冲区与缓冲区序列两种调用形式，语义与 Boost.Asio
+    // async_send_to 一致.
+    for (auto it = net::buffer_sequence_begin(buffers);
+         it != net::buffer_sequence_end(buffers); ++it) {
+        seq.push_back(*it);
+        total += it->size();
     }
 
     auto session = session_;

@@ -177,6 +177,29 @@ bool posix_packet_device_impl::open(const device_config &cfg,
         return false;
     }
 
+    // 未指定 IPv4 地址时（如外部脚本负责配置地址/路由/UP），仅设置 MTU，
+    // 不与外部配置冲突；与“只创建设备”的旧语义保持一致。
+    if (cfg.ipv4.empty()) {
+        std::memset(&ifr, 0, sizeof(ifr));
+        std::strncpy(ifr.ifr_name, cfg.name.c_str(), IFNAMSIZ - 1);
+        ifr.ifr_mtu = static_cast<int>(std::max<size_t>(cfg.mtu, 576));
+        if (::ioctl(s, SIOCSIFMTU, &ifr) < 0) {
+            ec = boost::system::error_code(
+                errno, boost::system::generic_category());
+            ::close(s);
+            ::close(fd);
+            return false;
+        }
+        ::close(s);
+
+        desc_.assign(fd, ec);
+        if (!ec) {
+            open_ = true;
+            mtu_ = static_cast<size_t>(ifr.ifr_mtu);
+        }
+        return !ec;
+    }
+
     auto set_ifr = [&](int cmd, const char *addr) -> bool {
         struct ifreq aifr;
         std::memset(&aifr, 0, sizeof(aifr));

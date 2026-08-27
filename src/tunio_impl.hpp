@@ -112,7 +112,6 @@ private:
     void handle_icmpv6(const ip_packet_info &ip, const uint8_t *icmp,
                        size_t icmp_len);
 
-    net::io_context &ctx_;
     net::any_io_executor strand_ex_;
     std::atomic<bool> open_{false};
     uint64_t epoch_ = 0; // 代际计数：close 的异步清理据此判断是否已被重新 open

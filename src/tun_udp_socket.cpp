@@ -44,6 +44,14 @@ tun_udp_socket::executor_type tun_udp_socket::get_executor() const noexcept
     return ex_;
 }
 
+net::ip::udp::endpoint tun_udp_socket::client_endpoint() const
+{
+    if (!session_) {
+        return {};
+    }
+    return session_->client_endpoint();
+}
+
 void tun_udp_socket::set_timeout(std::chrono::seconds timeout)
 {
     if (session_) {

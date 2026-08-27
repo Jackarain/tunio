@@ -113,7 +113,7 @@ void udp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
     // 新建会话并通知上层
     auto s = std::make_shared<udp_session>();
     s->key = key;
-    s->eng = this;
+    s->eng = shared_from_this();
     s->timeout = cfg_.udp_idle_timeout;
     s->expiry = std::chrono::steady_clock::now() + s->timeout;
     sessions_.emplace(key, s);

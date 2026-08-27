@@ -40,7 +40,9 @@ class udp_engine;
 struct udp_session : public std::enable_shared_from_this<udp_session>
 {
     udp_session_key key;
-    udp_engine *eng = nullptr;
+    // 持强引用保持引擎存活：应用层会话对象（tun_udp_socket）可能晚于引擎
+    // 销毁（如 io_context 停止时序），裸指针会导致 use-after-free。
+    std::shared_ptr<udp_engine> eng;
 
     bool closed = false;
     bool accepted = false;
@@ -70,6 +72,19 @@ struct udp_session : public std::enable_shared_from_this<udp_session>
     bool is_open() const
     {
         return !closed;
+    }
+
+    // 客户端（虚拟网内）端点：会话键中的源地址与源端口
+    net::ip::udp::endpoint client_endpoint() const
+    {
+        if (key.family == 6) {
+            net::ip::address_v6::bytes_type b{};
+            std::copy(key.src_ip.begin(), key.src_ip.end(), b.begin());
+            return {net::ip::address_v6(b), ntohs(key.src_port)};
+        }
+        net::ip::address_v4::bytes_type b{};
+        std::copy(key.src_ip.begin(), key.src_ip.begin() + 4, b.begin());
+        return {net::ip::address_v4(b), ntohs(key.src_port)};
     }
 };
 
@@ -265,8 +280,93 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
         }
         const size_t ip_hdr_len = ip_header_size(family);
         const size_t mtu = s->eng->mtu();
+
+        uint8_t src_addr[16] = {};
+        if (remote_v6) {
+            const auto b = remote.address().to_v6().to_bytes();
+            std::memcpy(src_addr, b.data(), 16);
+        } else {
+            const auto b = remote.address().to_v4().to_bytes();
+            std::memcpy(src_addr, b.data(), 4);
+        }
+
         if (total > mtu - ip_hdr_len - sizeof(udp_header)) {
-            handler(boost::system::error_code(net::error::message_size), 0);
+            if (family != 4) {
+                // IPv6 无扩展头分片支持：拒绝超出 MTU 的报文
+                handler(boost::system::error_code(net::error::message_size),
+                        0);
+                return;
+            }
+            // ---- IPv4 大报文分片（RFC 791）----
+            // 数据报超出 MTU 时按 8 字节对齐拆分为多个 IP 分片依次写入设备：
+            // 首片携带 UDP 头与完整校验和，后续片仅携带载荷，DF 位清零。
+            s->eng->refresh_expiry(s);
+
+            const size_t max_frag_payload =
+                (mtu - sizeof(ipv4_header)) & ~size_t(7);
+            // 首片 IP 载荷 = UDP 头 + 数据，需保证第二片偏移仍为 8 的倍数
+            const size_t first_data =
+                max_frag_payload > sizeof(udp_header)
+                    ? (max_frag_payload - sizeof(udp_header)) & ~size_t(7)
+                    : 0;
+
+            std::vector<uint8_t> full(sizeof(udp_header) + total);
+            auto *uh = reinterpret_cast<udp_header *>(full.data());
+            uh->src_port = htons(remote.port());
+            uh->dst_port = session.key.src_port;
+            uh->length = htons(static_cast<uint16_t>(full.size()));
+            uh->checksum = 0;
+            uint8_t *dst = full.data() + sizeof(udp_header);
+            for (const auto &buf : buffers) {
+                std::memcpy(dst, buf.data(), buf.size());
+                dst += buf.size();
+            }
+            uint16_t csum = tcp_udp_checksum(
+                4, src_addr, session.key.src_ip.data(), IPPROTO_UDP_V,
+                full.data(), full.size());
+            if (csum == 0) {
+                csum = 0xffff;
+            }
+            uh->checksum = htons(csum);
+
+            const uint16_t ip_id = s->eng->writer().alloc_ip_id();
+            // off 为相对完整 UDP 数据报（含 UDP 头）的偏移，即分片偏移字段
+            // 的字节基准：首片消费 UDP 头 + first_data，后续片消费载荷。
+            size_t off = 0;
+            while (off < full.size()) {
+                const size_t remain = full.size() - off;
+                const size_t frag_data =
+                    off == 0 ? (std::min)(sizeof(udp_header) + first_data,
+                                          remain)
+                             : (std::min)(max_frag_payload, remain);
+                const size_t frag_total = sizeof(ipv4_header) + frag_data;
+                packet_buffer frag = s->eng->writer().acquire(mtu + 64, 64);
+                frag.resize(frag_total);
+                uint8_t *fb = frag.data();
+                auto *ip = reinterpret_cast<ipv4_header *>(fb);
+                ip->version_ihl = 0x45;
+                ip->tos = 0;
+                ip->total_len = htons(static_cast<uint16_t>(frag_total));
+                ip->id = htons(ip_id);
+                const bool last = off + frag_data >= full.size();
+                ip->frag_off = htons(static_cast<uint16_t>(
+                    (last ? 0 : 0x2000) |
+                    static_cast<uint16_t>(off / 8)));
+                ip->ttl = 64;
+                ip->protocol = IPPROTO_UDP_V;
+                ip->checksum = 0;
+                std::memcpy(&ip->src_ip, src_addr, 4);
+                std::memcpy(&ip->dst_ip, session.key.src_ip.data(), 4);
+                ip->checksum =
+                    htons(ipv4_checksum(fb, sizeof(ipv4_header)));
+                std::memcpy(fb + sizeof(ipv4_header), full.data() + off,
+                            frag_data);
+                off += frag_data;
+                s->eng->writer().async_write_and_forget(std::move(frag));
+            }
+            using handler_t = std::decay_t<Handler>;
+            auto sp = std::make_shared<handler_t>(std::move(handler));
+            std::move(*sp)(boost::system::error_code{}, total);
             return;
         }
         s->eng->refresh_expiry(s);
@@ -277,14 +377,6 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
         pkt.resize(total_len);
         uint8_t *base = pkt.data();
 
-        uint8_t src_addr[16] = {};
-        if (remote_v6) {
-            const auto b = remote.address().to_v6().to_bytes();
-            std::memcpy(src_addr, b.data(), 16);
-        } else {
-            const auto b = remote.address().to_v4().to_bytes();
-            std::memcpy(src_addr, b.data(), 4);
-        }
         build_ip_header(base, family, src_addr,
                         session.key.src_ip.data(), IPPROTO_UDP_V, total_len,
                         s->eng->writer().alloc_ip_id());

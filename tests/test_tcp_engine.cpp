@@ -78,6 +78,9 @@ static void test_handshake_data_fin()
     auto dest = peer.original_destination();
     assert(dest.address().to_v4().to_uint() == DEST_IP);
     assert(dest.port() == DEST_PORT);
+    auto rmt = peer.remote_endpoint();
+    assert(rmt.address().to_v4().to_uint() == CLIENT_IP);
+    assert(rmt.port() == CLIENT_PORT);
     assert(peer.is_open());
 
     // 客户端发送数据 "hello"
@@ -194,6 +197,64 @@ static void test_handshake_data_fin()
     // 客户端 ACK 引擎 FIN
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x10,
                           1001 + hello.size() + 1, fin_seq + 1, 65535, {}));
+}
+
+static void test_fin_retransmit_reacked()
+{
+    engine_env env;
+    auto &io = env.io;
+    tun_acceptor acceptor(env.engine);
+    tun_stream peer(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(
+        peer, [&](boost::system::error_code ec) { accept_done.set_value(ec); });
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x02,
+                          3000, 0, 65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK");
+    }
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse SYN-ACK failed");
+    }
+    const uint32_t engine_iss = ti.seq;
+
+    // 客户端 ACK 完成握手
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x10,
+                          3001, engine_iss + 1, 65535, {}));
+    future_get(accept_done.get_future());
+
+    // 客户端 FIN -> 应用读到 EOF
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x11,
+                          3001, engine_iss + 1, 65535, {}));
+    std::promise<std::pair<boost::system::error_code, size_t>> eof_done;
+    char buf[64];
+    peer.async_read_some(net::buffer(buf),
+                         [&](boost::system::error_code ec, size_t n) {
+                             eof_done.set_value({ec, n});
+                         });
+    auto [eec, en] = future_get(eof_done.get_future());
+    assert(!eec && en == 0);
+
+    // 引擎 ACK FIN
+    if (!env.dev.read_packet(pkt) || !parse_ip(pkt, ipi) ||
+        !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("no FIN ACK");
+    }
+    assert(ti.ack == 3002);
+
+    // 客户端重传 FIN：引擎必须重新 ACK（避免客户端长时间重复重传）
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x11,
+                          3001, engine_iss + 1, 65535, {}));
+    if (!env.dev.read_packet(pkt) || !parse_ip(pkt, ipi) ||
+        !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("no FIN re-ACK");
+    }
+    assert((ti.flags & 0x10) != 0 && ti.ack == 3002);
 }
 
 static void test_zero_window_flow_control()
@@ -789,6 +850,7 @@ int main()
     std::signal(SIGPIPE, SIG_IGN);
     test_handshake_data_fin();
     test_data_with_fin();
+    test_fin_retransmit_reacked();
     test_zero_window_flow_control();
     test_rst();
     test_app_reset();

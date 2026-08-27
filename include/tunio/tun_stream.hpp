@@ -45,6 +45,9 @@ public:
     // 客户端原始请求的目标地址
     net::ip::tcp::endpoint original_destination() const;
 
+    // 客户端（虚拟网内）端点：源地址与源端口
+    net::ip::tcp::endpoint remote_endpoint() const;
+
     // 异步读取：返回已按序确认的字节流
     template <typename MutableBufferSequence, typename CompletionToken>
     auto async_read_some(MutableBufferSequence &&buffers,

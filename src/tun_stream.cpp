@@ -52,6 +52,14 @@ net::ip::tcp::endpoint tun_stream::original_destination() const
     return flow_->original_destination();
 }
 
+net::ip::tcp::endpoint tun_stream::remote_endpoint() const
+{
+    if (!flow_) {
+        return {};
+    }
+    return flow_->remote_endpoint();
+}
+
 void tun_stream::shutdown(net::ip::tcp::socket::shutdown_type what,
                           boost::system::error_code &ec)
 {

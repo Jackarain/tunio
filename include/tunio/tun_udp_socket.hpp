@@ -77,6 +77,9 @@ public:
             token, std::forward<ConstBufferSequence>(buffers));
     }
 
+    // 客户端（虚拟网内）端点：源地址与源端口
+    net::ip::udp::endpoint client_endpoint() const;
+
     // 设置会话空闲超时
     void set_timeout(std::chrono::seconds timeout);
 

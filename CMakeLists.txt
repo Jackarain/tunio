@@ -15,7 +15,18 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-find_package(Boost 1.74 REQUIRED)
+# 作为独立项目构建时查找系统 Boost；作为第三方库被 superproject（如
+# proxy 内置 Boost）引入时复用已存在的 Boost 目标，避免混用版本。
+# 优先复用 Boost::asio（内置 Boost 独立编译 asio 时提供头文件与符号来源，
+# 与 superproject 的 lib_asio_beast 保持同一版本/ABI），否则回退 Boost::headers。
+if(TARGET Boost::asio)
+  set(TUNIO_BOOST_LIBS Boost::asio)
+elseif(NOT TARGET Boost::headers)
+  find_package(Boost 1.74 REQUIRED)
+  set(TUNIO_BOOST_LIBS Boost::headers)
+else()
+  set(TUNIO_BOOST_LIBS Boost::headers)
+endif()
 
 set(TUNIO_SOURCES
   src/packet_buffer.cpp
@@ -54,11 +65,7 @@ if(WIN32 AND USE_WINTUN_DRIVER)
   target_link_libraries(tunio PRIVATE iphlpapi cfgmgr32 setupapi ws2_32)
 endif()
 
-if(TARGET Boost::headers)
-  target_link_libraries(tunio PUBLIC Boost::headers)
-else()
-  target_link_libraries(tunio PUBLIC Boost::boost)
-endif()
+target_link_libraries(tunio PUBLIC ${TUNIO_BOOST_LIBS})
 target_compile_options(tunio PRIVATE -Wall -Wextra)
 
 option(TUNIO_BUILD_TESTS "构建单元测试" ON)
