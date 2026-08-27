@@ -387,22 +387,37 @@ void tcp_engine::flush_writes(tcp_flow &f)
             // 窗口耗尽：等待客户端 ACK 更新窗口
             break;
         }
-        const size_t remaining = op.data.size() - op.offset;
+        // 定位 op.offset 对应的用户缓冲区及其区内偏移
+        size_t buf_index = 0;
+        size_t buf_off = op.offset;
+        while (buf_index < op.buffers.size() &&
+               buf_off >= op.buffers[buf_index].size()) {
+            buf_off -= op.buffers[buf_index].size();
+            ++buf_index;
+        }
+        if (buf_index == op.buffers.size()) {
+            break;
+        }
+        const size_t remaining = op.total - op.offset;
+        const size_t avail = op.buffers[buf_index].size() - buf_off;
         const size_t chunk =
-            std::min({remaining, mss(f.key.family),
+            std::min({remaining, avail, mss(f.key.family),
                       static_cast<size_t>(f.peer_wnd - in_flight)});
         if (chunk == 0) {
             break;
         }
+        const uint8_t *payload = static_cast<const uint8_t *>(
+                                     op.buffers[buf_index].data()) +
+                                 buf_off;
         send_segment(f, f.snd_nxt, TCP_ACK | TCP_PSH,
-                     op.data.data() + op.offset, chunk, false);
+                     payload, chunk, false);
         f.snd_nxt += static_cast<uint32_t>(chunk);
         f.tx_bytes -= chunk;
         op.offset += chunk;
-        if (op.offset == op.data.size()) {
+        if (op.offset == op.total) {
             auto h = std::move(op.handler);
             f.pending_writes.pop_front();
-            h(boost::system::error_code{}, op.data.size());
+            h(boost::system::error_code{}, op.total);
         }
     }
 }

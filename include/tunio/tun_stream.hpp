@@ -59,7 +59,9 @@ public:
             token, std::forward<MutableBufferSequence>(buffers));
     }
 
-    // 异步写入：数据被封装为 TCP 段发送，完成时表示数据已被引擎接收
+    // 异步写入：数据被封装为 TCP 段发送，完成时表示数据已被引擎接收。
+    // 调用方必须保证缓冲区在完成 handler 被回调前保持有效（与 Boost.Asio
+    // 的 async_write_some 语义一致），引擎在发送期间只引用而不拷贝用户数据。
     template <typename ConstBufferSequence, typename CompletionToken>
     auto async_write_some(ConstBufferSequence &&buffers,
                           CompletionToken &&token)
