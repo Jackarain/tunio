@@ -616,24 +616,32 @@ void tcp_engine::close_all()
 
 void tcp_flow_shutdown_send(std::shared_ptr<tcp_flow> flow)
 {
-    if (!flow || !flow->eng) {
+    if (!flow) {
         return;
     }
-    net::dispatch(flow->eng->strand(), [flow]() {
+    auto eng = flow->eng.lock();
+    if (!eng) {
+        return;
+    }
+    net::dispatch(eng->strand(), [flow, eng]() {
         auto &f = *flow;
         if (f.state == tcp_state::CLOSED || f.app_closed) {
             return;
         }
-        flow->eng->send_fin(f);
+        eng->send_fin(f);
     });
 }
 
 void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow)
 {
-    if (!flow || !flow->eng) {
+    if (!flow) {
         return;
     }
-    net::dispatch(flow->eng->strand(), [flow]() {
+    auto eng = flow->eng.lock();
+    if (!eng) {
+        return;
+    }
+    net::dispatch(eng->strand(), [flow, eng]() {
         auto &f = *flow;
         if (f.state == tcp_state::CLOSED) {
             return;
@@ -645,7 +653,7 @@ void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow)
         }
         f.pending_reads.clear();
         if (f.rx_bytes > 0) {
-            flow->eng->account().release(f.rx_bytes);
+            eng->account().release(f.rx_bytes);
             f.rx_bytes = 0;
         }
         f.rx_data.clear();
@@ -655,10 +663,14 @@ void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow)
 
 void tcp_flow_close(std::shared_ptr<tcp_flow> flow)
 {
-    if (!flow || !flow->eng) {
+    if (!flow) {
         return;
     }
-    net::dispatch(flow->eng->strand(), [flow]() {
+    auto eng = flow->eng.lock();
+    if (!eng) {
+        return;
+    }
+    net::dispatch(eng->strand(), [flow, eng]() {
         auto &f = *flow;
         if (f.state == tcp_state::CLOSED || f.app_closed) {
             return;
@@ -676,32 +688,36 @@ void tcp_flow_close(std::shared_ptr<tcp_flow> flow)
         f.pending_writes.clear();
         f.tx_bytes = 0;
         if (f.rx_bytes > 0) {
-            flow->eng->account().release(f.rx_bytes);
+            eng->account().release(f.rx_bytes);
             f.rx_bytes = 0;
         }
         f.rx_data.clear();
         f.rx_head = 0;
-        flow->eng->send_fin(f);
+        eng->send_fin(f);
     });
 }
 
 void tcp_flow_reset(std::shared_ptr<tcp_flow> flow)
 {
-    if (!flow || !flow->eng) {
+    if (!flow) {
         return;
     }
-    net::dispatch(flow->eng->strand(), [flow]() {
+    auto eng = flow->eng.lock();
+    if (!eng) {
+        return;
+    }
+    net::dispatch(eng->strand(), [flow, eng]() {
         auto &f = *flow;
         if (f.state == tcp_state::CLOSED || f.app_closed) {
             return;
         }
-        flow->eng->abort_flow(f);
+        eng->abort_flow(f);
     });
 }
 
 bool tcp_flow_is_open(const std::shared_ptr<tcp_flow> &flow)
 {
-    return flow && flow->eng && flow->state != tcp_state::CLOSED &&
+    return flow && !flow->eng.expired() && flow->state != tcp_state::CLOSED &&
            !flow->app_closed && !flow->rst;
 }
 

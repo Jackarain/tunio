@@ -68,9 +68,9 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     static constexpr uint32_t fixed_rcv_wnd = 65535;
 
     five_tuple key;
-    // 持强引用保持引擎存活：应用层流对象（tun_stream）可能晚于引擎销毁
-    // （如 io_context 停止时序），裸指针会导致 use-after-free。
-    std::shared_ptr<tcp_engine> eng;
+    // 弱引用避免与引擎（flows_ 持有流强引用）构成循环引用；访问前须
+    // lock()，引擎已销毁时以 bad_descriptor / 空操作优雅失败。
+    std::weak_ptr<tcp_engine> eng;
 
     // ---- 序列号跟踪（主机字节序）----
     uint32_t snd_nxt = 0; // 本端将要发送的下一个序列号
@@ -250,13 +250,19 @@ void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
                          std::vector<net::mutable_buffer> buffers, size_t total,
                          Handler handler)
 {
-    if (!flow || !flow->eng) {
+    if (!flow) {
         handler(boost::system::error_code(net::error::bad_descriptor), 0);
         return;
     }
-    auto strand = flow->eng->strand();
-    net::dispatch(strand, [f = std::move(flow), buffers = std::move(buffers),
-                           total, handler = std::move(handler)]() mutable {
+    auto eng = flow->eng.lock();
+    if (!eng) {
+        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        return;
+    }
+    auto strand = eng->strand();
+    net::dispatch(strand, [f = std::move(flow), eng,
+                           buffers = std::move(buffers), total,
+                           handler = std::move(handler)]() mutable {
         auto &flow = *f;
         if (flow.state == tcp_state::CLOSED || flow.app_closed ||
             flow.rx_shutdown) {
@@ -273,7 +279,7 @@ void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
         }
         flow.pending_reads.push_back(
             {std::move(buffers), total, std::move(handler)});
-        f->eng->flush_reads(flow);
+        eng->flush_reads(flow);
     });
 }
 
@@ -282,13 +288,18 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow,
                           std::vector<net::const_buffer> buffers, size_t total,
                           Handler handler)
 {
-    if (!flow || !flow->eng) {
+    if (!flow) {
         handler(boost::system::error_code(net::error::bad_descriptor), 0);
         return;
     }
-    auto strand = flow->eng->strand();
-    net::dispatch(strand, [f = std::move(flow), buffers = std::move(buffers),
-                           total,
+    auto eng = flow->eng.lock();
+    if (!eng) {
+        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        return;
+    }
+    auto strand = eng->strand();
+    net::dispatch(strand, [f = std::move(flow), eng,
+                           buffers = std::move(buffers), total,
                            handler = std::move(handler)]() mutable {
         auto &flow = *f;
         if (flow.state == tcp_state::CLOSED || flow.app_closed ||
@@ -304,7 +315,7 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow,
             handler(boost::system::error_code{}, 0);
             return;
         }
-        if (flow.tx_bytes + total > f->eng->max_tx_queue()) {
+        if (flow.tx_bytes + total > eng->max_tx_queue()) {
             // 发送队列积压超限：拒绝本次写入以施加背压，避免内存无限增长
             handler(boost::system::error_code(net::error::no_buffer_space), 0);
             return;
@@ -312,7 +323,7 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow,
         flow.pending_writes.push_back(
             {std::move(buffers), total, 0, std::move(handler)});
         flow.tx_bytes += total;
-        f->eng->flush_writes(flow);
+        eng->flush_writes(flow);
     });
 }
 

@@ -40,9 +40,9 @@ class udp_engine;
 struct udp_session : public std::enable_shared_from_this<udp_session>
 {
     udp_session_key key;
-    // 持强引用保持引擎存活：应用层会话对象（tun_udp_socket）可能晚于引擎
-    // 销毁（如 io_context 停止时序），裸指针会导致 use-after-free。
-    std::shared_ptr<udp_engine> eng;
+    // 弱引用避免与引擎（sessions_ 持有会话强引用）构成循环引用；访问前须
+    // lock()，引擎已销毁时以 bad_descriptor / 空操作优雅失败。
+    std::weak_ptr<udp_engine> eng;
 
     bool closed = false;
     bool accepted = false;
@@ -203,13 +203,18 @@ void udp_session_start_receive(std::shared_ptr<udp_session> session,
                                size_t total, net::ip::udp::endpoint &sender,
                                Handler handler)
 {
-    if (!session || !session->eng) {
+    if (!session) {
         handler(boost::system::error_code(net::error::bad_descriptor), 0);
         return;
     }
-    auto strand = session->eng->strand();
-    net::dispatch(strand, [s = std::move(session), buffers = std::move(buffers),
-                           total, &sender,
+    auto eng = session->eng.lock();
+    if (!eng) {
+        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        return;
+    }
+    auto strand = eng->strand();
+    net::dispatch(strand, [s = std::move(session), eng,
+                           buffers = std::move(buffers), total, &sender,
                            handler = std::move(handler)]() mutable {
         auto &session = *s;
         if (session.closed) {
@@ -224,7 +229,7 @@ void udp_session_start_receive(std::shared_ptr<udp_session> session,
             auto dg = std::move(session.rx_datagrams.front());
             session.rx_datagrams.pop_front();
             session.rx_bytes -= dg.data.size();
-            s->eng->account().release(dg.data.size());
+            eng->account().release(dg.data.size());
             if (dg.data.size() > total) {
                 handler(boost::system::error_code(net::error::message_size), 0);
                 return;
@@ -254,14 +259,18 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
                             std::vector<net::const_buffer> buffers,
                             size_t total, Handler handler)
 {
-    if (!session || !session->eng) {
+    if (!session) {
         handler(boost::system::error_code(net::error::bad_descriptor), 0);
         return;
     }
-    auto strand = session->eng->strand();
-    net::dispatch(strand, [s = std::move(session), remote,
-                           buffers = std::move(buffers),
-                           total,
+    auto eng = session->eng.lock();
+    if (!eng) {
+        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        return;
+    }
+    auto strand = eng->strand();
+    net::dispatch(strand, [s = std::move(session), eng, remote,
+                           buffers = std::move(buffers), total,
                            handler = std::move(handler)]() mutable {
         auto &session = *s;
         if (session.closed) {
@@ -279,7 +288,7 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
             return;
         }
         const size_t ip_hdr_len = ip_header_size(family);
-        const size_t mtu = s->eng->mtu();
+        const size_t mtu = eng->mtu();
 
         uint8_t src_addr[16] = {};
         if (remote_v6) {
@@ -300,7 +309,7 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
             // ---- IPv4 大报文分片（RFC 791）----
             // 数据报超出 MTU 时按 8 字节对齐拆分为多个 IP 分片依次写入设备：
             // 首片携带 UDP 头与完整校验和，后续片仅携带载荷，DF 位清零。
-            s->eng->refresh_expiry(s);
+            eng->refresh_expiry(s);
 
             const size_t max_frag_payload =
                 (mtu - sizeof(ipv4_header)) & ~size_t(7);
@@ -329,7 +338,7 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
             }
             uh->checksum = htons(csum);
 
-            const uint16_t ip_id = s->eng->writer().alloc_ip_id();
+            const uint16_t ip_id = eng->writer().alloc_ip_id();
             // off 为相对完整 UDP 数据报（含 UDP 头）的偏移，即分片偏移字段
             // 的字节基准：首片消费 UDP 头 + first_data，后续片消费载荷。
             size_t off = 0;
@@ -340,7 +349,7 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
                                           remain)
                              : (std::min)(max_frag_payload, remain);
                 const size_t frag_total = sizeof(ipv4_header) + frag_data;
-                packet_buffer frag = s->eng->writer().acquire(mtu + 64, 64);
+                packet_buffer frag = eng->writer().acquire(mtu + 64, 64);
                 frag.resize(frag_total);
                 uint8_t *fb = frag.data();
                 auto *ip = reinterpret_cast<ipv4_header *>(fb);
@@ -362,24 +371,24 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
                 std::memcpy(fb + sizeof(ipv4_header), full.data() + off,
                             frag_data);
                 off += frag_data;
-                s->eng->writer().async_write_and_forget(std::move(frag));
+                eng->writer().async_write_and_forget(std::move(frag));
             }
             using handler_t = std::decay_t<Handler>;
             auto sp = std::make_shared<handler_t>(std::move(handler));
             std::move(*sp)(boost::system::error_code{}, total);
             return;
         }
-        s->eng->refresh_expiry(s);
+        eng->refresh_expiry(s);
 
         // 构造 IP + UDP 报文（源地址为客户端请求的目标地址）
         const size_t total_len = ip_hdr_len + sizeof(udp_header) + total;
-        packet_buffer pkt = s->eng->writer().acquire(mtu + 64, 64);
+        packet_buffer pkt = eng->writer().acquire(mtu + 64, 64);
         pkt.resize(total_len);
         uint8_t *base = pkt.data();
 
         build_ip_header(base, family, src_addr,
                         session.key.src_ip.data(), IPPROTO_UDP_V, total_len,
-                        s->eng->writer().alloc_ip_id());
+                        eng->writer().alloc_ip_id());
 
         auto *uh = reinterpret_cast<udp_header *>(base + ip_hdr_len);
         uh->src_port = htons(remote.port());
@@ -404,7 +413,7 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
         auto sp = std::make_shared<handler_t>(std::move(handler));
         const size_t sent = total;
         // device_writer 保证完成回调在引擎 Strand 上触发，无需再派发
-        s->eng->writer().async_write(
+        eng->writer().async_write(
             std::move(pkt), [sp, sent](const boost::system::error_code &ec,
                                        size_t) {
                 // 设备写失败时透传错误码，避免向调用方误报成功

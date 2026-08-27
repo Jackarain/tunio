@@ -296,31 +296,39 @@ void udp_engine::close_all()
 
 void udp_session_close(std::shared_ptr<udp_session> session)
 {
-    if (!session || !session->eng) {
+    if (!session) {
         return;
     }
-    net::dispatch(session->eng->strand(),
-                  [session]() { session->eng->remove_session(session); });
+    auto eng = session->eng.lock();
+    if (!eng) {
+        return;
+    }
+    net::dispatch(eng->strand(),
+                  [session, eng]() { eng->remove_session(session); });
 }
 
 void udp_session_set_timeout(std::shared_ptr<udp_session> session,
                              std::chrono::seconds timeout)
 {
-    if (!session || !session->eng) {
+    if (!session) {
         return;
     }
-    net::dispatch(session->eng->strand(), [session, timeout]() {
+    auto eng = session->eng.lock();
+    if (!eng) {
+        return;
+    }
+    net::dispatch(eng->strand(), [session, eng, timeout]() {
         if (session->closed) {
             return;
         }
         session->timeout = timeout;
-        session->eng->refresh_expiry(session);
+        eng->refresh_expiry(session);
     });
 }
 
 bool udp_session_is_open(const std::shared_ptr<udp_session> &session)
 {
-    return session && session->eng && !session->closed;
+    return session && !session->closed && !session->eng.expired();
 }
 
 } // namespace detail
