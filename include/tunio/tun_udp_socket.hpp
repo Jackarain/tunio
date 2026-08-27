@@ -57,7 +57,9 @@ public:
             token, std::forward<MutableBufferSequence>(buffers));
     }
 
-    // 异步发送一个完整数据报
+    // 异步发送一个完整数据报。调用方必须保证缓冲区在完成 handler 被回调前
+    // 保持有效（与 Boost.Asio 的 async_send 语义一致），引擎在发送期间只
+    // 引用而不拷贝用户数据。
     template <typename ConstBufferSequence, typename CompletionToken>
     auto async_send(ConstBufferSequence &&buffers, CompletionToken &&token)
     {

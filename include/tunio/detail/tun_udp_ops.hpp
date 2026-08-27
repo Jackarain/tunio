@@ -45,16 +45,11 @@ void tun_udp_socket::do_receive(MutableBufferSequence &&buffers,
 template <typename ConstBufferSequence, typename Handler>
 void tun_udp_socket::do_send(ConstBufferSequence &&buffers, Handler handler)
 {
+    std::vector<net::const_buffer> seq;
     size_t total = 0;
     for (const auto &b : buffers) {
+        seq.push_back(b);
         total += b.size();
-    }
-
-    std::vector<uint8_t> data;
-    data.reserve(total);
-    for (const auto &b : buffers) {
-        const uint8_t *p = static_cast<const uint8_t *>(b.data());
-        data.insert(data.end(), p, p + b.size());
     }
 
     auto session = session_;
@@ -62,7 +57,7 @@ void tun_udp_socket::do_send(ConstBufferSequence &&buffers, Handler handler)
         handler(boost::system::error_code(net::error::bad_descriptor), 0);
         return;
     }
-    detail::udp_session_start_send(std::move(session), std::move(data),
+    detail::udp_session_start_send(std::move(session), std::move(seq), total,
                                    std::move(handler));
 }
 

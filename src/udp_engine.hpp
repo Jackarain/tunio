@@ -70,8 +70,8 @@ void udp_session_start_receive(std::shared_ptr<udp_session>,
                                std::vector<net::mutable_buffer>, size_t,
                                Handler);
 template <typename Handler>
-void udp_session_start_send(std::shared_ptr<udp_session>, std::vector<uint8_t>,
-                            Handler);
+void udp_session_start_send(std::shared_ptr<udp_session>,
+                            std::vector<net::const_buffer>, size_t, Handler);
 
 class udp_engine : public std::enable_shared_from_this<udp_engine>
 {
@@ -123,7 +123,8 @@ private:
                                           size_t, Handler);
     template <typename Handler>
     friend void udp_session_start_send(std::shared_ptr<udp_session>,
-                                       std::vector<uint8_t>, Handler);
+                                       std::vector<net::const_buffer>, size_t,
+                                       Handler);
     friend void udp_session_close(std::shared_ptr<udp_session>);
     friend void udp_session_set_timeout(std::shared_ptr<udp_session>,
                                         std::chrono::seconds);
@@ -219,14 +220,16 @@ void udp_session_start_receive(std::shared_ptr<udp_session> session,
 
 template <typename Handler>
 void udp_session_start_send(std::shared_ptr<udp_session> session,
-                            std::vector<uint8_t> data, Handler handler)
+                            std::vector<net::const_buffer> buffers, size_t total,
+                            Handler handler)
 {
     if (!session || !session->eng) {
         handler(boost::system::error_code(net::error::bad_descriptor), 0);
         return;
     }
     auto strand = session->eng->strand();
-    net::dispatch(strand, [s = std::move(session), data = std::move(data),
+    net::dispatch(strand, [s = std::move(session), buffers = std::move(buffers),
+                           total,
                            handler = std::move(handler)]() mutable {
         auto &session = *s;
         if (session.closed) {
@@ -236,35 +239,35 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
         const int family = session.key.family;
         const size_t ip_hdr_len = ip_header_size(family);
         const size_t mtu = s->eng->mtu();
-        if (data.size() > mtu - ip_hdr_len - sizeof(udp_header)) {
+        if (total > mtu - ip_hdr_len - sizeof(udp_header)) {
             handler(boost::system::error_code(net::error::message_size), 0);
             return;
         }
         s->eng->refresh_expiry(s);
 
         // 构造 IP + UDP 报文（源地址为客户端请求的目标地址）
-        const size_t total = ip_hdr_len + sizeof(udp_header) + data.size();
+        const size_t total_len = ip_hdr_len + sizeof(udp_header) + total;
         packet_buffer pkt = s->eng->writer().acquire(mtu + 64, 64);
-        pkt.resize(total);
+        pkt.resize(total_len);
         uint8_t *base = pkt.data();
 
         build_ip_header(base, family, session.key.dst_ip.data(),
-                        session.key.src_ip.data(), IPPROTO_UDP_V, total,
+                        session.key.src_ip.data(), IPPROTO_UDP_V, total_len,
                         s->eng->writer().alloc_ip_id());
 
         auto *uh = reinterpret_cast<udp_header *>(base + ip_hdr_len);
         uh->src_port = session.key.dst_port;
         uh->dst_port = session.key.src_port;
-        uh->length =
-            htons(static_cast<uint16_t>(sizeof(udp_header) + data.size()));
+        uh->length = htons(static_cast<uint16_t>(sizeof(udp_header) + total));
         uh->checksum = 0;
-        if (!data.empty()) {
-            std::memcpy(base + ip_hdr_len + sizeof(udp_header), data.data(),
-                        data.size());
+        uint8_t *dst = base + ip_hdr_len + sizeof(udp_header);
+        for (const auto &buf : buffers) {
+            std::memcpy(dst, buf.data(), buf.size());
+            dst += buf.size();
         }
         uint16_t csum = tcp_udp_checksum(
             family, session.key.dst_ip.data(), session.key.src_ip.data(),
-            IPPROTO_UDP_V, base + ip_hdr_len, sizeof(udp_header) + data.size());
+            IPPROTO_UDP_V, base + ip_hdr_len, sizeof(udp_header) + total);
         // IPv6 下 UDP 校验和不可为 0；按 RFC 768/8200 以 0xffff 替代
         if (csum == 0) {
             csum = 0xffff;
@@ -273,7 +276,7 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
 
         using handler_t = std::decay_t<Handler>;
         auto sp = std::make_shared<handler_t>(std::move(handler));
-        const size_t sent = data.size();
+        const size_t sent = total;
         s->eng->writer().async_write(
             std::move(pkt),
             net::bind_executor(
