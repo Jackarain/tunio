@@ -18,6 +18,7 @@
 
 #include <deque>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -115,32 +116,32 @@ private:
 
     void pump()
     {
-        if (writing_ || queue_.empty()) {
+        if (current_ || queue_.empty()) {
             return;
         }
-        writing_ = true;
-        // 写操作持有 entry（shared_ptr 保活 buffer），cancel_all 清空队列时
-        // 正在进行的写不会访问到已析构的缓冲。
-        auto e = std::make_shared<entry>(std::move(queue_.front()));
+        // 当前写入的 entry 作为成员保存（零堆分配），cancel_all 清空队列时
+        // 正在进行的写不受影响，完成回调仍能安全访问其缓冲与 handler。
+        current_ = std::move(queue_.front());
         queue_.pop_front();
+        packet_buffer &buf = current_->buf;
         dev_.async_write_packet(
-            e->buf,
-            net::bind_executor(strand_, [this, e](boost::system::error_code ec,
-                                                  size_t n) {
-                writing_ = false;
+            buf,
+            net::bind_executor(strand_, [this](boost::system::error_code ec,
+                                               size_t n) {
                 if (!ec) {
                     stats_.tx_packets.fetch_add(1, std::memory_order_relaxed);
                 }
                 if (cancelled_) {
-                    if (e->handler) {
-                        e->handler(boost::system::error_code(
-                                       net::error::operation_aborted),
-                                   0);
+                    if (current_->handler) {
+                        current_->handler(boost::system::error_code(
+                                              net::error::operation_aborted),
+                                          0);
                     }
-                } else if (e->handler) {
-                    e->handler(ec, n);
+                } else if (current_->handler) {
+                    current_->handler(ec, n);
                 }
-                recycle(std::move(e->buf));
+                recycle(std::move(current_->buf));
+                current_.reset();
                 pump();
             }));
     }
@@ -150,7 +151,7 @@ private:
     engine_stats &stats_;
     std::deque<entry> queue_;
     std::vector<packet_buffer> pool_;
-    bool writing_ = false;
+    std::optional<entry> current_; // 正在写入的数据包
     bool cancelled_ = false;
     uint16_t ip_id_ = 0;
 

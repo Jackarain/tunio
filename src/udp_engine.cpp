@@ -190,14 +190,14 @@ void udp_engine::arm_expiry_timer()
     armed_target_ = target;
     timer_waiting_ = true;
     expiry_timer_.expires_at(target);
+    // 定时器以引擎 Strand 构造，完成回调已在 Strand 上，无需再派发
     expiry_timer_.async_wait(
-        net::bind_executor(strand_, [self = shared_from_this(),
-                                     gen](const boost::system::error_code &ec) {
+        [self = shared_from_this(), gen](const boost::system::error_code &ec) {
             if (gen != self->wait_gen_) {
                 return;
             }
             self->on_expiry_timer(ec);
-        }));
+        });
 }
 
 void udp_engine::on_expiry_timer(const boost::system::error_code &ec)

@@ -277,14 +277,13 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
         using handler_t = std::decay_t<Handler>;
         auto sp = std::make_shared<handler_t>(std::move(handler));
         const size_t sent = total;
+        // device_writer 保证完成回调在引擎 Strand 上触发，无需再派发
         s->eng->writer().async_write(
-            std::move(pkt),
-            net::bind_executor(
-                s->eng->strand(),
-                [sp, sent](const boost::system::error_code &ec, size_t) {
-                    // 设备写失败时透传错误码，避免向调用方误报成功
-                    std::move (*sp)(ec, ec ? 0 : sent);
-                }));
+            std::move(pkt), [sp, sent](const boost::system::error_code &ec,
+                                       size_t) {
+                // 设备写失败时透传错误码，避免向调用方误报成功
+                std::move (*sp)(ec, ec ? 0 : sent);
+            });
     });
 }
 

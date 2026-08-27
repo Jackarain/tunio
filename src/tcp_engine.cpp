@@ -58,11 +58,11 @@ tcp_engine::~tcp_engine()
 void tcp_engine::start_sweep()
 {
     sweep_timer_.expires_after(std::chrono::seconds(1));
-    sweep_timer_.async_wait(net::bind_executor(
-        strand_,
+    // 定时器以引擎 Strand 构造，完成回调已在 Strand 上，无需再派发
+    sweep_timer_.async_wait(
         [self = shared_from_this()](const boost::system::error_code &ec) {
             self->on_sweep(ec);
-        }));
+        });
 }
 
 void tcp_engine::on_sweep(const boost::system::error_code &ec)
@@ -484,11 +484,11 @@ void tcp_engine::defer_ack(tcp_flow &f)
     }
     ack_timer_waiting_ = true;
     ack_timer_.expires_after(std::chrono::milliseconds(40));
-    ack_timer_.async_wait(net::bind_executor(
-        strand_,
+    // 定时器以引擎 Strand 构造，完成回调已在 Strand 上，无需再派发
+    ack_timer_.async_wait(
         [self = shared_from_this()](const boost::system::error_code &ec) {
             self->on_ack_timer(ec);
-        }));
+        });
 }
 
 void tcp_engine::on_ack_timer(const boost::system::error_code &ec)
