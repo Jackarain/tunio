@@ -367,11 +367,10 @@ void tunio_impl::handle_packet(const uint8_t *pkt, size_t len)
         }
         return a[0] == 0xfe && (a[1] & 0xc0) == 0x80; // fe80::/10
     };
-    const bool src_local =
-        (have_ip4_ && ip.family == 4 &&
-         std::memcmp(ip.src_ip, local_ip4_, 4) == 0) ||
-        (have_ip6_ && ip.family == 6 &&
-         std::memcmp(ip.src_ip, local_ip6_, 16) == 0);
+    const bool src_local = (have_ip4_ && ip.family == 4 &&
+                            std::memcmp(ip.src_ip, local_ip4_, 4) == 0) ||
+                           (have_ip6_ && ip.family == 6 &&
+                            std::memcmp(ip.src_ip, local_ip6_, 16) == 0);
     if (src_local || is_reserved_local(ip.src_ip, ip.family) ||
         is_reserved_local(ip.dst_ip, ip.family)) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
