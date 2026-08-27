@@ -178,31 +178,28 @@ static void test_udp6_roundtrip()
     // 新会话通知
     auto aec = future_get(accept_done.get_future());
     assert(!aec);
-    const auto key = session.remote_key();
-    assert(key.family == 6);
-    assert(std::equal(key.src_ip.begin(), key.src_ip.end(), CLIENT_V6.begin()));
-    assert(std::equal(key.dst_ip.begin(), key.dst_ip.end(), DEST_V6.begin()));
-    assert(key.src_port == htons(53000) && key.dst_port == htons(53));
-    assert(key.protocol == 17);
 
     // 接收完整数据报
     std::promise<std::pair<boost::system::error_code, size_t>> recv_done;
     char buf[512];
-    session.async_receive(net::buffer(buf),
-                          [&](boost::system::error_code ec, size_t n) {
-                              recv_done.set_value({ec, n});
-                          });
+    net::ip::udp::endpoint sender;
+    session.async_receive_from(
+        net::buffer(buf), sender,
+        [&](boost::system::error_code ec, size_t n) {
+            recv_done.set_value({ec, n});
+        });
     auto [rec, rn] = future_get(recv_done.get_future());
     assert(!rec && rn == query.size());
     assert(std::string(buf, rn) == query);
+    assert(sender == net::ip::udp::endpoint(net::ip::address_v6(DEST_V6), 53));
 
     // 发送回复数据报
     const std::string reply = "ipv6-dns-answer";
     std::promise<std::pair<boost::system::error_code, size_t>> send_done;
-    session.async_send(net::buffer(reply),
-                       [&](boost::system::error_code ec, size_t n) {
-                           send_done.set_value({ec, n});
-                       });
+    session.async_send_to(sender, net::buffer(reply),
+                          [&](boost::system::error_code ec, size_t n) {
+                              send_done.set_value({ec, n});
+                          });
     auto [sec, sn] = future_get(send_done.get_future());
     assert(!sec && sn == reply.size());
 
@@ -290,8 +287,23 @@ static void test_v4_v6_coexist()
     const auto a4ec = future_get(a4.get_future());
     const auto a6ec = future_get(a6.get_future());
     assert(!a4ec && !a6ec);
-    assert(s4.remote_key().family == 4);
-    assert(s6.remote_key().family == 6);
+
+    // 各自接收数据报，sender 地址族与会话一致
+    std::promise<std::pair<boost::system::error_code, size_t>> r4, r6;
+    char buf[64];
+    net::ip::udp::endpoint s4s, s6s;
+    s4.async_receive_from(net::buffer(buf), s4s,
+                          [&](boost::system::error_code ec, size_t n) {
+                              r4.set_value({ec, n});
+                          });
+    s6.async_receive_from(net::buffer(buf), s6s,
+                          [&](boost::system::error_code ec, size_t n) {
+                              r6.set_value({ec, n});
+                          });
+    const auto r4ec = future_get(r4.get_future());
+    const auto r6ec = future_get(r6.get_future());
+    assert(!r4ec.first && !r6ec.first);
+    assert(s4s.address().is_v4() && s6s.address().is_v6());
 
     s4.close();
     s6.close();

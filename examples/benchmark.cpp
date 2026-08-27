@@ -470,17 +470,24 @@ static void bench_udp(long long n, long long warmup)
     char buf[64];
     char sbuf[16];
     std::memset(sbuf, 0x64, sizeof(sbuf));
+    net::ip::udp::endpoint sender;
+    const auto remote =
+        net::ip::udp::endpoint(net::ip::make_address_v4("8.8.8.8"), DEST_PORT);
 
     measure("udp_receive", n, warmup, [&] {
-        sock.async_receive(net::buffer(buf), [&](boost::system::error_code,
-                                                 size_t) { done.post(); });
+        sock.async_receive_from(net::buffer(buf), sender,
+                                [&](boost::system::error_code, size_t) {
+                                    done.post();
+                                });
         env.dev.send(udp_seg);
         done.wait();
     });
 
     measure("udp_send", n, warmup, [&] {
-        sock.async_send(net::buffer(sbuf), [&](boost::system::error_code,
-                                               size_t) { done.post(); });
+        sock.async_send_to(remote, net::buffer(sbuf),
+                           [&](boost::system::error_code, size_t) {
+                               done.post();
+                           });
         done.wait();
         if (!env.dev.read_packet(pkt)) {
             throw std::runtime_error("no udp packet");

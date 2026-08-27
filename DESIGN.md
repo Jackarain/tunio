@@ -428,21 +428,23 @@ UDP 引擎将无连接的 UDP 协议映射为有状态的会话，采用标准�
 
 #### 6.1 Datagram 语义
 
-UDP 是数据报协议，其 API 严格遵循一次收发对应一个完整数据报的语义。一次 `async_receive` 返回且仅返回一个完整的原始 UDP Datagram（包含 UDP 头载荷）。
+UDP 是数据报协议，其 API 严格遵循一次收发对应一个完整数据报的语义。一次 `async_receive_from` 返回且仅返回一个完整的原始 UDP Datagram（包含 UDP 头载荷），并通过出参返回该数据报的目标远端端点。
 
-#### 6.2 新会话通知机制
+#### 6.2 会话模型（1 对 N）
 
-当引擎收到一个属于未知五元组的 UDP 数据包时，会自动创建一个新的 `udp_session`，并将其加入一个**新会话通知队列**。上层应用通过 `tun_udp_acceptor::async_accept` 等待并获取这个新会话对应的 `tun_udp_socket` 对象。
+UDP 无连接，一个客户端套接字可与任意多个远端通信。引擎会话以**客户端三元组**（源 IP、源端口、协议）唯一标识：一个会话对应一个客户端套接字，与远端是 1 对 N 关系。每个数据报独立携带目标远端端点，远端信息不保存在会话中。
+
+当引擎收到一个属于未知客户端三元组的 UDP 数据包时，会自动创建一个新的 `udp_session`，并将其加入一个**新会话通知队列**。上层应用通过 `tun_udp_acceptor::async_accept` 等待并获取这个新会话对应的 `tun_udp_socket` 对象。
 
 #### 6.3 NAT 会话管理
 
-- **映射表**：`std::unordered_map<five_tuple, std::shared_ptr<udp_session>>`，运行于 Strand 中。
+- **映射表**：`std::unordered_map<udp_session_key, std::shared_ptr<udp_session>>`，运行于 Strand 中。
 - **会话结构**：
 
 ```cpp
 struct udp_session {
-    five_tuple key;
-    std::queue<std::shared_ptr<packet_buffer>> rx_datagram_queue;
+    udp_session_key key;                 // 客户端三元组
+    std::deque<datagram> rx_datagrams;   // datagram = 载荷 + 目标远端端点
     std::chrono::steady_clock::time_point expiry;
     bool active = true;
 };
@@ -545,16 +547,18 @@ public:
 
     executor_type get_executor() const noexcept;
 
-    // 获取该会话对应的五元组（客户端地址与目标地址）
-    five_tuple remote_key() const;
-
-    // 异步接收一个完整的数据报
+    // 异步接收一个完整的数据报；sender 输出该数据报的目标远端端点
+    // （发送者恒为会话绑定的客户端），失败路径不保证填充
     template <typename MutableBufferSequence, typename CompletionToken>
-    auto async_receive(MutableBufferSequence&& buffers, CompletionToken&& token);
+    auto async_receive_from(MutableBufferSequence&& buffers,
+                            boost::asio::ip::udp::endpoint& sender,
+                            CompletionToken&& token);
 
-    // 异步发送一个完整的数据报
+    // 异步发送一个完整的数据报：构造并注入 src=remote → dst=客户端 的响应
+    // 数据报
     template <typename ConstBufferSequence, typename CompletionToken>
-    auto async_send(ConstBufferSequence&& buffers, CompletionToken&& token);
+    auto async_send_to(const boost::asio::ip::udp::endpoint& remote,
+                       ConstBufferSequence&& buffers, CompletionToken&& token);
 
     // 设置会话空闲超时
     void set_timeout(std::chrono::seconds timeout);
@@ -570,7 +574,7 @@ private:
 
 #### 7.4 `tun_udp_acceptor`（UDP 新会话监听器）
 
-`async_accept` 在引擎检测到新的 UDP 五元组流量时触发完成回调，并将新创建的 `tun_udp_socket` 传递给调用者。
+`async_accept` 在引擎检测到新的 UDP 客户端三元组流量时触发完成回调，并将新创建的 `tun_udp_socket` 传递给调用者。
 
 ```cpp
 class tun_udp_acceptor {
@@ -641,8 +645,8 @@ public:
 - **IPv6 地址配置**：Linux 自主打开模式下通过 netlink（`RTM_NEWADDR`）为 TUN
   接口配置 IPv6 地址与前缀长度（`device_config.ipv6` / `ipv6_prefix_len`）。
 - **SOCKS5 代理**：`tun2socks` 示例中 SOCKS5 CONNECT 与 UDP ASSOCIATE 均支持
-  IPv6 目标（ATYP=4），引擎的 `original_destination()` / `remote_key()` 按
-  地址族返回 IPv6 端点。
+  IPv6 目标（ATYP=4），引擎的 `original_destination()` 按地址族返回 IPv6
+  端点，UDP 会话的远端端点随 `async_receive_from` 的 sender 出参返回。
 
 ### 9. 配置与资源限制
 
@@ -760,8 +764,11 @@ net::awaitable<void> udp_echo_handler(tun_udp_socket session) {
     std::array<char, 2048> buf;
     try {
         for (;;) {
-            size_t n = co_await session.async_receive(net::buffer(buf), net::use_awaitable);
-            co_await session.async_send(net::buffer(buf, n), net::use_awaitable);
+            net::ip::udp::endpoint sender;
+            size_t n = co_await session.async_receive_from(
+                net::buffer(buf), sender, net::use_awaitable);
+            co_await session.async_send_to(sender, net::buffer(buf, n),
+                                           net::use_awaitable);
         }
     } catch (...) {
         session.close();

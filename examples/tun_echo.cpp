@@ -162,10 +162,11 @@ net::awaitable<void> udp_echo_handler(tunio::tun_udp_socket session)
     std::array<char, 2048> buf;
     try {
         for (;;) {
-            size_t n = co_await session.async_receive(net::buffer(buf),
-                                                      net::use_awaitable);
-            co_await session.async_send(net::buffer(buf, n),
-                                        net::use_awaitable);
+            net::ip::udp::endpoint sender;
+            size_t n = co_await session.async_receive_from(
+                net::buffer(buf), sender, net::use_awaitable);
+            co_await session.async_send_to(sender, net::buffer(buf, n),
+                                           net::use_awaitable);
         }
     } catch (...) {
         session.close();

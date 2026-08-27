@@ -25,6 +25,7 @@ namespace {
 namespace net = boost::asio;
 constexpr uint32_t CLIENT_IP = 0x0a000002; // 10.0.0.2
 constexpr uint32_t DEST_IP = 0x08080808;   // 8.8.8.8
+constexpr uint32_t DEST_IP2 = 0x01010101;  // 1.1.1.1
 } // namespace
 
 static void test_datagram_roundtrip()
@@ -46,34 +47,29 @@ static void test_datagram_roundtrip()
     // 新会话通知
     auto aec = future_get(accept_done.get_future());
     assert(!aec);
-    auto key = session.remote_key();
-    const uint32_t csrc = htonl(CLIENT_IP);
-    const uint32_t cdst = htonl(DEST_IP);
-    assert(key.family == 4);
-    assert(std::memcmp(key.src_ip.data(), &csrc, 4) == 0);
-    assert(std::memcmp(key.dst_ip.data(), &cdst, 4) == 0);
-    assert(key.src_port == htons(53000));
-    assert(key.dst_port == htons(53));
-    assert(key.protocol == 17);
 
     // 接收完整数据报
     std::promise<std::pair<boost::system::error_code, size_t>> recv_done;
     char buf[512];
-    session.async_receive(net::buffer(buf),
-                          [&](boost::system::error_code ec, size_t n) {
-                              recv_done.set_value({ec, n});
-                          });
+    net::ip::udp::endpoint sender;
+    session.async_receive_from(
+        net::buffer(buf), sender,
+        [&](boost::system::error_code ec, size_t n) {
+            recv_done.set_value({ec, n});
+        });
     auto [rec, rn] = future_get(recv_done.get_future());
     assert(!rec && rn == query.size());
     assert(std::string(buf, rn) == query);
+    assert(sender == net::ip::udp::endpoint(
+                         net::ip::make_address_v4("8.8.8.8"), 53));
 
     // 发送回复数据报
     const std::string reply = "dns-answer";
     std::promise<std::pair<boost::system::error_code, size_t>> send_done;
-    session.async_send(net::buffer(reply),
-                       [&](boost::system::error_code ec, size_t n) {
-                           send_done.set_value({ec, n});
-                       });
+    session.async_send_to(sender, net::buffer(reply),
+                          [&](boost::system::error_code ec, size_t n) {
+                              send_done.set_value({ec, n});
+                          });
     auto [sec, sn] = future_get(send_done.get_future());
     assert(!sec && sn == reply.size());
 
@@ -99,6 +95,102 @@ static void test_datagram_roundtrip()
     session.close();
 }
 
+static void test_multiple_remotes()
+{
+    engine_env env;
+    auto &io = env.io;
+    tun_udp_acceptor acceptor(env.engine);
+    tun_udp_socket session(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(session, [&](boost::system::error_code ec) {
+        accept_done.set_value(ec);
+    });
+
+    // 同一客户端端口发往两个不同远端：仅创建一次会话（1 对 N）
+    const std::string q1 = "query-to-8.8.8.8";
+    env.dev.send(make_udp(CLIENT_IP, DEST_IP, 53100, 53,
+                          std::vector<uint8_t>(q1.begin(), q1.end())));
+    const std::string q2 = "query-to-1.1.1.1";
+    env.dev.send(make_udp(CLIENT_IP, DEST_IP2, 53100, 80,
+                          std::vector<uint8_t>(q2.begin(), q2.end())));
+    auto aec = future_get(accept_done.get_future());
+    assert(!aec);
+
+    // 两份数据报的 sender 各自为对应远端
+    std::promise<std::pair<boost::system::error_code, size_t>> r1;
+    char buf[512];
+    net::ip::udp::endpoint s1;
+    session.async_receive_from(
+        net::buffer(buf), s1, [&](boost::system::error_code ec, size_t n) {
+            r1.set_value({ec, n});
+        });
+    auto [ec1, n1] = future_get(r1.get_future());
+    assert(!ec1 && n1 == q1.size());
+    assert(std::string(buf, n1) == q1);
+    assert(s1 == net::ip::udp::endpoint(
+                    net::ip::make_address_v4("8.8.8.8"), 53));
+
+    std::promise<std::pair<boost::system::error_code, size_t>> r2;
+    net::ip::udp::endpoint s2;
+    session.async_receive_from(
+        net::buffer(buf), s2, [&](boost::system::error_code ec, size_t n) {
+            r2.set_value({ec, n});
+        });
+    auto [ec2, n2] = future_get(r2.get_future());
+    assert(!ec2 && n2 == q2.size());
+    assert(std::string(buf, n2) == q2);
+    assert(s2 == net::ip::udp::endpoint(
+                    net::ip::make_address_v4("1.1.1.1"), 80));
+
+    // 两路 send_to 各自构造正确的响应报文
+    std::promise<std::pair<boost::system::error_code, size_t>> d1;
+    session.async_send_to(s1, net::buffer(q1),
+                          [&](boost::system::error_code ec, size_t n) {
+                              d1.set_value({ec, n});
+                          });
+    auto [e1, sn1] = future_get(d1.get_future());
+    assert(!e1 && sn1 == q1.size());
+    std::vector<uint8_t> pkt1;
+    if (!env.dev.read_packet(pkt1)) {
+        throw std::runtime_error("no first udp reply");
+    }
+    ip_hdr_info i1;
+    if (!parse_ip(pkt1, i1)) {
+        throw std::runtime_error("parse first reply failed");
+    }
+    assert(i1.src == DEST_IP && i1.dst == CLIENT_IP);
+    udp_hdr_info u1;
+    if (!parse_udp(i1.payload, i1.payload_len, u1)) {
+        throw std::runtime_error("parse first udp failed");
+    }
+    assert(u1.sport == 53 && u1.dport == 53100);
+
+    std::promise<std::pair<boost::system::error_code, size_t>> d2;
+    session.async_send_to(s2, net::buffer(q2),
+                          [&](boost::system::error_code ec, size_t n) {
+                              d2.set_value({ec, n});
+                          });
+    auto [e2, sn2] = future_get(d2.get_future());
+    assert(!e2 && sn2 == q2.size());
+    std::vector<uint8_t> pkt2;
+    if (!env.dev.read_packet(pkt2)) {
+        throw std::runtime_error("no second udp reply");
+    }
+    ip_hdr_info i2;
+    if (!parse_ip(pkt2, i2)) {
+        throw std::runtime_error("parse second reply failed");
+    }
+    assert(i2.src == DEST_IP2 && i2.dst == CLIENT_IP);
+    udp_hdr_info u2;
+    if (!parse_udp(i2.payload, i2.payload_len, u2)) {
+        throw std::runtime_error("parse second udp failed");
+    }
+    assert(u2.sport == 80 && u2.dport == 53100);
+
+    session.close();
+}
+
 static void test_session_timeout()
 {
     // 短空闲超时（500ms）
@@ -118,19 +210,22 @@ static void test_session_timeout()
     // 消费首个数据报
     std::promise<std::pair<boost::system::error_code, size_t>> first_read;
     char buf[512];
-    session.async_receive(net::buffer(buf),
-                          [&](boost::system::error_code ec, size_t n) {
-                              first_read.set_value({ec, n});
-                          });
+    net::ip::udp::endpoint sender;
+    session.async_receive_from(
+        net::buffer(buf), sender,
+        [&](boost::system::error_code ec, size_t n) {
+            first_read.set_value({ec, n});
+        });
     auto [fec, fn] = future_get(first_read.get_future());
     assert(!fec && fn == 3);
 
     // 挂起第二个读取，等待空闲超时唤醒
     std::promise<std::pair<boost::system::error_code, size_t>> timeout_read;
-    session.async_receive(net::buffer(buf),
-                          [&](boost::system::error_code ec, size_t n) {
-                              timeout_read.set_value({ec, n});
-                          });
+    session.async_receive_from(
+        net::buffer(buf), sender,
+        [&](boost::system::error_code ec, size_t n) {
+            timeout_read.set_value({ec, n});
+        });
     auto [tec, tn] = future_get(timeout_read.get_future(), 5000);
     assert(tec == net::error::operation_aborted);
     assert(!session.is_open());
@@ -170,6 +265,10 @@ int main(int argc, char **argv)
         test_datagram_roundtrip();
         return 0;
     }
+    if (argc > 1 && std::string(argv[1]) == "multi") {
+        test_multiple_remotes();
+        return 0;
+    }
     if (argc > 1 && std::string(argv[1]) == "timeout") {
         test_session_timeout();
         return 0;
@@ -179,6 +278,7 @@ int main(int argc, char **argv)
         return 0;
     }
     test_datagram_roundtrip();
+    test_multiple_remotes();
     test_session_timeout();
     test_session_recreated_after_expiry();
     return 0;

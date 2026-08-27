@@ -215,21 +215,9 @@ net::awaitable<void> udp_bridge(tunio::tun_udp_socket session,
             std::array<char, 2048> buf;
             try {
                 for (;;) {
-                    size_t n = co_await s->async_receive(net::buffer(buf),
-                                                         net::use_awaitable);
-                    const auto key = s->remote_key();
                     net::ip::udp::endpoint target;
-                    if (key.family == 6) {
-                        net::ip::address_v6::bytes_type b{};
-                        std::copy(key.dst_ip.begin(), key.dst_ip.end(),
-                                  b.begin());
-                        target = {net::ip::address_v6(b), ntohs(key.dst_port)};
-                    } else {
-                        net::ip::address_v4::bytes_type b{};
-                        std::copy(key.dst_ip.begin(), key.dst_ip.begin() + 4,
-                                  b.begin());
-                        target = {net::ip::address_v4(b), ntohs(key.dst_port)};
-                    }
+                    size_t n = co_await s->async_receive_from(
+                        net::buffer(buf), target, net::use_awaitable);
                     co_await relay->send_to(
                         std::vector<uint8_t>(buf.data(), buf.data() + n),
                         target);
@@ -247,8 +235,8 @@ net::awaitable<void> udp_bridge(tunio::tun_udp_socket session,
             try {
                 for (;;) {
                     auto [payload, target] = co_await relay->receive_from();
-                    co_await s->async_send(net::buffer(payload),
-                                           net::use_awaitable);
+                    co_await s->async_send_to(target, net::buffer(payload),
+                                              net::use_awaitable);
                 }
             } catch (...) {
                 s->close();

@@ -79,6 +79,41 @@ inline bool operator!=(const five_tuple &lhs, const five_tuple &rhs) noexcept
     return !(lhs == rhs);
 }
 
+// UDP 会话键：以客户端三元组标识（网络字节序），一个会话对应一个客户端
+// 套接字，可向任意远端收发（1 对 N），远端端点随每个数据报单独携带。
+struct udp_session_key
+{
+    std::array<uint8_t, 16> src_ip{}; // 网络字节序（IPv4 仅前 4 字节有效）
+    uint16_t src_port = 0;            // 网络字节序
+    uint8_t family = 0;               // 4 或 6
+};
+
+// 构造 UDP 会话键：IP 为网络字节序字节，IPv4 仅拷贝前 4 字节
+inline udp_session_key make_udp_session_key(const uint8_t *src_ip,
+                                            uint16_t src_port,
+                                            uint8_t family) noexcept
+{
+    udp_session_key k{};
+    k.family = family;
+    k.src_port = src_port;
+    const size_t n = family == 6 ? 16 : 4;
+    std::memcpy(k.src_ip.data(), src_ip, n);
+    return k;
+}
+
+inline bool operator==(const udp_session_key &lhs,
+                       const udp_session_key &rhs) noexcept
+{
+    return lhs.family == rhs.family && lhs.src_ip == rhs.src_ip &&
+           lhs.src_port == rhs.src_port;
+}
+
+inline bool operator!=(const udp_session_key &lhs,
+                       const udp_session_key &rhs) noexcept
+{
+    return !(lhs == rhs);
+}
+
 // 设备配置：自主打开 TUN 设备时使用
 struct device_config
 {
@@ -158,6 +193,26 @@ template <> struct hash<tunio::five_tuple>
                (static_cast<uint64_t>(k.dst_port) << 16);
         v[5] = static_cast<uint64_t>(k.protocol) |
                (static_cast<uint64_t>(k.family) << 8);
+        for (uint64_t x : v) {
+            h ^= x;
+            h *= 1099511628211ULL; // FNV prime
+        }
+        return static_cast<size_t>(h);
+    }
+};
+
+template <> struct hash<tunio::udp_session_key>
+{
+    size_t operator()(const tunio::udp_session_key &k) const noexcept
+    {
+        // 64 位字混合哈希：一次 memcpy 加载 8 字节（未用字节恒为
+        // 0，不引入碰撞）， 替代逐字节 FNV 循环，减少每包查找的指令数。
+        uint64_t h = 1469598103934665603ULL; // FNV offset basis
+        uint64_t v[3];
+        std::memcpy(v, k.src_ip.data(), 8);
+        std::memcpy(v + 1, k.src_ip.data() + 8, 8);
+        v[2] = static_cast<uint64_t>(k.src_port) |
+               (static_cast<uint64_t>(k.family) << 16);
         for (uint64_t x : v) {
             h ^= x;
             h *= 1099511628211ULL; // FNV prime

@@ -26,8 +26,9 @@ struct udp_session;
 
 // UDP 数据报套接字
 //
-// 表示引擎 NAT 会话表中的一条 UDP 会话（由五元组唯一标识）。
-// async_receive / async_send 严格遵循一次收发对应一个完整数据报的语义。
+// 表示引擎 UDP 会话表中绑定一个客户端套接字的会话（由客户端三元组唯一
+// 标识，1 对 N：可向任意远端收发）。async_receive_from / async_send_to
+// 严格遵循一次收发对应一个完整数据报的语义。
 class tun_udp_socket
 {
 public:
@@ -41,33 +42,37 @@ public:
 
     executor_type get_executor() const noexcept;
 
-    // 该会话对应的五元组（客户端地址与目标地址）
-    five_tuple remote_key() const;
-
-    // 异步接收一个完整数据报
+    // 异步接收一个完整数据报；sender 输出该数据报的目标远端端点（发送者
+    // 恒为会话绑定的客户端）。调用方必须保证 sender 在完成 handler 被回调
+    // 前保持有效，失败路径不保证填充（与 Boost.Asio 的 async_receive_from
+    // 语义一致）。
     template <typename MutableBufferSequence, typename CompletionToken>
-    auto async_receive(MutableBufferSequence &&buffers, CompletionToken &&token)
+    auto async_receive_from(MutableBufferSequence &&buffers,
+                            net::ip::udp::endpoint &sender,
+                            CompletionToken &&token)
     {
         return net::async_initiate<CompletionToken,
                                    void(boost::system::error_code, size_t)>(
-            [this](auto handler, auto buffers) mutable {
-                do_receive(std::move(buffers),
-                           net::bind_executor(ex_, std::move(handler)));
+            [this, &sender](auto handler, auto buffers) mutable {
+                do_receive_from(std::move(buffers), sender,
+                                net::bind_executor(ex_, std::move(handler)));
             },
             token, std::forward<MutableBufferSequence>(buffers));
     }
 
-    // 异步发送一个完整数据报。调用方必须保证缓冲区在完成 handler 被回调前
-    // 保持有效（与 Boost.Asio 的 async_send 语义一致），引擎在发送期间只
-    // 引用而不拷贝用户数据。
+    // 异步发送一个完整数据报：构造并注入 src=remote → dst=客户端 的响应
+    // 数据报。调用方必须保证缓冲区在完成 handler 被回调前保持有效（与
+    // Boost.Asio 的 async_send 语义一致），引擎在发送期间只引用而不拷贝
+    // 用户数据。
     template <typename ConstBufferSequence, typename CompletionToken>
-    auto async_send(ConstBufferSequence &&buffers, CompletionToken &&token)
+    auto async_send_to(const net::ip::udp::endpoint &remote,
+                       ConstBufferSequence &&buffers, CompletionToken &&token)
     {
         return net::async_initiate<CompletionToken,
                                    void(boost::system::error_code, size_t)>(
-            [this](auto handler, auto buffers) mutable {
-                do_send(std::move(buffers),
-                        net::bind_executor(ex_, std::move(handler)));
+            [this, remote](auto handler, auto buffers) mutable {
+                do_send_to(remote, std::move(buffers),
+                            net::bind_executor(ex_, std::move(handler)));
             },
             token, std::forward<ConstBufferSequence>(buffers));
     }
@@ -80,9 +85,11 @@ public:
 
 private:
     template <typename MutableBufferSequence, typename Handler>
-    void do_receive(MutableBufferSequence &&buffers, Handler handler);
+    void do_receive_from(MutableBufferSequence &&buffers,
+                         net::ip::udp::endpoint &sender, Handler handler);
     template <typename ConstBufferSequence, typename Handler>
-    void do_send(ConstBufferSequence &&buffers, Handler handler);
+    void do_send_to(const net::ip::udp::endpoint &remote,
+                    ConstBufferSequence &&buffers, Handler handler);
 
     executor_type ex_;
     std::shared_ptr<detail::udp_session> session_;

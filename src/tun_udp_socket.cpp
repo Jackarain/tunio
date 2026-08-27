@@ -44,14 +44,6 @@ tun_udp_socket::executor_type tun_udp_socket::get_executor() const noexcept
     return ex_;
 }
 
-five_tuple tun_udp_socket::remote_key() const
-{
-    if (!session_) {
-        return five_tuple{};
-    }
-    return session_->key;
-}
-
 void tun_udp_socket::set_timeout(std::chrono::seconds timeout)
 {
     if (session_) {

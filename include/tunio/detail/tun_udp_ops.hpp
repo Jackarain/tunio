@@ -23,8 +23,9 @@ namespace detail {
 } // namespace detail
 
 template <typename MutableBufferSequence, typename Handler>
-void tun_udp_socket::do_receive(MutableBufferSequence &&buffers,
-                                Handler handler)
+void tun_udp_socket::do_receive_from(MutableBufferSequence &&buffers,
+                                     net::ip::udp::endpoint &sender,
+                                     Handler handler)
 {
     std::vector<net::mutable_buffer> seq;
     size_t total = 0;
@@ -39,11 +40,12 @@ void tun_udp_socket::do_receive(MutableBufferSequence &&buffers,
         return;
     }
     detail::udp_session_start_receive(std::move(session), std::move(seq), total,
-                                      std::move(handler));
+                                      sender, std::move(handler));
 }
 
 template <typename ConstBufferSequence, typename Handler>
-void tun_udp_socket::do_send(ConstBufferSequence &&buffers, Handler handler)
+void tun_udp_socket::do_send_to(const net::ip::udp::endpoint &remote,
+                                ConstBufferSequence &&buffers, Handler handler)
 {
     std::vector<net::const_buffer> seq;
     size_t total = 0;
@@ -57,8 +59,8 @@ void tun_udp_socket::do_send(ConstBufferSequence &&buffers, Handler handler)
         handler(boost::system::error_code(net::error::bad_descriptor), 0);
         return;
     }
-    detail::udp_session_start_send(std::move(session), std::move(seq), total,
-                                   std::move(handler));
+    detail::udp_session_start_send(std::move(session), remote, std::move(seq),
+                                   total, std::move(handler));
 }
 
 } // namespace tunio
