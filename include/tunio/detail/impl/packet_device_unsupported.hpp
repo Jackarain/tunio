@@ -22,34 +22,33 @@ namespace detail {
 
 // 无平台实现时的兜底类型：所有操作立即失败。
 class unsupported_packet_device {
-
 public:
- explicit unsupported_packet_device(net::io_context&) {}
+    explicit unsupported_packet_device(net::io_context&) {}
 
- bool open(const device_config&, boost::system::error_code& ec) {
-  ec = make_error_code(boost::system::errc::operation_not_supported);
-  return false;
- }
+    bool open(const device_config&, boost::system::error_code& ec) {
+        ec = make_error_code(boost::system::errc::operation_not_supported);
+        return false;
+    }
 
- bool assign(native_handle_type, size_t, boost::system::error_code& ec) {
-  ec = make_error_code(boost::system::errc::operation_not_supported);
-  return false;
- }
+    bool assign(native_handle_type, size_t, boost::system::error_code& ec) {
+        ec = make_error_code(boost::system::errc::operation_not_supported);
+        return false;
+    }
 
- void close() {}
- size_t mtu() const { return 0; }
- bool is_open() const { return false; }
+    void close() {}
+    size_t mtu() const { return 0; }
+    bool is_open() const { return false; }
 
- template <typename Handler>
- void async_read(packet_buffer&, Handler&& handler) {
-  std::forward<Handler>(handler)(net::error::bad_descriptor, 0);
- }
+    template <typename Handler>
+    void async_read(packet_buffer&, Handler&& handler) {
+        std::forward<Handler>(handler)(net::error::bad_descriptor, 0);
+    }
 
- template <typename Handler>
- void async_write(packet_buffer&, Handler&& handler) {
-  std::forward<Handler>(handler)(net::error::bad_descriptor, 0);
- }
+    template <typename Handler>
+    void async_write(packet_buffer&, Handler&& handler) {
+        std::forward<Handler>(handler)(net::error::bad_descriptor, 0);
+    }
 };
 
-}
-}
+} // namespace detail
+} // namespace tunio

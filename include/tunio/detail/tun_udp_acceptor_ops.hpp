@@ -17,17 +17,17 @@ namespace tunio {
 
 template <typename Handler>
 void tun_udp_acceptor::do_accept(tun_udp_socket& peer, Handler handler) {
- auto ex = peer.get_executor();
- engine_.impl_->async_accept_udp(
-  [ex, &peer, handler = std::move(handler)](boost::system::error_code ec,
-            std::shared_ptr<detail::udp_session> s) mutable {
-   if (!ec && s) {
-    peer.session_ = std::move(s);
-   }
-   net::dispatch(ex, [handler = std::move(handler), ec]() mutable {
-    handler(ec);
-   });
-  });
+    auto ex = peer.get_executor();
+    engine_.impl_->async_accept_udp(
+        [ex, &peer, handler = std::move(handler)](boost::system::error_code ec,
+                                                  std::shared_ptr<detail::udp_session> s) mutable {
+            if (!ec && s) {
+                peer.session_ = std::move(s);
+            }
+            net::dispatch(ex, [handler = std::move(handler), ec]() mutable {
+                handler(ec);
+            });
+        });
 }
 
-}
+} // namespace tunio
