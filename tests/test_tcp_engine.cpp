@@ -27,6 +27,8 @@ namespace {
 namespace net = boost::asio;
 constexpr uint32_t CLIENT_IP = 0x0a000002; // 10.0.0.2
 constexpr uint32_t DEST_IP = 0x08080808;   // 8.8.8.8
+const auto CLIENT_V6 = v6("fd00::2");
+const auto DEST_V6 = v6("2001:4860:4860::8888");
 constexpr uint16_t CLIENT_PORT = 12345;
 constexpr uint16_t DEST_PORT = 80;
 } // namespace
@@ -1169,6 +1171,79 @@ static void test_accept_idempotent()
     }
 }
 
+static void test_loopback_local_address_guard()
+{
+    // 环路与本地地址防护：源为本机虚拟 IP 或源/目标为保留地址的入包
+    // 应被丢弃，不建立流、不回复，并计入 rx_dropped
+    engine_env env;
+    auto &io = env.io;
+    (void)io;
+    const auto local4 = ip("10.0.0.1");
+    const auto local6 = v6("fd00::1");
+    const auto v6_loop = v6("::1");
+    const auto v6_unspec = v6("::");
+    const auto v6_link = v6("fe80::1");
+
+    auto expect_dropped = [&](const std::vector<uint8_t> &seg, size_t &base) {
+        env.dev.send(seg);
+        std::vector<uint8_t> pkt;
+        if (env.dev.read_packet(pkt, 300)) {
+            throw std::runtime_error("guard packet should be dropped");
+        }
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (env.engine.stats().rx_dropped.load() > base) {
+                base = env.engine.stats().rx_dropped.load();
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        throw std::runtime_error("rx_dropped not incremented");
+    };
+
+    size_t dropped = env.engine.stats().rx_dropped.load();
+    // 源为本机虚拟 IP
+    expect_dropped(
+        make_tcp(local4, DEST_IP, 12364, DEST_PORT, 0x02, 20000, 0, 65535, {}),
+        dropped);
+    // 源为 127.0.0.0/8
+    expect_dropped(make_tcp(0x7f000001, DEST_IP, 12365, DEST_PORT, 0x02, 20000,
+                            0, 65535, {}),
+                   dropped);
+    // 源为 0.0.0.0/8
+    expect_dropped(make_tcp(0x00000001, DEST_IP, 12366, DEST_PORT, 0x02, 20000,
+                            0, 65535, {}),
+                   dropped);
+    // 目标为 127.0.0.0/8
+    expect_dropped(make_tcp(CLIENT_IP, 0x7f000001, 12367, DEST_PORT, 0x02,
+                            20000, 0, 65535, {}),
+                   dropped);
+    // 目标为 0.0.0.0/8
+    expect_dropped(make_tcp(CLIENT_IP, 0x00000001, 12368, DEST_PORT, 0x02,
+                            20000, 0, 65535, {}),
+                   dropped);
+    // IPv6: 源为本机虚拟 IP
+    expect_dropped(
+        make_tcp6(local6, DEST_V6, 12369, DEST_PORT, 0x02, 20000, 0, 65535, {}),
+        dropped);
+    // IPv6: 源 ::1
+    expect_dropped(make_tcp6(v6_loop, DEST_V6, 12370, DEST_PORT, 0x02, 20000, 0,
+                             65535, {}),
+                   dropped);
+    // IPv6: 源 ::
+    expect_dropped(make_tcp6(v6_unspec, DEST_V6, 12371, DEST_PORT, 0x02, 20000,
+                             0, 65535, {}),
+                   dropped);
+    // IPv6: 源 fe80::/10
+    expect_dropped(make_tcp6(v6_link, DEST_V6, 12372, DEST_PORT, 0x02, 20000, 0,
+                             65535, {}),
+                   dropped);
+    // IPv6: 目标 fe80::/10
+    expect_dropped(make_tcp6(CLIENT_V6, v6_link, 12373, DEST_PORT, 0x02, 20000,
+                             0, 65535, {}),
+                   dropped);
+}
 
 int main()
 {
@@ -1193,5 +1268,6 @@ int main()
     test_implicit_accept_on_first_read();
     test_accepted_no_ack_cleanup();
     test_accept_idempotent();
+    test_loopback_local_address_guard();
     return 0;
 }
