@@ -15,7 +15,8 @@
 
 #include "tunio/packet_buffer.hpp"
 
-int main() {
+int main()
+{
     using tunio::packet_buffer;
 
     // 容量与预留
@@ -27,7 +28,7 @@ int main() {
     assert(buf.headroom_available() == 20);
 
     // 写入 + commit
-    uint8_t* w = buf.writable_data();
+    uint8_t *w = buf.writable_data();
     std::memcpy(w, "hello", 5);
     buf.commit(5);
     assert(buf.size() == 5);
@@ -46,7 +47,7 @@ int main() {
     try {
         buf.resize(100); // 超出尾部容量
         assert(false && "should throw");
-    } catch (const std::length_error&) {
+    } catch (const std::length_error &) {
     }
 
     // reset 复用

@@ -28,15 +28,16 @@ struct udp_session;
 //
 // 表示引擎 NAT 会话表中的一条 UDP 会话（由五元组唯一标识）。
 // async_receive / async_send 严格遵循一次收发对应一个完整数据报的语义。
-class tun_udp_socket {
+class tun_udp_socket
+{
 public:
     using executor_type = net::any_io_executor;
 
     explicit tun_udp_socket(executor_type ex);
     ~tun_udp_socket();
 
-    tun_udp_socket(tun_udp_socket&&) noexcept;
-    tun_udp_socket& operator=(tun_udp_socket&&) noexcept;
+    tun_udp_socket(tun_udp_socket &&) noexcept;
+    tun_udp_socket &operator=(tun_udp_socket &&) noexcept;
 
     executor_type get_executor() const noexcept;
 
@@ -45,24 +46,28 @@ public:
 
     // 异步接收一个完整数据报
     template <typename MutableBufferSequence, typename CompletionToken>
-    auto async_receive(MutableBufferSequence&& buffers, CompletionToken&& token) {
-        return net::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
+    auto async_receive(MutableBufferSequence &&buffers, CompletionToken &&token)
+    {
+        return net::async_initiate<CompletionToken,
+                                   void(boost::system::error_code, size_t)>(
             [this](auto handler, auto buffers) mutable {
-                do_receive(std::move(buffers), net::bind_executor(ex_, std::move(handler)));
+                do_receive(std::move(buffers),
+                           net::bind_executor(ex_, std::move(handler)));
             },
-            token,
-            std::forward<MutableBufferSequence>(buffers));
+            token, std::forward<MutableBufferSequence>(buffers));
     }
 
     // 异步发送一个完整数据报
     template <typename ConstBufferSequence, typename CompletionToken>
-    auto async_send(ConstBufferSequence&& buffers, CompletionToken&& token) {
-        return net::async_initiate<CompletionToken, void(boost::system::error_code, size_t)>(
+    auto async_send(ConstBufferSequence &&buffers, CompletionToken &&token)
+    {
+        return net::async_initiate<CompletionToken,
+                                   void(boost::system::error_code, size_t)>(
             [this](auto handler, auto buffers) mutable {
-                do_send(std::move(buffers), net::bind_executor(ex_, std::move(handler)));
+                do_send(std::move(buffers),
+                        net::bind_executor(ex_, std::move(handler)));
             },
-            token,
-            std::forward<ConstBufferSequence>(buffers));
+            token, std::forward<ConstBufferSequence>(buffers));
     }
 
     // 设置会话空闲超时
@@ -73,9 +78,9 @@ public:
 
 private:
     template <typename MutableBufferSequence, typename Handler>
-    void do_receive(MutableBufferSequence&& buffers, Handler handler);
+    void do_receive(MutableBufferSequence &&buffers, Handler handler);
     template <typename ConstBufferSequence, typename Handler>
-    void do_send(ConstBufferSequence&& buffers, Handler handler);
+    void do_send(ConstBufferSequence &&buffers, Handler handler);
 
     executor_type ex_;
     std::shared_ptr<detail::udp_session> session_;

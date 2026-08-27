@@ -14,10 +14,11 @@
 
 namespace tunio {
 
-
 namespace detail {
 
-bool windows_packet_device_impl::open(const device_config&, boost::system::error_code& ec) {
+bool windows_packet_device_impl::open(const device_config &,
+                                      boost::system::error_code &ec)
+{
     // Wintun 会话创建（Phase 3），句柄注入模式 assign() 已可用。
     ec = boost::system::error_code(boost::system::errc::operation_not_supported,
                                    boost::system::generic_category());

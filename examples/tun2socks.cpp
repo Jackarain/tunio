@@ -28,19 +28,19 @@
 
 #include "tunio/tun_acceptor.hpp"
 #include "tunio/tun_config.hpp"
-#include "tunio/tunio.hpp"
 #include "tunio/tun_stream.hpp"
 #include "tunio/tun_udp_acceptor.hpp"
 #include "tunio/tun_udp_socket.hpp"
+#include "tunio/tunio.hpp"
 
 #include "socks5_client.hpp"
-
 
 namespace {
 namespace net = boost::asio;
 namespace te = tunio;
 
-struct options {
+struct options
+{
     std::string dev_name = "tun0";
     std::string ipv4_addr = "10.0.0.1";
     std::string netmask = "255.255.255.0";
@@ -54,21 +54,24 @@ struct options {
     size_t threads = 1;
 };
 
-void usage(const char* prog) {
-    std::cerr << "用法: " << prog << " [选项]\n"
-              << "  --tun <name>           TUN 设备名（默认 tun0）\n"
-              << "  --ip <addr>            本地虚拟 IP（默认 10.0.0.1）\n"
-              << "  --netmask <mask>       子网掩码（默认 255.255.255.0）\n"
-              << "  --ip6 <addr>           本地虚拟 IPv6 地址（可选，如 fd00::1）\n"
-              << "  --ip6-prefix <len>     IPv6 前缀长度（默认 64）\n"
-              << "  --mtu <bytes>          MTU（默认 1500）\n"
-              << "  --proxy <host:port>    SOCKS5 代理地址（默认 127.0.0.1:1080）\n"
-              << "  --no-udp               禁用 UDP 转发\n"
-              << "  --inject-fd <fd>       注入外部已打开的 TUN 文件描述符\n"
-              << "  --threads <n>          io_context 线程数（默认 1）\n";
+void usage(const char *prog)
+{
+    std::cerr
+        << "用法: " << prog << " [选项]\n"
+        << "  --tun <name>           TUN 设备名（默认 tun0）\n"
+        << "  --ip <addr>            本地虚拟 IP（默认 10.0.0.1）\n"
+        << "  --netmask <mask>       子网掩码（默认 255.255.255.0）\n"
+        << "  --ip6 <addr>           本地虚拟 IPv6 地址（可选，如 fd00::1）\n"
+        << "  --ip6-prefix <len>     IPv6 前缀长度（默认 64）\n"
+        << "  --mtu <bytes>          MTU（默认 1500）\n"
+        << "  --proxy <host:port>    SOCKS5 代理地址（默认 127.0.0.1:1080）\n"
+        << "  --no-udp               禁用 UDP 转发\n"
+        << "  --inject-fd <fd>       注入外部已打开的 TUN 文件描述符\n"
+        << "  --threads <n>          io_context 线程数（默认 1）\n";
 }
 
-options parse_args(int argc, char** argv) {
+options parse_args(int argc, char **argv)
+{
     options opt;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -97,7 +100,8 @@ options parse_args(int argc, char** argv) {
                 throw std::runtime_error("proxy 需要 host:port 格式");
             }
             opt.proxy_host = val.substr(0, pos);
-            opt.proxy_port = static_cast<uint16_t>(std::stoul(val.substr(pos + 1)));
+            opt.proxy_port =
+                static_cast<uint16_t>(std::stoul(val.substr(pos + 1)));
         } else if (arg == "--no-udp") {
             opt.udp = false;
         } else if (arg == "--inject-fd") {
@@ -115,53 +119,70 @@ options parse_args(int argc, char** argv) {
 }
 
 // ---- TCP 全双工数据泵（与 DESIGN.md §10.1 一致）----
-net::awaitable<void> tcp_bridge(tunio::tun_stream client, net::ip::tcp::endpoint proxy) {
+net::awaitable<void> tcp_bridge(tunio::tun_stream client,
+                                net::ip::tcp::endpoint proxy)
+{
     auto ex = co_await net::this_coro::executor;
     auto dest = client.original_destination();
     auto upstream = std::make_shared<net::ip::tcp::socket>(ex);
 
     try {
-        *upstream = co_await tun2socks_example::socks5_connect(proxy, dest.address().to_string(), dest.port());
-    } catch (const boost::system::system_error& e) {
-        std::cerr << "[tun2socks] " << dest << " -> " << proxy << " : " << e.what() << std::endl;
+        *upstream = co_await tun2socks_example::socks5_connect(
+            proxy, dest.address().to_string(), dest.port());
+    } catch (const boost::system::system_error &e) {
+        std::cerr << "[tun2socks] " << dest << " -> " << proxy << " : "
+                  << e.what() << std::endl;
         client.reset(); // 后端失败：立即 RST 客户端
         co_return;
     }
 
     auto c = std::make_shared<tunio::tun_stream>(std::move(client));
-    net::co_spawn(ex, [c, upstream]() -> net::awaitable<void> {
-        std::array<char, 8192> buf;
-        try {
-            for (;;) {
-                size_t n = co_await c->async_read_some(net::buffer(buf), net::use_awaitable);
-                co_await net::async_write(*upstream, net::buffer(buf, n), net::use_awaitable);
+    net::co_spawn(
+        ex,
+        [c, upstream]() -> net::awaitable<void> {
+            std::array<char, 8192> buf;
+            try {
+                for (;;) {
+                    size_t n = co_await c->async_read_some(net::buffer(buf),
+                                                           net::use_awaitable);
+                    co_await net::async_write(*upstream, net::buffer(buf, n),
+                                              net::use_awaitable);
+                }
+            } catch (...) {
             }
-        } catch (...) {
-        }
-        boost::system::error_code sec;
-        upstream->shutdown(net::ip::tcp::socket::shutdown_send, sec);
-    }, net::detached);
+            boost::system::error_code sec;
+            upstream->shutdown(net::ip::tcp::socket::shutdown_send, sec);
+        },
+        net::detached);
 
-    net::co_spawn(ex, [c, upstream]() -> net::awaitable<void> {
-        std::array<char, 8192> buf;
-        try {
-            for (;;) {
-                size_t n = co_await upstream->async_read_some(net::buffer(buf), net::use_awaitable);
-                co_await net::async_write(*c, net::buffer(buf, n), net::use_awaitable);
+    net::co_spawn(
+        ex,
+        [c, upstream]() -> net::awaitable<void> {
+            std::array<char, 8192> buf;
+            try {
+                for (;;) {
+                    size_t n = co_await upstream->async_read_some(
+                        net::buffer(buf), net::use_awaitable);
+                    co_await net::async_write(*c, net::buffer(buf, n),
+                                              net::use_awaitable);
+                }
+            } catch (...) {
+                c->close();
             }
-        } catch (...) {
-            c->close();
-        }
-    }, net::detached);
+        },
+        net::detached);
 }
 
-net::awaitable<void> tcp_listener(tunio::tunio& engine, net::ip::tcp::endpoint proxy) {
+net::awaitable<void> tcp_listener(tunio::tunio &engine,
+                                  net::ip::tcp::endpoint proxy)
+{
     auto ex = co_await net::this_coro::executor;
     tunio::tun_acceptor acceptor(engine);
     for (;;) {
         tunio::tun_stream client(ex);
         boost::system::error_code ec;
-        co_await acceptor.async_accept(client, net::redirect_error(net::use_awaitable, ec));
+        co_await acceptor.async_accept(
+            client, net::redirect_error(net::use_awaitable, ec));
         if (ec) {
             co_return;
         }
@@ -170,13 +191,16 @@ net::awaitable<void> tcp_listener(tunio::tunio& engine, net::ip::tcp::endpoint p
 }
 
 // ---- UDP：每个会话经 SOCKS5 UDP ASSOCIATE 中继转发 ----
-net::awaitable<void> udp_bridge(tunio::tun_udp_socket session, net::ip::tcp::endpoint proxy) {
+net::awaitable<void> udp_bridge(tunio::tun_udp_socket session,
+                                net::ip::tcp::endpoint proxy)
+{
     auto ex = co_await net::this_coro::executor;
     auto relay = std::make_shared<tun2socks_example::socks5_udp_relay>(ex);
     try {
         co_await relay->associate(proxy);
-    } catch (const boost::system::system_error& e) {
-        std::cerr << "[tun2socks] udp associate " << proxy << " : " << e.what() << std::endl;
+    } catch (const boost::system::system_error &e) {
+        std::cerr << "[tun2socks] udp associate " << proxy << " : " << e.what()
+                  << std::endl;
         session.close();
         co_return;
     }
@@ -184,50 +208,65 @@ net::awaitable<void> udp_bridge(tunio::tun_udp_socket session, net::ip::tcp::end
     auto s = std::make_shared<tunio::tun_udp_socket>(std::move(session));
 
     // 客户端 -> 中继
-    net::co_spawn(ex, [s, relay]() -> net::awaitable<void> {
-        std::array<char, 2048> buf;
-        try {
-            for (;;) {
-                size_t n = co_await s->async_receive(net::buffer(buf), net::use_awaitable);
-                const auto key = s->remote_key();
-                net::ip::udp::endpoint target;
-                if (key.family == 6) {
-                    net::ip::address_v6::bytes_type b{};
-                    std::copy(key.dst_ip.begin(), key.dst_ip.end(), b.begin());
-                    target = {net::ip::address_v6(b), ntohs(key.dst_port)};
-                } else {
-                    net::ip::address_v4::bytes_type b{};
-                    std::copy(key.dst_ip.begin(), key.dst_ip.begin() + 4, b.begin());
-                    target = {net::ip::address_v4(b), ntohs(key.dst_port)};
+    net::co_spawn(
+        ex,
+        [s, relay]() -> net::awaitable<void> {
+            std::array<char, 2048> buf;
+            try {
+                for (;;) {
+                    size_t n = co_await s->async_receive(net::buffer(buf),
+                                                         net::use_awaitable);
+                    const auto key = s->remote_key();
+                    net::ip::udp::endpoint target;
+                    if (key.family == 6) {
+                        net::ip::address_v6::bytes_type b{};
+                        std::copy(key.dst_ip.begin(), key.dst_ip.end(),
+                                  b.begin());
+                        target = {net::ip::address_v6(b), ntohs(key.dst_port)};
+                    } else {
+                        net::ip::address_v4::bytes_type b{};
+                        std::copy(key.dst_ip.begin(), key.dst_ip.begin() + 4,
+                                  b.begin());
+                        target = {net::ip::address_v4(b), ntohs(key.dst_port)};
+                    }
+                    co_await relay->send_to(
+                        std::vector<uint8_t>(buf.data(), buf.data() + n),
+                        target);
                 }
-                co_await relay->send_to(std::vector<uint8_t>(buf.data(), buf.data() + n), target);
+            } catch (...) {
+                relay->close();
             }
-        } catch (...) {
-            relay->close();
-        }
-    }, net::detached);
+        },
+        net::detached);
 
     // 中继 -> 客户端
-    net::co_spawn(ex, [s, relay]() -> net::awaitable<void> {
-        try {
-            for (;;) {
-                auto [payload, target] = co_await relay->receive_from();
-                co_await s->async_send(net::buffer(payload), net::use_awaitable);
+    net::co_spawn(
+        ex,
+        [s, relay]() -> net::awaitable<void> {
+            try {
+                for (;;) {
+                    auto [payload, target] = co_await relay->receive_from();
+                    co_await s->async_send(net::buffer(payload),
+                                           net::use_awaitable);
+                }
+            } catch (...) {
+                s->close();
+                relay->close();
             }
-        } catch (...) {
-            s->close();
-            relay->close();
-        }
-    }, net::detached);
+        },
+        net::detached);
 }
 
-net::awaitable<void> udp_listener(tunio::tunio& engine, net::ip::tcp::endpoint proxy) {
+net::awaitable<void> udp_listener(tunio::tunio &engine,
+                                  net::ip::tcp::endpoint proxy)
+{
     auto ex = co_await net::this_coro::executor;
     tunio::tun_udp_acceptor acceptor(engine);
     for (;;) {
         tunio::tun_udp_socket session(ex);
         boost::system::error_code ec;
-        co_await acceptor.async_accept(session, net::redirect_error(net::use_awaitable, ec));
+        co_await acceptor.async_accept(
+            session, net::redirect_error(net::use_awaitable, ec));
         if (ec) {
             co_return;
         }
@@ -237,11 +276,12 @@ net::awaitable<void> udp_listener(tunio::tunio& engine, net::ip::tcp::endpoint p
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv)
+{
     options opt;
     try {
         opt = parse_args(argc, argv);
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         std::cerr << "参数错误: " << e.what() << std::endl;
         usage(argv[0]);
         return 1;
@@ -268,17 +308,18 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::cout << "tun2socks 已启动: " << cfg.dev_name << " " << cfg.ipv4_addr
-              << (cfg.ipv6_addr.empty() ? "" : " / " + cfg.ipv6_addr)
-              << " -> " << opt.proxy_host << ":" << opt.proxy_port << std::endl;
+              << (cfg.ipv6_addr.empty() ? "" : " / " + cfg.ipv6_addr) << " -> "
+              << opt.proxy_host << ":" << opt.proxy_port << std::endl;
 
-    net::ip::tcp::endpoint proxy(net::ip::make_address(opt.proxy_host), opt.proxy_port);
+    net::ip::tcp::endpoint proxy(net::ip::make_address(opt.proxy_host),
+                                 opt.proxy_port);
     net::co_spawn(io, tcp_listener(engine, proxy), net::detached);
     if (opt.udp) {
         net::co_spawn(io, udp_listener(engine, proxy), net::detached);
     }
 
     net::signal_set signals(io, SIGINT, SIGTERM);
-    signals.async_wait([&](const boost::system::error_code&, int) {
+    signals.async_wait([&](const boost::system::error_code &, int) {
         std::cout << "\n正在关闭..." << std::endl;
         engine.close();
     });

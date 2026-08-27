@@ -16,7 +16,8 @@
 
 namespace tunio {
 
-void tun_acceptor::cancel() {
+void tun_acceptor::cancel()
+{
     engine_.impl_->cancel_tcp_accepts();
 }
 

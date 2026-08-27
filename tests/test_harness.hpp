@@ -30,34 +30,36 @@
 #include "tunio/packet_buffer.hpp"
 #include "tunio/tun_acceptor.hpp"
 #include "tunio/tun_config.hpp"
-#include "tunio/tunio.hpp"
 #include "tunio/tun_stream.hpp"
 #include "tunio/tun_udp_acceptor.hpp"
 #include "tunio/tun_udp_socket.hpp"
+#include "tunio/tunio.hpp"
 
 namespace test {
 namespace net = boost::asio;
 
 using engine_type = tunio::tunio;
-using tunio::tun_acceptor;
-using tunio::tun_stream;
-using tunio::tun_udp_socket;
-using tunio::tun_udp_acceptor;
-using tunio::tun_config;
 using tunio::device_config;
 using tunio::engine_stats;
 using tunio::five_tuple;
-using tunio::native_handle_type;
 using tunio::invalid_native_handle;
+using tunio::native_handle_type;
 using tunio::packet_buffer;
+using tunio::tun_acceptor;
+using tunio::tun_config;
+using tunio::tun_stream;
+using tunio::tun_udp_acceptor;
+using tunio::tun_udp_socket;
 
 // ---- IP 地址辅助：host order 表示 ----
-inline uint32_t ip(const char* s) {
+inline uint32_t ip(const char *s)
+{
     return ntohl(::inet_addr(s));
 }
 
 // ---- IPv6 地址辅助：字符串 -> 网络字节序字节 ----
-inline std::array<uint8_t, 16> v6(const char* s) {
+inline std::array<uint8_t, 16> v6(const char *s)
+{
     std::array<uint8_t, 16> b{};
     if (::inet_pton(AF_INET6, s, b.data()) != 1) {
         throw std::runtime_error(std::string("bad ipv6 address: ") + s);
@@ -66,7 +68,8 @@ inline std::array<uint8_t, 16> v6(const char* s) {
 }
 
 // ---- 独立校验和实现（与引擎实现相互验证）----
-inline uint32_t raw_sum(const uint8_t* d, size_t n) {
+inline uint32_t raw_sum(const uint8_t *d, size_t n)
+{
     uint32_t sum = 0;
     size_t i = 0;
     for (; i + 1 < n; i += 2) {
@@ -78,19 +81,22 @@ inline uint32_t raw_sum(const uint8_t* d, size_t n) {
     return sum;
 }
 
-inline uint32_t fold_sum(uint32_t sum) {
+inline uint32_t fold_sum(uint32_t sum)
+{
     while (sum >> 16) {
         sum = (sum & 0xffff) + (sum >> 16);
     }
     return sum;
 }
 
-inline uint16_t csum16(const uint8_t* d, size_t n, uint32_t init = 0) {
+inline uint16_t csum16(const uint8_t *d, size_t n, uint32_t init = 0)
+{
     return static_cast<uint16_t>(~fold_sum(raw_sum(d, n) + init));
 }
 
 // 独立校验一个完整 IPv6 报文的 TCP/UDP/ICMPv6 校验和（含伪头部）
-inline bool verify_packet6(const std::vector<uint8_t>& pkt) {
+inline bool verify_packet6(const std::vector<uint8_t> &pkt)
+{
     if (pkt.size() < 40 || (pkt[0] >> 4) != 6) {
         return false;
     }
@@ -99,7 +105,7 @@ inline bool verify_packet6(const std::vector<uint8_t>& pkt) {
         return false;
     }
     const uint8_t proto = pkt[6];
-    const uint8_t* seg = pkt.data() + 40;
+    const uint8_t *seg = pkt.data() + 40;
     uint32_t pseudo = 0;
     for (size_t i = 0; i + 1 < 16; i += 2) {
         pseudo += static_cast<uint16_t>((pkt[8 + i] << 8) | pkt[9 + i]);
@@ -129,7 +135,8 @@ inline bool verify_packet6(const std::vector<uint8_t>& pkt) {
 
 // 独立校验一个完整 IPv4 报文的 IP 头校验和，以及 TCP/UDP/ICMP 校验和。
 // 与引擎实现相互独立，用于验证引擎发送方向的报文合法性。
-inline bool verify_packet(const std::vector<uint8_t>& pkt) {
+inline bool verify_packet(const std::vector<uint8_t> &pkt)
+{
     if (pkt.size() < 20) {
         return false;
     }
@@ -142,10 +149,11 @@ inline bool verify_packet(const std::vector<uint8_t>& pkt) {
     if (ihl < 20 || total < ihl || pkt.size() < total) {
         return false;
     }
-    const uint8_t* seg = pkt.data() + ihl;
+    const uint8_t *seg = pkt.data() + ihl;
     const size_t seg_len = total - ihl;
-    const uint32_t pseudo_ip = ((pkt[12] << 8) | pkt[13]) + ((pkt[14] << 8) | pkt[15]) +
-                               ((pkt[16] << 8) | pkt[17]) + ((pkt[18] << 8) | pkt[19]);
+    const uint32_t pseudo_ip =
+        ((pkt[12] << 8) | pkt[13]) + ((pkt[14] << 8) | pkt[15]) +
+        ((pkt[16] << 8) | pkt[17]) + ((pkt[18] << 8) | pkt[19]);
     if (proto == 6) {
         if (seg_len < 20) {
             return false;
@@ -170,7 +178,8 @@ inline bool verify_packet(const std::vector<uint8_t>& pkt) {
 
 // ---- 报文构造（host order 地址入参）----
 inline std::vector<uint8_t> make_ipv4(uint32_t src, uint32_t dst, uint8_t proto,
-                                      const std::vector<uint8_t>& payload) {
+                                      const std::vector<uint8_t> &payload)
+{
     std::vector<uint8_t> pkt;
     pkt.reserve(20 + payload.size());
     pkt.resize(20, 0);
@@ -192,9 +201,11 @@ inline std::vector<uint8_t> make_ipv4(uint32_t src, uint32_t dst, uint8_t proto,
 }
 
 // ---- IPv6 报文构造（网络字节序地址字节入参）----
-inline std::vector<uint8_t> make_ipv6(const std::array<uint8_t, 16>& src,
-                                      const std::array<uint8_t, 16>& dst, uint8_t proto,
-                                      const std::vector<uint8_t>& payload) {
+inline std::vector<uint8_t> make_ipv6(const std::array<uint8_t, 16> &src,
+                                      const std::array<uint8_t, 16> &dst,
+                                      uint8_t proto,
+                                      const std::vector<uint8_t> &payload)
+{
     std::vector<uint8_t> pkt(40, 0);
     pkt[0] = 0x60;
     const uint16_t plen = static_cast<uint16_t>(payload.size());
@@ -208,11 +219,12 @@ inline std::vector<uint8_t> make_ipv6(const std::array<uint8_t, 16>& src,
     return pkt;
 }
 
-inline std::vector<uint8_t> make_tcp6(const std::array<uint8_t, 16>& src,
-                                      const std::array<uint8_t, 16>& dst,
-                                      uint16_t sport, uint16_t dport, uint8_t flags,
-                                      uint32_t seq, uint32_t ack, uint16_t win,
-                                      const std::vector<uint8_t>& data, bool mss = false) {
+inline std::vector<uint8_t>
+make_tcp6(const std::array<uint8_t, 16> &src,
+          const std::array<uint8_t, 16> &dst, uint16_t sport, uint16_t dport,
+          uint8_t flags, uint32_t seq, uint32_t ack, uint16_t win,
+          const std::vector<uint8_t> &data, bool mss = false)
+{
     const size_t hlen = mss ? 24 : 20;
     std::vector<uint8_t> seg(hlen + data.size(), 0);
     seg[0] = static_cast<uint8_t>(sport >> 8);
@@ -246,10 +258,11 @@ inline std::vector<uint8_t> make_tcp6(const std::array<uint8_t, 16>& src,
     return make_ipv6(src, dst, 6, seg);
 }
 
-inline std::vector<uint8_t> make_udp6(const std::array<uint8_t, 16>& src,
-                                      const std::array<uint8_t, 16>& dst,
+inline std::vector<uint8_t> make_udp6(const std::array<uint8_t, 16> &src,
+                                      const std::array<uint8_t, 16> &dst,
                                       uint16_t sport, uint16_t dport,
-                                      const std::vector<uint8_t>& data) {
+                                      const std::vector<uint8_t> &data)
+{
     std::vector<uint8_t> seg(8 + data.size(), 0);
     seg[0] = static_cast<uint8_t>(sport >> 8);
     seg[1] = static_cast<uint8_t>(sport & 0xff);
@@ -272,10 +285,11 @@ inline std::vector<uint8_t> make_udp6(const std::array<uint8_t, 16>& src,
     return make_ipv6(src, dst, 17, seg);
 }
 
-inline std::vector<uint8_t> make_icmp6_echo(const std::array<uint8_t, 16>& src,
-                                            const std::array<uint8_t, 16>& dst,
+inline std::vector<uint8_t> make_icmp6_echo(const std::array<uint8_t, 16> &src,
+                                            const std::array<uint8_t, 16> &dst,
                                             uint16_t id, uint16_t seqno,
-                                            const std::vector<uint8_t>& data) {
+                                            const std::vector<uint8_t> &data)
+{
     std::vector<uint8_t> icmp(8 + data.size(), 0);
     icmp[0] = 128; // Echo Request
     icmp[4] = static_cast<uint8_t>(id >> 8);
@@ -296,9 +310,12 @@ inline std::vector<uint8_t> make_icmp6_echo(const std::array<uint8_t, 16>& src,
     return make_ipv6(src, dst, 58, icmp);
 }
 
-inline std::vector<uint8_t> make_tcp(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
-                                     uint8_t flags, uint32_t seq, uint32_t ack, uint16_t win,
-                                     const std::vector<uint8_t>& data, bool mss = false) {
+inline std::vector<uint8_t> make_tcp(uint32_t src, uint32_t dst, uint16_t sport,
+                                     uint16_t dport, uint8_t flags,
+                                     uint32_t seq, uint32_t ack, uint16_t win,
+                                     const std::vector<uint8_t> &data,
+                                     bool mss = false)
+{
     const size_t hlen = mss ? 24 : 20;
     std::vector<uint8_t> seg(hlen + data.size(), 0);
     seg[0] = static_cast<uint8_t>(sport >> 8);
@@ -321,16 +338,18 @@ inline std::vector<uint8_t> make_tcp(uint32_t src, uint32_t dst, uint16_t sport,
     if (!data.empty()) {
         std::memcpy(seg.data() + hlen, data.data(), data.size());
     }
-    const uint32_t pseudo = (src >> 16) + (src & 0xffff) +
-                            (dst >> 16) + (dst & 0xffff) + 6 + seg.size();
+    const uint32_t pseudo = (src >> 16) + (src & 0xffff) + (dst >> 16) +
+                            (dst & 0xffff) + 6 + seg.size();
     uint16_t c = csum16(seg.data(), seg.size(), pseudo);
     seg[16] = static_cast<uint8_t>(c >> 8);
     seg[17] = static_cast<uint8_t>(c & 0xff);
     return make_ipv4(src, dst, 6, seg);
 }
 
-inline std::vector<uint8_t> make_udp(uint32_t src, uint32_t dst, uint16_t sport, uint16_t dport,
-                                     const std::vector<uint8_t>& data) {
+inline std::vector<uint8_t> make_udp(uint32_t src, uint32_t dst, uint16_t sport,
+                                     uint16_t dport,
+                                     const std::vector<uint8_t> &data)
+{
     std::vector<uint8_t> seg(8 + data.size(), 0);
     seg[0] = static_cast<uint8_t>(sport >> 8);
     seg[1] = static_cast<uint8_t>(sport & 0xff);
@@ -342,16 +361,18 @@ inline std::vector<uint8_t> make_udp(uint32_t src, uint32_t dst, uint16_t sport,
     if (!data.empty()) {
         std::memcpy(seg.data() + 8, data.data(), data.size());
     }
-    const uint32_t pseudo = (src >> 16) + (src & 0xffff) +
-                            (dst >> 16) + (dst & 0xffff) + 17 + seg.size();
+    const uint32_t pseudo = (src >> 16) + (src & 0xffff) + (dst >> 16) +
+                            (dst & 0xffff) + 17 + seg.size();
     uint16_t c = csum16(seg.data(), seg.size(), pseudo);
     seg[6] = static_cast<uint8_t>(c >> 8);
     seg[7] = static_cast<uint8_t>(c & 0xff);
     return make_ipv4(src, dst, 17, seg);
 }
 
-inline std::vector<uint8_t> make_icmp_echo(uint32_t src, uint32_t dst, uint16_t id, uint16_t seqno,
-                                           const std::vector<uint8_t>& data) {
+inline std::vector<uint8_t> make_icmp_echo(uint32_t src, uint32_t dst,
+                                           uint16_t id, uint16_t seqno,
+                                           const std::vector<uint8_t> &data)
+{
     std::vector<uint8_t> icmp(8 + data.size(), 0);
     icmp[0] = 8; // Echo Request
     icmp[1] = 0;
@@ -369,24 +390,27 @@ inline std::vector<uint8_t> make_icmp_echo(uint32_t src, uint32_t dst, uint16_t 
 }
 
 // ---- 报文解析 ----
-struct ip_hdr_info {
+struct ip_hdr_info
+{
     uint8_t proto = 0;
     uint8_t ihl = 0;
     uint32_t src = 0, dst = 0; // host order
     uint16_t total_len = 0;
-    const uint8_t* payload = nullptr;
+    const uint8_t *payload = nullptr;
     size_t payload_len = 0;
 };
 
-struct ip6_hdr_info {
+struct ip6_hdr_info
+{
     uint8_t proto = 0;
     std::array<uint8_t, 16> src{};
     std::array<uint8_t, 16> dst{};
     size_t payload_len = 0;
-    const uint8_t* payload = nullptr;
+    const uint8_t *payload = nullptr;
 };
 
-inline bool parse_ip6(const std::vector<uint8_t>& pkt, ip6_hdr_info& out) {
+inline bool parse_ip6(const std::vector<uint8_t> &pkt, ip6_hdr_info &out)
+{
     if (pkt.size() < 40 || (pkt[0] >> 4) != 6) {
         return false;
     }
@@ -402,7 +426,8 @@ inline bool parse_ip6(const std::vector<uint8_t>& pkt, ip6_hdr_info& out) {
     return true;
 }
 
-inline bool parse_ip(const std::vector<uint8_t>& pkt, ip_hdr_info& out) {
+inline bool parse_ip(const std::vector<uint8_t> &pkt, ip_hdr_info &out)
+{
     if (pkt.size() < 20 || (pkt[0] >> 4) != 4) {
         return false;
     }
@@ -422,16 +447,18 @@ inline bool parse_ip(const std::vector<uint8_t>& pkt, ip_hdr_info& out) {
     return true;
 }
 
-struct tcp_hdr_info {
+struct tcp_hdr_info
+{
     uint16_t sport = 0, dport = 0;
     uint8_t flags = 0;
     uint32_t seq = 0, ack = 0;
     uint16_t win = 0;
-    const uint8_t* data = nullptr;
+    const uint8_t *data = nullptr;
     size_t len = 0;
 };
 
-inline bool parse_tcp(const uint8_t* p, size_t n, tcp_hdr_info& out) {
+inline bool parse_tcp(const uint8_t *p, size_t n, tcp_hdr_info &out)
+{
     if (n < 20) {
         return false;
     }
@@ -453,14 +480,16 @@ inline bool parse_tcp(const uint8_t* p, size_t n, tcp_hdr_info& out) {
     return true;
 }
 
-struct udp_hdr_info {
+struct udp_hdr_info
+{
     uint16_t sport = 0, dport = 0;
     uint16_t len = 0;
-    const uint8_t* data = nullptr;
+    const uint8_t *data = nullptr;
     size_t n = 0;
 };
 
-inline bool parse_udp(const uint8_t* p, size_t n, udp_hdr_info& out) {
+inline bool parse_udp(const uint8_t *p, size_t n, udp_hdr_info &out)
+{
     if (n < 8) {
         return false;
     }
@@ -473,9 +502,11 @@ inline bool parse_udp(const uint8_t* p, size_t n, udp_hdr_info& out) {
 }
 
 // ---- 虚拟 TUN 设备（socketpair 注入）----
-class fake_device {
+class fake_device
+{
 public:
-    fake_device() {
+    fake_device()
+    {
         int sv[2];
         if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
             throw std::runtime_error("socketpair failed");
@@ -484,13 +515,18 @@ public:
         inject_fd_ = sv[1];
     }
 
-    ~fake_device() {
+    ~fake_device()
+    {
         ::close(fd_);
     }
 
-    int inject_fd() const { return inject_fd_; }
+    int inject_fd() const
+    {
+        return inject_fd_;
+    }
 
-    void send(const std::vector<uint8_t>& pkt) {
+    void send(const std::vector<uint8_t> &pkt)
+    {
         size_t off = 0;
         while (off < pkt.size()) {
             const ssize_t n = ::write(fd_, pkt.data() + off, pkt.size() - off);
@@ -502,8 +538,10 @@ public:
     }
 
     // 读取一个完整 IP 包；支持粘包拆包；超时返回 false
-    bool read_packet(std::vector<uint8_t>& out, int timeout_ms = 3000) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    bool read_packet(std::vector<uint8_t> &out, int timeout_ms = 3000)
+    {
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(timeout_ms);
         for (;;) {
             while (stash_.size() >= 4) {
                 size_t total = 0;
@@ -518,7 +556,8 @@ public:
                     if (stash_.size() < 40) {
                         break;
                     }
-                    total = 40 + static_cast<size_t>((stash_[4] << 8) | stash_[5]);
+                    total =
+                        40 + static_cast<size_t>((stash_[4] << 8) | stash_[5]);
                     break;
                 default:
                     break;
@@ -535,8 +574,10 @@ public:
                 return false;
             }
             const int remaining = static_cast<int>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
-            struct pollfd pfd { fd_, POLLIN, 0 };
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline -
+                                                                      now)
+                    .count());
+            struct pollfd pfd{fd_, POLLIN, 0};
             const int r = ::poll(&pfd, 1, remaining);
             if (r <= 0) {
                 return false;
@@ -559,17 +600,22 @@ private:
 // ---- 引擎测试环境：io_context 线程 + 注入设备 ----
 // 使用 executor_work_guard 保持 io 持续运行：close() 会清空引擎挂起工作，
 // 若无 guard，io.run() 将返回导致线程退出（真实应用同样需要持续 run）。
-struct engine_env {
+struct engine_env
+{
     net::io_context io;
     engine_type engine;
     fake_device dev;
     std::thread thread;
     net::executor_work_guard<net::io_context::executor_type> guard;
 
-    explicit engine_env(size_t mtu = 1500, std::chrono::seconds udp_timeout = std::chrono::seconds(1),
-                        std::chrono::seconds tcp_accept_timeout = std::chrono::seconds(30),
-                        size_t max_rx_queue = 1024 * 1024, size_t max_tx_queue = 1024 * 1024)
-        : engine(io), guard(net::make_work_guard(io)) {
+    explicit engine_env(
+        size_t mtu = 1500,
+        std::chrono::seconds udp_timeout = std::chrono::seconds(1),
+        std::chrono::seconds tcp_accept_timeout = std::chrono::seconds(30),
+        size_t max_rx_queue = 1024 * 1024, size_t max_tx_queue = 1024 * 1024)
+        : engine(io)
+        , guard(net::make_work_guard(io))
+    {
         tun_config cfg;
         cfg.external_handle = dev.inject_fd();
         cfg.external_mtu = mtu;
@@ -588,7 +634,8 @@ struct engine_env {
         thread = std::thread([this] { io.run(); });
     }
 
-    ~engine_env() {
+    ~engine_env()
+    {
         engine.close();
         guard.reset();
         if (thread.joinable()) {
@@ -599,8 +646,10 @@ struct engine_env {
 
 // 带超时的 future 等待
 template <typename T>
-inline T future_get(std::future<T> fut, int timeout_ms = 5000) {
-    if (fut.wait_for(std::chrono::milliseconds(timeout_ms)) != std::future_status::ready) {
+inline T future_get(std::future<T> fut, int timeout_ms = 5000)
+{
+    if (fut.wait_for(std::chrono::milliseconds(timeout_ms)) !=
+        std::future_status::ready) {
         throw std::runtime_error("future timeout");
     }
     return fut.get();

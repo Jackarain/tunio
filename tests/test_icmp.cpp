@@ -17,14 +17,16 @@
 
 using namespace test;
 
-int main() {
+int main()
+{
     engine_env env;
-    auto& io = env.io;
+    auto &io = env.io;
     (void)io;
 
     // 对引擎本地虚拟 IP 的 ICMP Echo Request
     const std::vector<uint8_t> payload = {0xde, 0xad, 0xbe, 0xef};
-    env.dev.send(make_icmp_echo(0x0a000002, 0x0a000001, 0x1234, 0x0001, payload));
+    env.dev.send(
+        make_icmp_echo(0x0a000002, 0x0a000001, 0x1234, 0x0001, payload));
 
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
@@ -40,7 +42,7 @@ int main() {
     assert(ipi.src == 0x0a000001 && ipi.dst == 0x0a000002 && ipi.proto == 1);
 
     // Echo Reply：type=0，ID/序号/数据保持
-    const uint8_t* icmp = ipi.payload;
+    const uint8_t *icmp = ipi.payload;
     assert(icmp[0] == 0);
     assert(icmp[1] == 0);
     assert(icmp[4] == 0x12 && icmp[5] == 0x34); // identifier

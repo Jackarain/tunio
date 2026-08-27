@@ -23,11 +23,11 @@ namespace detail {
 } // namespace detail
 
 template <typename MutableBufferSequence, typename Handler>
-void tun_stream::do_read_some(MutableBufferSequence&& buffers,
-                              Handler handler) {
+void tun_stream::do_read_some(MutableBufferSequence &&buffers, Handler handler)
+{
     std::vector<net::mutable_buffer> seq;
     size_t total = 0;
-    for (const auto& b : buffers) {
+    for (const auto &b : buffers) {
         seq.push_back(b);
         total += b.size();
     }
@@ -42,17 +42,17 @@ void tun_stream::do_read_some(MutableBufferSequence&& buffers,
 }
 
 template <typename ConstBufferSequence, typename Handler>
-void tun_stream::do_write_some(ConstBufferSequence&& buffers,
-                               Handler handler) {
+void tun_stream::do_write_some(ConstBufferSequence &&buffers, Handler handler)
+{
     size_t total = 0;
-    for (const auto& b : buffers) {
+    for (const auto &b : buffers) {
         total += b.size();
     }
 
     std::vector<uint8_t> data;
     data.reserve(total);
-    for (const auto& b : buffers) {
-        const uint8_t* p = static_cast<const uint8_t*>(b.data());
+    for (const auto &b : buffers) {
+        const uint8_t *p = static_cast<const uint8_t *>(b.data());
         data.insert(data.end(), p, p + b.size());
     }
 

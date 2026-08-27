@@ -27,13 +27,19 @@ class tunio;
 // 生命周期约束：与 Boost.Asio 的 acceptor::async_accept(socket) 一致，
 // 挂起 accept 期间传入的 tun_udp_socket 必须存活至完成回调触发；提前
 // 销毁 peer 将导致未定义行为。
-class tun_udp_acceptor {
+class tun_udp_acceptor
+{
 public:
-    explicit tun_udp_acceptor(tunio& engine) : engine_(engine) {}
+    explicit tun_udp_acceptor(tunio &engine)
+        : engine_(engine)
+    {
+    }
 
     template <typename CompletionToken>
-    auto async_accept(tun_udp_socket& peer, CompletionToken&& token) {
-        return net::async_initiate<CompletionToken, void(boost::system::error_code)>(
+    auto async_accept(tun_udp_socket &peer, CompletionToken &&token)
+    {
+        return net::async_initiate<CompletionToken,
+                                   void(boost::system::error_code)>(
             [this, &peer](auto handler) {
                 do_accept(peer, std::move(handler));
             },
@@ -45,9 +51,9 @@ public:
 
 private:
     template <typename Handler>
-    void do_accept(tun_udp_socket& peer, Handler handler);
+    void do_accept(tun_udp_socket &peer, Handler handler);
 
-    tunio& engine_;
+    tunio &engine_;
 };
 
 } // namespace tunio

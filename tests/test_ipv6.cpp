@@ -33,19 +33,20 @@ constexpr uint16_t CLIENT_PORT = 12345;
 constexpr uint16_t DEST_PORT = 80;
 } // namespace
 
-static void test_tcp6_handshake_data_fin() {
+static void test_tcp6_handshake_data_fin()
+{
     engine_env env;
-    auto& io = env.io;
+    auto &io = env.io;
     tun_acceptor acceptor(env.engine);
     tun_stream peer(io.get_executor());
 
     std::promise<boost::system::error_code> accept_done;
-    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
-        accept_done.set_value(ec);
-    });
+    acceptor.async_accept(
+        peer, [&](boost::system::error_code ec) { accept_done.set_value(ec); });
 
     // 客户端 SYN
-    env.dev.send(make_tcp6(CLIENT_V6, DEST_V6, CLIENT_PORT, DEST_PORT, 0x02, 1000, 0, 65535, {}, true));
+    env.dev.send(make_tcp6(CLIENT_V6, DEST_V6, CLIENT_PORT, DEST_PORT, 0x02,
+                           1000, 0, 65535, {}, true));
 
     // 引擎 SYN-ACK（携带 MSS 选项，IPv6 下 MSS = MTU - 60）
     std::vector<uint8_t> pkt;
@@ -71,7 +72,8 @@ static void test_tcp6_handshake_data_fin() {
     assert(static_cast<size_t>((i6.payload[22] << 8) | i6.payload[23]) == 1440);
 
     // 客户端 ACK
-    env.dev.send(make_tcp6(CLIENT_V6, DEST_V6, CLIENT_PORT, DEST_PORT, 0x10, 1001, engine_iss + 1, 65535, {}));
+    env.dev.send(make_tcp6(CLIENT_V6, DEST_V6, CLIENT_PORT, DEST_PORT, 0x10,
+                           1001, engine_iss + 1, 65535, {}));
 
     // accept 完成，原始目标地址为 IPv6
     auto aec = future_get(accept_done.get_future());
@@ -84,15 +86,17 @@ static void test_tcp6_handshake_data_fin() {
 
     // 客户端发送数据 "hello"
     const std::string hello = "hello";
-    env.dev.send(make_tcp6(CLIENT_V6, DEST_V6, CLIENT_PORT, DEST_PORT, 0x18, 1001, engine_iss + 1, 65535,
+    env.dev.send(make_tcp6(CLIENT_V6, DEST_V6, CLIENT_PORT, DEST_PORT, 0x18,
+                           1001, engine_iss + 1, 65535,
                            std::vector<uint8_t>(hello.begin(), hello.end())));
 
     // 应用读取到字节流
     std::promise<std::pair<boost::system::error_code, size_t>> read_done;
     char buf[64];
-    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec, size_t n) {
-        read_done.set_value({ec, n});
-    });
+    peer.async_read_some(net::buffer(buf),
+                         [&](boost::system::error_code ec, size_t n) {
+                             read_done.set_value({ec, n});
+                         });
     auto [rec, rn] = future_get(read_done.get_future());
     assert(!rec && rn == hello.size());
     assert(std::string(buf, rn) == hello);
@@ -113,7 +117,8 @@ static void test_tcp6_handshake_data_fin() {
     assert((ti.flags & 0x10) != 0 && ti.ack == 1006);
 
     // 客户端发送 FIN（与数据同段序号语义：FIN 序号 = 1001 + 5）
-    env.dev.send(make_tcp6(CLIENT_V6, DEST_V6, CLIENT_PORT, DEST_PORT, 0x11, 1006, engine_iss + 6, 65535, {}));
+    env.dev.send(make_tcp6(CLIENT_V6, DEST_V6, CLIENT_PORT, DEST_PORT, 0x11,
+                           1006, engine_iss + 6, 65535, {}));
     if (!env.dev.read_packet(pkt)) {
         throw std::runtime_error("no IPv6 FIN ack");
     }
@@ -149,13 +154,15 @@ static void test_tcp6_handshake_data_fin() {
     assert(fin_seen);
 
     // 客户端 ACK 引擎 FIN
-    env.dev.send(make_tcp6(CLIENT_V6, DEST_V6, CLIENT_PORT, DEST_PORT, 0x10, 1007, engine_iss + 2, 65535, {}));
+    env.dev.send(make_tcp6(CLIENT_V6, DEST_V6, CLIENT_PORT, DEST_PORT, 0x10,
+                           1007, engine_iss + 2, 65535, {}));
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 }
 
-static void test_udp6_roundtrip() {
+static void test_udp6_roundtrip()
+{
     engine_env env;
-    auto& io = env.io;
+    auto &io = env.io;
     tun_udp_acceptor acceptor(env.engine);
     tun_udp_socket session(io.get_executor());
 
@@ -181,9 +188,10 @@ static void test_udp6_roundtrip() {
     // 接收完整数据报
     std::promise<std::pair<boost::system::error_code, size_t>> recv_done;
     char buf[512];
-    session.async_receive(net::buffer(buf), [&](boost::system::error_code ec, size_t n) {
-        recv_done.set_value({ec, n});
-    });
+    session.async_receive(net::buffer(buf),
+                          [&](boost::system::error_code ec, size_t n) {
+                              recv_done.set_value({ec, n});
+                          });
     auto [rec, rn] = future_get(recv_done.get_future());
     assert(!rec && rn == query.size());
     assert(std::string(buf, rn) == query);
@@ -191,9 +199,10 @@ static void test_udp6_roundtrip() {
     // 发送回复数据报
     const std::string reply = "ipv6-dns-answer";
     std::promise<std::pair<boost::system::error_code, size_t>> send_done;
-    session.async_send(net::buffer(reply), [&](boost::system::error_code ec, size_t n) {
-        send_done.set_value({ec, n});
-    });
+    session.async_send(net::buffer(reply),
+                       [&](boost::system::error_code ec, size_t n) {
+                           send_done.set_value({ec, n});
+                       });
     auto [sec, sn] = future_get(send_done.get_future());
     assert(!sec && sn == reply.size());
 
@@ -214,14 +223,15 @@ static void test_udp6_roundtrip() {
         throw std::runtime_error("parse_udp failed");
     }
     assert(ui.sport == 53 && ui.dport == 53000);
-    assert(std::string(reinterpret_cast<const char*>(ui.data), ui.n) == reply);
+    assert(std::string(reinterpret_cast<const char *>(ui.data), ui.n) == reply);
 
     session.close();
 }
 
-static void test_icmp6_echo() {
+static void test_icmp6_echo()
+{
     engine_env env;
-    auto& io = env.io;
+    auto &io = env.io;
     (void)io;
 
     // 对引擎本地虚拟 IPv6 地址的 Echo Request
@@ -243,7 +253,7 @@ static void test_icmp6_echo() {
     assert(i6.src == local && i6.dst == CLIENT_V6 && i6.proto == 58);
 
     // Echo Reply：type=129，ID/序号/数据保持
-    const uint8_t* icmp = i6.payload;
+    const uint8_t *icmp = i6.payload;
     assert(icmp[0] == 129);
     assert(icmp[1] == 0);
     assert(icmp[4] == 0x12 && icmp[5] == 0x34);
@@ -259,16 +269,19 @@ static void test_icmp6_echo() {
     }
 }
 
-static void test_v4_v6_coexist() {
+static void test_v4_v6_coexist()
+{
     engine_env env;
-    auto& io = env.io;
+    auto &io = env.io;
     tun_udp_acceptor acceptor(env.engine);
     tun_udp_socket s4(io.get_executor());
     tun_udp_socket s6(io.get_executor());
 
     std::promise<boost::system::error_code> a4, a6;
-    acceptor.async_accept(s4, [&](boost::system::error_code ec) { a4.set_value(ec); });
-    acceptor.async_accept(s6, [&](boost::system::error_code ec) { a6.set_value(ec); });
+    acceptor.async_accept(
+        s4, [&](boost::system::error_code ec) { a4.set_value(ec); });
+    acceptor.async_accept(
+        s6, [&](boost::system::error_code ec) { a6.set_value(ec); });
 
     // 相同端口号的 IPv4 与 IPv6 会话（地址族参与五元组区分）
     env.dev.send(make_udp(0x0a000002, 0x08080808, 53000, 53, {1, 2, 3}));
@@ -284,7 +297,8 @@ static void test_v4_v6_coexist() {
     s6.close();
 }
 
-int main() {
+int main()
+{
     test_tcp6_handshake_data_fin();
     test_udp6_roundtrip();
     test_icmp6_echo();

@@ -16,11 +16,13 @@
 namespace tunio {
 
 template <typename Handler>
-void tun_acceptor::do_accept(tun_stream& peer, Handler handler) {
+void tun_acceptor::do_accept(tun_stream &peer, Handler handler)
+{
     auto ex = peer.get_executor();
     engine_.impl_->async_accept_tcp(
-        [ex, &peer, handler = std::move(handler)](boost::system::error_code ec,
-                                                  std::shared_ptr<detail::tcp_flow> f) mutable {
+        [ex, &peer, handler = std::move(handler)](
+            boost::system::error_code ec,
+            std::shared_ptr<detail::tcp_flow> f) mutable {
             if (!ec && f) {
                 peer.flow_ = std::move(f);
             }
