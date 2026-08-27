@@ -10,12 +10,15 @@
 
 #pragma once
 
-#include <boost/asio.hpp>
+#include "tunio/packet_buffer.hpp"
+#include "tunio/tun_acceptor.hpp"
+#include "tunio/tun_config.hpp"
+#include "tunio/tun_stream.hpp"
+#include "tunio/tun_udp_acceptor.hpp"
+#include "tunio/tun_udp_socket.hpp"
+#include "tunio/tunio.hpp"
 
-#include <arpa/inet.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <boost/asio.hpp>
 
 #include <array>
 #include <chrono>
@@ -27,13 +30,10 @@
 #include <thread>
 #include <vector>
 
-#include "tunio/packet_buffer.hpp"
-#include "tunio/tun_acceptor.hpp"
-#include "tunio/tun_config.hpp"
-#include "tunio/tun_stream.hpp"
-#include "tunio/tun_udp_acceptor.hpp"
-#include "tunio/tun_udp_socket.hpp"
-#include "tunio/tunio.hpp"
+#include <arpa/inet.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace test {
 namespace net = boost::asio;

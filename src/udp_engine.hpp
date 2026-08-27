@@ -10,6 +10,11 @@
 
 #pragma once
 
+#include "device_writer.hpp"
+#include "ip_headers.hpp"
+#include "tcp_engine.hpp"
+#include "tunio/tun_config.hpp"
+
 #include <boost/asio.hpp>
 
 #include <algorithm>
@@ -20,11 +25,6 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
-
-#include "device_writer.hpp"
-#include "ip_headers.hpp"
-#include "tcp_engine.hpp"
-#include "tunio/tun_config.hpp"
 
 namespace tunio {
 namespace net = boost::asio;

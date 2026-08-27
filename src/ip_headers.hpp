@@ -12,6 +12,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#else
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#endif
+
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace tunio {
 namespace detail {
@@ -99,8 +112,6 @@ enum tcp_flag : uint8_t {
 
 // ---- 校验和工具（RFC 1071 反码和）----
 #if defined(__SSE2__)
-#include <emmintrin.h>
-
 // SSE2 向量化：每 32 字节展开为 8 路 32 位累加器（16 位字按网络序解释），
 // 避免标量实现的逐字进位链；无 SIMD 平台回退到下方标量版本。
 inline uint32_t checksum_sum(const uint8_t *data, size_t len, uint32_t sum = 0)

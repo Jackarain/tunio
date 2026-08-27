@@ -10,14 +10,14 @@
 
 #include "udp_engine.hpp"
 
-#include <algorithm>
-#include <cstring>
-#include <utility>
+#include "device_writer.hpp"
+#include "tcp_engine.hpp"
 
 #include <boost/asio.hpp>
 
-#include "device_writer.hpp"
-#include "tcp_engine.hpp"
+#include <algorithm>
+#include <cstring>
+#include <utility>
 
 namespace tunio {
 namespace detail {

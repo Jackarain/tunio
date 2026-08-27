@@ -10,10 +10,10 @@
 
 #include "tunio/tun_stream.hpp"
 
-#include <utility>
-
 #include "tcp_engine.hpp"
 #include "tunio/detail/tun_stream_ops.hpp"
+
+#include <utility>
 
 namespace tunio {
 

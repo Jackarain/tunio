@@ -10,16 +10,16 @@
 
 #pragma once
 
+#include "tunio/packet_buffer.hpp"
+#include "tunio/packet_device.hpp"
+#include "tunio/tun_config.hpp"
+
 #include <boost/asio.hpp>
 
 #include <deque>
 #include <memory>
 #include <utility>
 #include <vector>
-
-#include "tunio/packet_buffer.hpp"
-#include "tunio/packet_device.hpp"
-#include "tunio/tun_config.hpp"
 
 namespace tunio {
 namespace net = boost::asio;

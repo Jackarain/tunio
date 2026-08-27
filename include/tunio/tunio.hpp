@@ -10,10 +10,11 @@
 
 #pragma once
 
-#include <boost/asio.hpp>
-#include <memory>
-
 #include "tunio/tun_config.hpp"
+
+#include <boost/asio.hpp>
+
+#include <memory>
 
 namespace tunio {
 namespace net = boost::asio;

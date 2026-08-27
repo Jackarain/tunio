@@ -10,14 +10,15 @@
 
 #pragma once
 
+#include "tunio/packet_buffer.hpp"
+#include "tunio/tun_config.hpp"
+
 #include <boost/asio.hpp>
+
 #include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include "tunio/packet_buffer.hpp"
-#include "tunio/tun_config.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN

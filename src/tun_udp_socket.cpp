@@ -10,10 +10,10 @@
 
 #include "tunio/tun_udp_socket.hpp"
 
-#include <utility>
-
 #include "tunio/detail/tun_udp_ops.hpp"
 #include "udp_engine.hpp"
+
+#include <utility>
 
 namespace tunio {
 

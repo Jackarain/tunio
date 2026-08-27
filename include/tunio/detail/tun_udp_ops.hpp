@@ -10,11 +10,11 @@
 
 #pragma once
 
-#include <memory>
-#include <vector>
-
 #include "tunio/tun_udp_socket.hpp"
 #include "udp_engine.hpp"
+
+#include <memory>
+#include <vector>
 
 namespace tunio {
 namespace net = boost::asio;

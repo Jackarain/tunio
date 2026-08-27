@@ -10,9 +10,9 @@
 
 #pragma once
 
-#include <boost/asio.hpp>
-
 #include "tunio/tun_stream.hpp"
+
+#include <boost/asio.hpp>
 
 namespace tunio {
 namespace net = boost::asio;

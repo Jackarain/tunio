@@ -8,6 +8,8 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 
+#include "test_harness.hpp"
+
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -16,8 +18,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
-#include "test_harness.hpp"
 
 using namespace test;
 

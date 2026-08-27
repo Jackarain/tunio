@@ -10,12 +10,6 @@
 
 #pragma once
 
-#include <boost/asio.hpp>
-
-#include <cstdint>
-#include <memory>
-#include <utility>
-
 #include "tunio/packet_buffer.hpp"
 #include "tunio/packet_device.hpp"
 #include "tunio/tun_config.hpp"
@@ -24,6 +18,12 @@
 #include "device_writer.hpp"
 #include "tcp_engine.hpp"
 #include "udp_engine.hpp"
+
+#include <boost/asio.hpp>
+
+#include <cstdint>
+#include <memory>
+#include <utility>
 
 namespace tunio {
 namespace net = boost::asio;

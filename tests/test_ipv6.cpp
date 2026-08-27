@@ -11,6 +11,8 @@
 // IPv6 专项测试：TCP 握手/数据/FIN、UDP 会话收发、ICMPv6 Echo 回显，
 // 以及 IPv4/IPv6 双栈会话共存。
 
+#include "test_harness.hpp"
+
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -20,8 +22,6 @@
 #include <thread>
 #include <utility>
 #include <vector>
-
-#include "test_harness.hpp"
 
 using namespace test;
 

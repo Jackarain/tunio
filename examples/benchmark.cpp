@@ -8,12 +8,14 @@
 // 使用：cmake 构建后运行 examples/benchmark；对比不同版本时可用
 // -DBENCH_TAG=\"after\" 之类的宏标记输出，并保证两次运行使用相同
 // 的构建配置（Release/Debug 一致）。
-#include <boost/asio.hpp>
+#include "tunio/tun_acceptor.hpp"
+#include "tunio/tun_config.hpp"
+#include "tunio/tun_stream.hpp"
+#include "tunio/tun_udp_acceptor.hpp"
+#include "tunio/tun_udp_socket.hpp"
+#include "tunio/tunio.hpp"
 
-#include <arpa/inet.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <boost/asio.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -31,12 +33,10 @@
 #include <thread>
 #include <vector>
 
-#include "tunio/tun_acceptor.hpp"
-#include "tunio/tun_config.hpp"
-#include "tunio/tun_stream.hpp"
-#include "tunio/tun_udp_acceptor.hpp"
-#include "tunio/tun_udp_socket.hpp"
-#include "tunio/tunio.hpp"
+#include <arpa/inet.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace net = boost::asio;
 using namespace tunio;

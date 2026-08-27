@@ -18,14 +18,6 @@
 //   - TCP：引擎终止虚拟连接，应用层经 SOCKS5 CONNECT 连到代理后全双工桥接；
 //   - UDP：引擎维护 NAT 会话，应用层经 SOCKS5 UDP ASSOCIATE 中继转发；
 //   - 后端连接失败时向客户端发送 RST。
-#include <boost/asio.hpp>
-#include <csignal>
-#include <cstdint>
-#include <iostream>
-#include <memory>
-#include <string>
-#include <vector>
-
 #include "tunio/tun_acceptor.hpp"
 #include "tunio/tun_config.hpp"
 #include "tunio/tun_stream.hpp"
@@ -34,6 +26,15 @@
 #include "tunio/tunio.hpp"
 
 #include "socks5_client.hpp"
+
+#include <boost/asio.hpp>
+
+#include <csignal>
+#include <cstdint>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace {
 namespace net = boost::asio;

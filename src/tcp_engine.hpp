@@ -10,6 +10,9 @@
 
 #pragma once
 
+#include "ip_headers.hpp"
+#include "tunio/tun_config.hpp"
+
 #include <boost/asio.hpp>
 
 #include <chrono>
@@ -18,9 +21,6 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
-
-#include "ip_headers.hpp"
-#include "tunio/tun_config.hpp"
 
 namespace tunio {
 namespace net = boost::asio;

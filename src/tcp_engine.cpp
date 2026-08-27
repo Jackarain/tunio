@@ -10,15 +10,15 @@
 
 #include "tcp_engine.hpp"
 
+#include "device_writer.hpp"
+
+#include <boost/asio.hpp>
+
 #include <algorithm>
 #include <cstring>
 #include <random>
 #include <utility>
 #include <vector>
-
-#include <boost/asio.hpp>
-
-#include "device_writer.hpp"
 
 namespace tunio {
 namespace detail {

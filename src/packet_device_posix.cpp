@@ -11,20 +11,15 @@
 #include "tunio/packet_device.hpp"
 
 #include <algorithm>
-
-#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
-
-namespace tunio {
-
 #include <cerrno>
+#include <cstring>
+#include <string>
+
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
-#include <cstring>
-#include <string>
 
 #if defined(__linux__)
 #include <linux/if.h>
@@ -32,6 +27,10 @@ namespace tunio {
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #endif
+
+#if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
+
+namespace tunio {
 
 namespace detail {
 
