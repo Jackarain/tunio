@@ -278,7 +278,7 @@ void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
     auto strand = eng->strand();
     net::dispatch(strand, [f = std::move(flow), eng,
                            buffers = std::move(buffers), total,
-                           handler = std::move(handler), strand]() mutable {
+                           handler = std::move(handler)]() mutable {
         auto &flow = *f;
         if (flow.state == tcp_state::CLOSED || flow.app_closed ||
             flow.rx_shutdown) {

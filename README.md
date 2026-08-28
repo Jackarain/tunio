@@ -35,7 +35,7 @@ C++20 协程（`co_await`），适用于 tun2socks、透明代理与轻量级 VP
 | 平台 | 设备实现 | 说明 |
 | :--- | :--- | :--- |
 | Linux | TUN（`posix::stream_descriptor`） | 需 root 或 `CAP_NET_ADMIN` |
-| macOS | utun | 需 root |
+| macOS | utun | 需 root；当前仅支持句柄注入（自主打开 Phase 3 未实现） |
 | Windows | overlapped I/O 或 Wintun | 编译时 `USE_WINTUN_DRIVER` 切换 |
 
 ## 构建
