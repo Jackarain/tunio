@@ -60,6 +60,11 @@ jobs:
 
   Windows:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 覆盖两种 Windows 设备实现: 默认 overlapped I/O 与 Wintun.
+        device: [overlapped, wintun]
     steps:
       - uses: actions/checkout@v6
 
@@ -76,19 +81,19 @@ jobs:
           tar -xzf "$RT/boost.tar.gz" -C "$RT"
           echo "BOOST_ROOT=$RTW/boost_1_92_0" >> "$GITHUB_ENV"
 
-      # Windows 设备实现:
-      #   - USE_WINTUN_DRIVER=ON  -> Wintun, 项目主要 Windows 实现;
-      #   - 默认 overlapped 实现依赖 windows::overlapped_handle 的
-      #     async_read_some_at/async_write_some_at, 该接口在 Boost 1.74+
-      #     已不存在, 当前代码无法编译, 故 CI 仅构建 Wintun 变体.
       # tests/examples 目前依赖 POSIX 头文件, Windows 下仅构建库.
       - name: Build tunio
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUSE_WINTUN_DRIVER=ON -DTUNIO_BUILD_TESTS=OFF -DTUNIO_BUILD_EXAMPLES=OFF
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUSE_WINTUN_DRIVER=${{ matrix.device == 'wintun' && 'ON' || 'OFF' }} -DTUNIO_BUILD_TESTS=OFF -DTUNIO_BUILD_EXAMPLES=OFF
           cmake --build build --config Release --parallel
 
   Mingw:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # 覆盖两种 Windows 设备实现: 默认 overlapped I/O 与 Wintun.
+        device: [overlapped, wintun]
     steps:
       - uses: actions/checkout@v6
 
@@ -108,5 +113,5 @@ jobs:
 
       - name: Build tunio
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DUSE_WINTUN_DRIVER=ON -DTUNIO_BUILD_TESTS=OFF -DTUNIO_BUILD_EXAMPLES=OFF
+          cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DUSE_WINTUN_DRIVER=${{ matrix.device == 'wintun' && 'ON' || 'OFF' }} -DTUNIO_BUILD_TESTS=OFF -DTUNIO_BUILD_EXAMPLES=OFF
           cmake --build build --config Release
