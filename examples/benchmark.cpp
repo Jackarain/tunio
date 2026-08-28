@@ -380,7 +380,12 @@ tun_tcp_socket establish_tcp(engine_env &env, tun_tcp_acceptor &acc,
 {
     tun_tcp_socket peer(env.io.get_executor());
     latch done;
-    acc.async_accept(peer, [&](boost::system::error_code) { done.post(); });
+    acc.async_accept(peer, [&](boost::system::error_code ec) {
+        if (!ec) {
+            peer.accept();
+        }
+        done.post();
+    });
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x02,
                           1000, 0, 65535, {}, true));
     std::vector<uint8_t> synack;
@@ -510,7 +515,12 @@ static void bench_accept(long long n, long long warmup)
     measure("accept", n, warmup, [&] {
         conns.emplace_back(env.io.get_executor());
         tun_tcp_socket &peer = conns.back();
-        acc.async_accept(peer, [&](boost::system::error_code) { done.post(); });
+        acc.async_accept(peer, [&](boost::system::error_code ec) {
+            if (!ec) {
+                peer.accept();
+            }
+            done.post();
+        });
         const uint16_t p = htons(cport++);
         std::memcpy(syn.data() + 20, &p, 2);
         refresh_tcp_checksum(syn, CLIENT_IP, DEST_IP);
