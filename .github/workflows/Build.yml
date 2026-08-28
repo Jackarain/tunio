@@ -30,16 +30,6 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
 
-      - name: Archive artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: tunio-linux_glibc_x64
-          path: |
-            build/libtunio.a
-            build/examples/tun2socks
-            build/examples/tun_echo
-            build/examples/benchmark
-
   MacOS:
     runs-on: macos-latest
     steps:
@@ -67,16 +57,6 @@ jobs:
 
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
-
-      - name: Archive artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: tunio-macos-universal
-          path: |
-            build/libtunio.a
-            build/examples/tun2socks
-            build/examples/tun_echo
-            build/examples/benchmark
 
   Windows:
     runs-on: windows-latest
@@ -107,12 +87,6 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUSE_WINTUN_DRIVER=ON -DTUNIO_BUILD_TESTS=OFF -DTUNIO_BUILD_EXAMPLES=OFF
           cmake --build build --config Release --parallel
 
-      - name: Archive artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: tunio-msvc_x64_wintun
-          path: build/Release/libtunio.lib
-
   Mingw:
     runs-on: ubuntu-24.04
     steps:
@@ -136,9 +110,3 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DUSE_WINTUN_DRIVER=ON -DTUNIO_BUILD_TESTS=OFF -DTUNIO_BUILD_EXAMPLES=OFF
           cmake --build build --config Release
-
-      - name: Archive artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: tunio-mingw_w64_wintun
-          path: build/libtunio.a
