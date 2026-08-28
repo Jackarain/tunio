@@ -13,7 +13,14 @@ jobs:
       - name: Update OS and Compilers
         run: |
           sudo apt update
-          sudo apt install -y cmake ninja-build libboost-dev
+          sudo apt install -y cmake ninja-build
+
+      - name: Install Boost headers
+        run: |
+          curl -fL --retry 3 -o "$RUNNER_TEMP/boost.tar.gz" \
+            https://archives.boost.io/release/1.92.0/source/boost_1_92_0.tar.gz
+          tar -xzf "$RUNNER_TEMP/boost.tar.gz" -C "$RUNNER_TEMP"
+          echo "BOOST_ROOT=$RUNNER_TEMP/boost_1_92_0" >> "$GITHUB_ENV"
 
       - name: Build tunio
         run: |
@@ -40,7 +47,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install cmake ninja boost
+          brew install cmake ninja
+
+      - name: Install Boost headers
+        run: |
+          curl -fL --retry 3 -o "$RUNNER_TEMP/boost.tar.gz" \
+            https://archives.boost.io/release/1.92.0/source/boost_1_92_0.tar.gz
+          tar -xzf "$RUNNER_TEMP/boost.tar.gz" -C "$RUNNER_TEMP"
+          echo "BOOST_ROOT=$RUNNER_TEMP/boost_1_92_0" >> "$GITHUB_ENV"
 
       - name: "Build tunio (Universal Binary: x86_64 + arm64)"
         run: |
@@ -72,10 +86,15 @@ jobs:
       - name: Install Boost headers
         shell: bash
         run: |
+          # Windows 下 RUNNER_TEMP 为 D:\... 反斜杠路径, tar 会把盘符
+          # 误解析为远程主机, 先经 cygpath 转为 POSIX 路径再解压;
+          # BOOST_ROOT 写给原生 cmake, 使用混合分隔符路径.
+          RT="$(cygpath -u "$RUNNER_TEMP")"
+          RTW="$(cygpath -m "$RUNNER_TEMP")"
           curl -fL --retry 3 -o "$RUNNER_TEMP/boost.tar.gz" \
-            https://archives.boost.io/release/1.85.0/source/boost_1_85_0.tar.gz
-          tar -xzf "$RUNNER_TEMP/boost.tar.gz" -C "$RUNNER_TEMP"
-          echo "BOOST_ROOT=$RUNNER_TEMP/boost_1_85_0" >> "$GITHUB_ENV"
+            https://archives.boost.io/release/1.92.0/source/boost_1_92_0.tar.gz
+          tar -xzf "$RT/boost.tar.gz" -C "$RT"
+          echo "BOOST_ROOT=$RTW/boost_1_92_0" >> "$GITHUB_ENV"
 
       # Windows 设备实现:
       #   - USE_WINTUN_DRIVER=ON  -> Wintun, 项目主要 Windows 实现;
@@ -102,13 +121,16 @@ jobs:
       - name: Update OS and Compilers
         run: |
           sudo apt update
-          sudo apt install -y cmake ninja-build mingw-w64 libboost-dev
+          sudo apt install -y cmake ninja-build mingw-w64
 
-      # 交叉编译工具链以 /usr/x86_64-w64-mingw32 为 sysroot, 需把宿主
+      # 交叉编译工具链以 /usr/x86_64-w64-mingw32 为 sysroot, 需把
       # Boost 头文件复制进 sysroot, 否则 find_package(Boost) 找不到.
       - name: Install Boost headers into MinGW sysroot
         run: |
-          sudo cp -r /usr/include/boost /usr/x86_64-w64-mingw32/include/
+          curl -fL --retry 3 -o "$RUNNER_TEMP/boost.tar.gz" \
+            https://archives.boost.io/release/1.92.0/source/boost_1_92_0.tar.gz
+          tar -xzf "$RUNNER_TEMP/boost.tar.gz" -C "$RUNNER_TEMP"
+          sudo cp -r "$RUNNER_TEMP/boost_1_92_0/boost" /usr/x86_64-w64-mingw32/include/
 
       - name: Build tunio
         run: |
