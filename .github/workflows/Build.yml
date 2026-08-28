@@ -1,0 +1,122 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  Linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Update OS and Compilers
+        run: |
+          sudo apt update
+          sudo apt install -y cmake ninja-build libboost-dev
+
+      - name: Build tunio
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -G Ninja
+          cmake --build build --config Release
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Archive artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: tunio-linux_glibc_x64
+          path: |
+            build/libtunio.a
+            build/examples/tun2socks
+            build/examples/tun_echo
+            build/examples/benchmark
+
+  MacOS:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          brew install cmake ninja boost
+
+      - name: "Build tunio (Universal Binary: x86_64 + arm64)"
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -G Ninja
+          cmake --build build --config Release
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Archive artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: tunio-macos-universal
+          path: |
+            build/libtunio.a
+            build/examples/tun2socks
+            build/examples/tun_echo
+            build/examples/benchmark
+
+  Windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Boost headers
+        shell: bash
+        run: |
+          curl -fL --retry 3 -o "$RUNNER_TEMP/boost.tar.gz" \
+            https://archives.boost.io/release/1.85.0/source/boost_1_85_0.tar.gz
+          tar -xzf "$RUNNER_TEMP/boost.tar.gz" -C "$RUNNER_TEMP"
+          echo "BOOST_ROOT=$RUNNER_TEMP/boost_1_85_0" >> "$GITHUB_ENV"
+
+      # Windows 设备实现:
+      #   - USE_WINTUN_DRIVER=ON  -> Wintun, 项目主要 Windows 实现;
+      #   - 默认 overlapped 实现依赖 windows::overlapped_handle 的
+      #     async_read_some_at/async_write_some_at, 该接口在 Boost 1.74+
+      #     已不存在, 当前代码无法编译, 故 CI 仅构建 Wintun 变体.
+      # tests/examples 目前依赖 POSIX 头文件, Windows 下仅构建库.
+      - name: Build tunio
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUSE_WINTUN_DRIVER=ON -DTUNIO_BUILD_TESTS=OFF -DTUNIO_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release --parallel
+
+      - name: Archive artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: tunio-msvc_x64_wintun
+          path: build/Release/libtunio.lib
+
+  Mingw:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Update OS and Compilers
+        run: |
+          sudo apt update
+          sudo apt install -y cmake ninja-build mingw-w64 libboost-dev
+
+      # 交叉编译工具链以 /usr/x86_64-w64-mingw32 为 sysroot, 需把宿主
+      # Boost 头文件复制进 sysroot, 否则 find_package(Boost) 找不到.
+      - name: Install Boost headers into MinGW sysroot
+        run: |
+          sudo cp -r /usr/include/boost /usr/x86_64-w64-mingw32/include/
+
+      - name: Build tunio
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DUSE_WINTUN_DRIVER=ON -DTUNIO_BUILD_TESTS=OFF -DTUNIO_BUILD_EXAMPLES=OFF
+          cmake --build build --config Release
+
+      - name: Archive artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: tunio-mingw_w64_wintun
+          path: build/libtunio.a
