@@ -540,7 +540,7 @@ bool wintun_packet_device_impl::open(const device_config &cfg,
 }
 
 bool wintun_packet_device_impl::assign(native_handle_type handle, size_t mtu,
-    boost::system::error_code &ec)
+    bool, boost::system::error_code &ec)
 {
     close();
     dev_handle_ = reinterpret_cast<HANDLE>(handle);
