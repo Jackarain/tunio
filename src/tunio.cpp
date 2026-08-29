@@ -112,7 +112,8 @@ bool tunio_impl::open(const tun_config &cfg, boost::system::error_code &ec)
 
     // 设备初始化：优先使用外部句柄注入
     if (cfg.external_handle != invalid_native_handle) {
-        if (!device_->assign(cfg.external_handle, cfg.external_mtu, ec)) {
+        if (!device_->assign(cfg.external_handle, cfg.external_mtu,
+                             cfg.utun_prefix, ec)) {
             return false;
         }
     } else {

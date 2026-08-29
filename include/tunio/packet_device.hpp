@@ -70,10 +70,10 @@ public:
     }
 
     // ---- 模式 2: 句柄注入 ----
-    bool assign(native_handle_type handle, size_t mtu,
+    bool assign(native_handle_type handle, size_t mtu, bool utun_prefix,
         boost::system::error_code &ec)
     {
-        return impl_.assign(handle, mtu, ec);
+        return impl_.assign(handle, mtu, utun_prefix, ec);
     }
 
     void close()

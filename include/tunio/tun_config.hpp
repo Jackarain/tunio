@@ -130,6 +130,9 @@ struct device_config
     std::string ipv6;             // 可选 IPv6 地址，如 "fd00::1"
     uint8_t ipv6_prefix_len = 64; // IPv6 前缀长度
     size_t mtu = 1500;
+    // macOS utun 设备读写携带 4 字节家族前缀（大端 AF_INET/AF_INET6）；
+    // 自主打开 utun 时自动启用。socketpair 等纯 IP 注入保持 false.
+    bool utun_prefix = false;
 };
 
 // 引擎总配置
@@ -146,6 +149,9 @@ struct tun_config
     // ---- 外部句柄注入 ----
     native_handle_type external_handle = invalid_native_handle;
     size_t external_mtu = 1500;
+    // 注入的句柄是否为 macOS utun 设备（读写带 4 字节家族前缀）.
+    // 真实 utun fd 注入时置 true；socketpair 注入（测试/模拟）保持 false.
+    bool utun_prefix = false;
 
     // ---- 资源上限 ----
     size_t max_tcp_flows = 65536;

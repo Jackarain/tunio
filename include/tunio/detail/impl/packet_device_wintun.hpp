@@ -197,7 +197,7 @@ public:
     }
 
     bool open(const device_config &cfg, boost::system::error_code &ec);
-    bool assign(native_handle_type handle, size_t mtu,
+    bool assign(native_handle_type handle, size_t mtu, bool,
         boost::system::error_code &ec);
     void close();
 
