@@ -719,22 +719,30 @@ static void test_data_with_fin()
     auto [eec, en] = future_get(eof_done.get_future());
     assert(eec == net::error::eof && en == 0);
 
-    // delayed ACK 合并：数据与 FIN 同段到达，引擎以单次 ACK 确认数据并捎带 FIN
-    // 确认（ack = 5001 + data.size() + 1）
-    if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no FIN ACK");
+    // 每段立即确认：数据 ACK 与 FIN ACK 分开发送，最终必须确认到
+    // FIN 序号（ack = 5001 + data.size() + 1）
+    bool fin_acked = false;
+    for (int i = 0; i < 4; ++i) {
+        if (!env.dev.read_packet(pkt)) {
+            break;
+        }
+        if (!verify_packet(pkt)) {
+            throw std::runtime_error("verify_packet failed");
+        }
+        if (!parse_ip(pkt, ipi)) {
+            throw std::runtime_error("parse_ip failed");
+        }
+        if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+            throw std::runtime_error("parse_tcp failed");
+        }
+        if ((ti.flags & 0x10) != 0 && ti.ack == 5001 + data.size() + 1) {
+            fin_acked = true;
+            break;
+        }
     }
-    if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+    if (!fin_acked) {
+        throw std::runtime_error("FIN not acked with data+1");
     }
-    if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
-    }
-    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
-    }
-    assert((ti.flags & 0x10) != 0);
-    assert(ti.ack == 5001 + data.size() + 1);
 
     peer.close();
 }
@@ -866,20 +874,30 @@ static void test_shutdown_receive_discards()
                           7001 + a.size(), engine_iss + 1, 65535,
                           {b.begin(), b.end()}));
 
-    if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no ACK after shutdown receive");
+    // 每段立即确认：各段 ACK 分开发送，最终必须确认全部丢弃字节
+    bool all_acked = false;
+    for (int i = 0; i < 4; ++i) {
+        if (!env.dev.read_packet(pkt)) {
+            break;
+        }
+        if (!verify_packet(pkt)) {
+            throw std::runtime_error("verify_packet failed");
+        }
+        if (!parse_ip(pkt, ipi)) {
+            throw std::runtime_error("parse_ip failed");
+        }
+        if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+            throw std::runtime_error("parse_tcp failed");
+        }
+        if ((ti.flags & 0x10) != 0 &&
+            ti.ack == 7001 + a.size() + b.size()) {
+            all_acked = true;
+            break;
+        }
     }
-    if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+    if (!all_acked) {
+        throw std::runtime_error("discarded bytes not fully acked");
     }
-    if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
-    }
-    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
-    }
-    assert((ti.flags & 0x10) != 0);
-    assert(ti.ack == 7001 + a.size() + b.size());
 
     peer.close();
 }
