@@ -248,62 +248,54 @@ void tunio_impl::on_read(const boost::system::error_code &ec, size_t n,
     }
     packet_buffer &buf = read_bufs_[index];
     buf.commit(n);
-    // 注：注入设备为字节流（如 socketpair）时，一次读取可能粘合/拆散多个报文；
-    // 按 IP 头中的总长度逐包解析，完整处理缓冲区内全部报文（IPv4/IPv6
-    // 均支持），
-    // 未凑成完整报文的尾部字节保留在缓冲区内，与下一次读取拼接后继续解析。
+    // TUN 设备为包语义：每次读取恰为一个完整 IP 报文，无需按流拆包拼接。
+    // 仅保留对非法/残缺报文的防御性检查（正常 TUN 包不会触发）.
     const uint8_t *base = buf.data();
     const size_t avail = buf.size();
-    size_t offset = 0;
-    while (offset + 4 <= avail) {
-        size_t total_len = 0;
-        const uint8_t version = base[offset] >> 4;
-        if (version == 4) {
-            if (offset + sizeof(ipv4_header) > avail) {
-                break; // 头部不完整，等待续读
-            }
-            total_len =
-                static_cast<size_t>((base[offset + 2] << 8) | base[offset + 3]);
-            if (total_len < sizeof(ipv4_header)) {
-                ++offset; // 非法长度：跳过该字节继续扫描
-                continue;
-            }
-        } else if (version == 6) {
-            if (offset + sizeof(ipv6_header) > avail) {
-                break; // 头部不完整，等待续读
-            }
-            total_len =
-                sizeof(ipv6_header) +
-                static_cast<size_t>((base[offset + 4] << 8) | base[offset + 5]);
-            if (total_len < sizeof(ipv6_header)) {
-                ++offset; // 非法长度：跳过该字节继续扫描
-                continue;
-            }
-        } else {
-            ++offset; // 非 IP 报文：跳过该字节继续扫描
-            continue;
-        }
-        if (total_len > buf.capacity() - buf.headroom()) {
-            // 声明长度超出缓冲可容纳上限（正常 MTU 内报文不可能出现）：
-            // 该报文永远无法凑齐，丢弃全部缓冲并重新开始，避免读循环停滞。
+    if (avail < sizeof(ipv4_header)) {
+        stats_->rx_dropped.fetch_add(1, std::memory_order_relaxed);
+        buf.reset();
+        start_read_slot(index);
+        return;
+    }
+    size_t total_len = 0;
+    const uint8_t version = base[0] >> 4;
+    if (version == 4) {
+        total_len =
+            static_cast<size_t>((base[2] << 8) | base[3]);
+        if (total_len < sizeof(ipv4_header)) {
             stats_->rx_dropped.fetch_add(1, std::memory_order_relaxed);
             buf.reset();
             start_read_slot(index);
             return;
         }
-        if (offset + total_len > avail) {
-            break; // 报文体不完整，等待续读
+    } else if (version == 6) {
+        total_len =
+            sizeof(ipv6_header) +
+            static_cast<size_t>((base[4] << 8) | base[5]);
+        if (total_len < sizeof(ipv6_header)) {
+            stats_->rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            buf.reset();
+            start_read_slot(index);
+            return;
         }
-        stats_->rx_packets.fetch_add(1, std::memory_order_relaxed);
-        handle_packet(base + offset, total_len);
-        offset += total_len;
-    }
-    const size_t kept = avail - offset;
-    if (kept > 0) {
-        buf.rewind(kept);
     } else {
+        stats_->rx_dropped.fetch_add(1, std::memory_order_relaxed);
         buf.reset();
+        start_read_slot(index);
+        return;
     }
+    if (total_len > avail || total_len > buf.capacity() - buf.headroom()) {
+        // 声明长度超限或读到的字节不足一个完整报文：按包语义丢弃
+        // （真实 TUN 包设备不会出现半包；防御非法/残缺报文）。
+        stats_->rx_dropped.fetch_add(1, std::memory_order_relaxed);
+        buf.reset();
+        start_read_slot(index);
+        return;
+    }
+    stats_->rx_packets.fetch_add(1, std::memory_order_relaxed);
+    handle_packet(base, total_len);
+    buf.reset();
     start_read_slot(index);
 }
 
