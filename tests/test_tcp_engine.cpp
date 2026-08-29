@@ -531,6 +531,151 @@ static void test_data_with_fin()
     peer.close();
 }
 
+static void test_handshake_ack_with_fin()
+{
+    // 客户端在握手 ACK 中合并 FIN（快速关闭）：引擎必须完成 FIN 处理
+    // （fin_received + CLOSE_WAIT），挂起的读收到 EOF；原实现漏掉同段
+    // FIN，读侧永远等不到 EOF，直到 30s 超时被强制清理.
+    engine_env env;
+    auto &io = env.io;
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        if (!ec) {
+            peer.accept();
+        }
+        accept_done.set_value(ec);
+    });
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12352, DEST_PORT, 0x02, 6000, 0,
+                          65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    const uint32_t engine_iss = ti.seq;
+    future_get(accept_done.get_future());
+
+    // 握手尚未完成时注册读：读操作挂起
+    std::promise<std::pair<boost::system::error_code, size_t>> eof_done;
+    char buf[64];
+    peer.async_read_some(net::buffer(buf),
+                         [&](boost::system::error_code ec, size_t n) {
+                             eof_done.set_value({ec, n});
+                         });
+
+    // 客户端 ACK+FIN 同段完成握手并立即关闭
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12352, DEST_PORT, 0x11, 6001,
+                          engine_iss + 1, 65535, {}));
+
+    auto [rec, rn] = future_get(eof_done.get_future());
+    assert(!rec && rn == 0); // EOF
+    assert(peer.is_open());  // CLOSE_WAIT 仍可写
+
+    // 引擎确认 FIN（ack = 6000 + 1 + 1）
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no FIN ACK");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    assert((ti.flags & 0x10) != 0);
+    assert(ti.ack == 6002);
+
+    peer.close();
+}
+
+static void test_shutdown_receive_discards()
+{
+    // 应用 shutdown(receive) 后，客户端数据应被丢弃并正常确认（rcv_nxt
+    // 推进），而不是继续写入无人消费的 rx_data 占用缓冲记账.
+    engine_env env;
+    auto &io = env.io;
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        if (!ec) {
+            peer.accept();
+        }
+        accept_done.set_value(ec);
+    });
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12353, DEST_PORT, 0x02, 7000, 0,
+                          65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    const uint32_t engine_iss = ti.seq;
+    future_get(accept_done.get_future());
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12353, DEST_PORT, 0x10, 7001,
+                          engine_iss + 1, 65535, {}));
+
+    boost::system::error_code sec;
+    peer.shutdown(net::ip::tcp::socket::shutdown_receive, sec);
+    assert(!sec);
+
+    // 两段数据：第二段触发 delayed ACK 立即发送，确认全部丢弃的字节
+    const std::string a = "junk";
+    const std::string b = "more";
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12353, DEST_PORT, 0x18, 7001,
+                          engine_iss + 1, 65535,
+                          {a.begin(), a.end()}));
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12353, DEST_PORT, 0x18,
+                          7001 + a.size(), engine_iss + 1, 65535,
+                          {b.begin(), b.end()}));
+
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no ACK after shutdown receive");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    assert((ti.flags & 0x10) != 0);
+    assert(ti.ack == 7001 + a.size() + b.size());
+
+    peer.close();
+}
+
 static void test_write_after_shutdown_send()
 {
     engine_env env;
@@ -1319,6 +1464,8 @@ int main()
     std::signal(SIGPIPE, SIG_IGN);
     test_handshake_data_fin();
     test_data_with_fin();
+    test_handshake_ack_with_fin();
+    test_shutdown_receive_discards();
     test_fin_retransmit_reacked();
     test_zero_window_flow_control();
     test_rst();

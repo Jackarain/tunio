@@ -230,21 +230,19 @@ void tcp_engine::handle_segment(const std::shared_ptr<tcp_flow> &f,
             send_segment(*f, f->iss, TCP_SYN | TCP_ACK, nullptr, 0, true);
             return;
         }
-        if ((flags & TCP_ACK) && ack == f->iss + 1) {
-            f->state = tcp_state::ESTABLISHED;
-            stats_.tcp_connections.fetch_add(1, std::memory_order_relaxed);
-            // 流已在收到 SYN 时交付给 async_accept, 不再重复通知.
-            if (!f->accepted) {
-                notify_accept(*f);
-            }
-            if (data_len > 0 && seq == f->rcv_nxt) {
-                deliver_data(*f, data, data_len);
-            }
-            // 握手完成可能激活此前因窗口为 0 挂起的发送协程
-            // （SYN_ACK_SENT 分支提前返回，不会走到末尾的 signal_write）.
-            signal_write(*f);
+        if (!(flags & TCP_ACK) || ack != f->iss + 1) {
+            // 非预期 ACK：忽略
+            return;
         }
-        return;
+        f->state = tcp_state::ESTABLISHED;
+        stats_.tcp_connections.fetch_add(1, std::memory_order_relaxed);
+        // 流已在收到 SYN 时交付给 async_accept, 不再重复通知.
+        if (!f->accepted) {
+            notify_accept(*f);
+        }
+        // 不 return：客户端可能在握手 ACK 中合并数据与 FIN（快速关闭），
+        // 由下方统一的数据/FIN 处理逻辑接管；原实现直接 return 会漏掉
+        // 同段 FIN，导致 fin_received 不置位、读侧永远等不到 EOF.
     }
 
     // ---- 已建立连接的数据处理 ----
@@ -304,6 +302,18 @@ void tcp_engine::deliver_data(tcp_flow &f, const uint8_t *data, size_t len)
     if (len == 0) {
         return;
     }
+    if (f.rx_shutdown) {
+        // 应用已关闭接收侧：数据不再入队，丢弃并推进序号后正常确认，
+        // 避免无消费方时 rx_data 持续积压占用缓冲记账.
+        f.rcv_nxt += static_cast<uint32_t>(len);
+        if (++f.ack_pending >= 2) {
+            send_ack(f);
+            f.ack_pending = 0;
+        } else {
+            defer_ack(f);
+        }
+        return;
+    }
     if (f.rx_bytes + len > cfg_.max_rx_queue_per_flow ||
         !account_->reserve(len)) {
         // 队列积压或总缓冲超限：静默丢弃，不回复 ACK 以施加背压
@@ -327,11 +337,14 @@ void tcp_engine::deliver_data(tcp_flow &f, const uint8_t *data, size_t len)
         }
         f.rcv_nxt += static_cast<uint32_t>(len);
         account_->release(n);
-        op.handler(boost::system::error_code{}, n);
         if (n < len) {
-            // 剩余数据缓存，等待后续读操作消费
+            // 剩余数据先入队并记账再回调：回调内 close()/reset() 时能正确
+            // 释放记账，避免向已关闭流残留数据.
             f.rx_data.insert(f.rx_data.end(), data + n, data + len);
             f.rx_bytes += len - n;
+        }
+        op.handler(boost::system::error_code{}, n);
+        if (n < len) {
             flush_reads(f);
         }
         if (++f.ack_pending >= 2) {
@@ -471,24 +484,23 @@ net::awaitable<void> tcp_engine::write_loop(std::shared_ptr<tcp_flow> f)
                 co_await flow.write_ch->async_receive(net::use_awaitable);
                 continue;
             }
-            // 定位 op.offset 对应的用户缓冲区及其区内偏移（不跨挂起点持有引用）
-            size_t buf_index = 0;
-            size_t buf_off = 0;
             size_t chunk = 0;
             packet_buffer pkt{};
             {
                 auto &op = *flow.active_write;
-                buf_off = op.offset;
-                while (buf_index < op.buffers.size() &&
-                       buf_off >= op.buffers[buf_index].size()) {
-                    buf_off -= op.buffers[buf_index].size();
-                    ++buf_index;
+                // 增量定位：offset 单调推进，buf_index/buf_off 持久化在
+                // write_op 中，避免每段从头扫描整个缓冲序列.
+                while (op.buf_index < op.buffers.size() &&
+                       op.buf_off >= op.buffers[op.buf_index].size()) {
+                    op.buf_off -= op.buffers[op.buf_index].size();
+                    ++op.buf_index;
                 }
-                if (buf_index == op.buffers.size()) {
+                if (op.buf_index == op.buffers.size()) {
                     break;
                 }
                 const size_t remaining = op.total - op.offset;
-                const size_t avail = op.buffers[buf_index].size() - buf_off;
+                const size_t avail =
+                    op.buffers[op.buf_index].size() - op.buf_off;
                 chunk = std::min(
                     {remaining, avail, mss(f->key.family),
                      static_cast<size_t>(flow.peer_wnd - in_flight)});
@@ -497,8 +509,8 @@ net::awaitable<void> tcp_engine::write_loop(std::shared_ptr<tcp_flow> f)
                 }
                 const uint8_t *payload =
                     static_cast<const uint8_t *>(
-                        op.buffers[buf_index].data()) +
-                    buf_off;
+                        op.buffers[op.buf_index].data()) +
+                    op.buf_off;
                 pkt = build_segment(flow, flow.snd_nxt, TCP_ACK | TCP_PSH,
                                     payload, chunk, false);
             }
@@ -516,6 +528,7 @@ net::awaitable<void> tcp_engine::write_loop(std::shared_ptr<tcp_flow> f)
             auto &op = *flow.active_write;
             flow.snd_nxt += static_cast<uint32_t>(chunk);
             op.offset += chunk;
+            op.buf_off += chunk;
             if (op.offset == op.total) {
                 auto h = std::move(op.handler);
                 flow.active_write.reset();

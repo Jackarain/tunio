@@ -139,6 +139,8 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
         std::vector<net::const_buffer> buffers; // 用户数据引用，回调 handler 前由调用方保证有效
         size_t total = 0;                       // 待发送总字节数（buffers 求和）
         size_t offset = 0;
+        size_t buf_index = 0; // 当前发送位置所在缓冲区下标（增量推进，避免每段重扫）
+        size_t buf_off = 0;   // 当前发送位置在 buf_index 缓冲区内的偏移
         net::any_completion_handler<void(boost::system::error_code, size_t)>
             handler;
     };
@@ -345,7 +347,7 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow,
             return;
         }
         flow.active_write = tcp_flow::write_op{
-            std::move(buffers), total, 0, std::move(handler)};
+            std::move(buffers), total, 0, 0, 0, std::move(handler)};
         net::co_spawn(strand, eng->write_loop(f), net::detached);
     });
 }
