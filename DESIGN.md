@@ -399,7 +399,7 @@ private:
 - **IP 分片策略**：引擎不做 IP 重组，收到 IPv4 分片包（带分片偏移或 MF 标志）或带 Fragment 扩展头（Next Header = 44）的 IPv6 报文时直接丢弃并计入 `rx_dropped`。
 
 - **顺序检查**：收到数据段后，检查 `SEQ == rcv_nxt`。
-  - **若顺序正确**：提取应用层 Payload，追加到 `tun_tcp_socket` 的连续接收缓冲（`vector<uint8_t>` + 头部消费偏移，应用读取后按需压缩，避免逐字节队列），唤醒挂起的 `async_read` 操作；随后 `rcv_nxt += payload_len`，并**每段立即确认**（避免 delayed ACK 40ms 兜底在低 cwnd 时拖慢内核发送节奏）；引擎发送的任何出段都会捎带最新 `rcv_nxt`，视为完成一次确认。
+  - **若顺序正确**：提取应用层 Payload，追加到 `tun_tcp_socket` 的连续接收缓冲（`vector<uint8_t>` + 头部消费偏移，应用读取后按需压缩，避免逐字节队列），唤醒挂起的 `async_read` 操作；随后 `rcv_nxt += payload_len`，并**每段立即确认**；引擎发送的任何出段都会捎带最新 `rcv_nxt`，视为完成一次确认。
   - **若序列号超前（`SEQ > rcv_nxt`）**：引擎**缓存**该乱序段（`ooo_cache`，受 `tcp_ooo_max_segments` 与接收缓冲记账限额约束），缺失段补齐后按序交付并批量确认。缓存成功时静默等待（缺失段在并发读场景往往即将到达），避免人为乱序触发对端快速重传与拥塞窗口减半；缓存拒绝（超限/重复）时才发 Dup-ACK 促使对端重传缺失段。
   - **若序列号小于 `rcv_nxt`**：视为重复包，直接丢弃，不回复任何内容。
 
@@ -428,7 +428,6 @@ private:
   指数退避，上限 60s），ACK 无进展时重读用户写缓冲重传未确认范围。
   重传次数超过 `tcp_rto_max_retransmits`（默认 8 次）判定发送超时，
   以 RST 关闭连接并以 `connection_reset` 完成挂起写，避免连接永久悬挂。
-  40ms ACK 延迟定时器仅用于合并确认，不属于重传定时器。
 - **零窗口持久探测**：对端窗口为 0 时周期性发送窗口探测（数据未发完时
   探测下一个字节，已发完时重传未确认段首部），不依赖对端主动发窗口更新。
 - **FIN 推迟**：关闭发送侧时尚有未发送/未确认数据时，FIN 推迟到数据
@@ -700,7 +699,6 @@ struct tun_config {
     size_t max_tcp_flows = 65536;
     size_t max_udp_flows = 65536;
     size_t max_rx_queue_per_flow = 1024 * 1024;
-    size_t max_tx_queue_per_flow = 1024 * 1024;  // 兼容占位：发送背压由设备写回调驱动
     size_t max_total_buffer = 512 * 1024 * 1024;
 
     // ---- 超时策略 ----
@@ -710,8 +708,6 @@ struct tun_config {
     std::chrono::seconds tcp_syn_timeout{30};    // 未完成握手的半开连接超时
     std::chrono::seconds tcp_close_timeout{30};  // 关闭流程（FIN 挥手）未完成时的强制清理超时
 
-    // ---- 可选 Checksum 硬件卸载控制 ----
-    bool enable_checksum_offload = true;
 };
 ```
 
@@ -722,9 +718,8 @@ struct tun_config {
 
 **资源上限说明**：
 - `max_rx_queue_per_flow` 限制每条 TCP 连接的接收队列与每条 UDP 会话的
-  数据报队列字节数；`max_tx_queue_per_flow` 为兼容占位（TCP 发送采用
-  单写模型，发送背压由"每流单写 + 设备写完成回调"驱动，不再按排队
-  字节数拒绝写入）。
+  数据报队列字节数。TCP 发送采用单写模型，发送背压由"每流单写 +
+  设备写完成回调"驱动，不再按排队字节数拒绝写入。
 - `max_total_buffer` 为跨 TCP/UDP 接收队列的全局缓冲记账上限；发送侧
   数据由应用缓冲持有（引擎只引用不拷贝），不占用该记账。
 - 半开连接（`SYN_RCVD` / `SYN_ACK_SENT`）在 `tcp_syn_timeout` 后清理；关闭流程
