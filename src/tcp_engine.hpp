@@ -20,6 +20,7 @@
 #include <boost/asio/experimental/channel.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/container/small_vector.hpp>
+#include <boost/unordered/unordered_flat_map.hpp>
 
 #include <chrono>
 #include <cstdint>
@@ -285,7 +286,9 @@ private:
     size_t mss4_ = 536;  // IPv4 MSS = MTU - 20(IP) - 20(TCP)
     size_t mss6_ = 1220; // IPv6 MSS = MTU - 40(IP) - 20(TCP)
 
-    std::unordered_map<five_tuple, std::shared_ptr<tcp_flow>> flows_;
+    boost::unordered_flat_map<five_tuple, std::shared_ptr<tcp_flow>,
+                              std::hash<five_tuple>>
+        flows_;
     std::deque<net::any_completion_handler<void(boost::system::error_code,
                                                 std::shared_ptr<tcp_flow>)>>
         pending_accepts_;
