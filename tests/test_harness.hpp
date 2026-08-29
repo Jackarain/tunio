@@ -613,7 +613,9 @@ struct engine_env
         std::chrono::seconds udp_timeout = std::chrono::seconds(1),
         std::chrono::seconds tcp_accept_timeout = std::chrono::seconds(30),
         std::chrono::seconds tcp_syn_timeout = std::chrono::seconds(30),
-        size_t max_rx_queue = 1024 * 1024, size_t max_tx_queue = 1024 * 1024)
+        size_t max_rx_queue = 1024 * 1024, size_t max_tx_queue = 1024 * 1024,
+        std::chrono::milliseconds persist_timeout =
+            std::chrono::milliseconds(5000))
         : engine(io)
         , guard(net::make_work_guard(io))
     {
@@ -629,6 +631,7 @@ struct engine_env
         cfg.tcp_syn_timeout = tcp_syn_timeout;
         cfg.max_rx_queue_per_flow = max_rx_queue;
         cfg.max_tx_queue_per_flow = max_tx_queue;
+        cfg.tcp_persist_timeout = persist_timeout;
         boost::system::error_code ec;
         if (!engine.open(cfg, ec)) {
             throw std::runtime_error("engine open failed: " + ec.message());

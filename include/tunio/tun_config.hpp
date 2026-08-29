@@ -165,6 +165,9 @@ struct tun_config
     std::chrono::seconds tcp_syn_timeout{30}; // 未完成握手的半开连接超时
     std::chrono::seconds tcp_close_timeout{
         30}; // 关闭流程（FIN 挥手）未完成时的强制清理超时
+    // 零窗口持久计时器初始间隔：对端通告窗口 0 时周期性发送窗口探测，
+    // 探测被确认后按指数退避加倍，上限 60s.
+    std::chrono::milliseconds tcp_persist_timeout{5000};
 
     // ---- 可选 Checksum 控制 ----
     // 用户态 TUN 收发的报文必须由本引擎计算校验和，该开关保留用于兼容设计文档；

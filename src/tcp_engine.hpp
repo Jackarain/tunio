@@ -19,6 +19,7 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/experimental/channel.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/container/small_vector.hpp>
 
 #include <chrono>
 #include <cstdint>
@@ -95,6 +96,7 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     bool app_closed = false;  // 应用层已关闭
     bool rx_shutdown = false; // 应用层已关闭接收侧
     bool accepted = false;    // 已交付给 accept
+    bool probe_in_flight = false; // 零窗口探测已发出、尚未被对端确认
     std::chrono::steady_clock::time_point created_at;
     std::chrono::steady_clock::time_point destroy_at;
     // 关闭流程开始时间（发送 FIN 时记录），用于 FIN_WAIT/LAST_ACK 强制清理
@@ -126,7 +128,8 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     // ---- 挂起操作 ----
     struct read_op
     {
-        std::vector<net::mutable_buffer> buffers;
+        // 小缓冲优化：单缓冲区（最常见调用形式）在栈上存储，避免堆分配
+        boost::container::small_vector<net::mutable_buffer, 1> buffers;
         size_t total = 0;
         net::any_completion_handler<void(boost::system::error_code, size_t)>
             handler;
@@ -136,7 +139,8 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     // ---- 挂起写操作（单写模型：同一时刻至多一个未完成写）----
     struct write_op
     {
-        std::vector<net::const_buffer> buffers; // 用户数据引用，回调 handler 前由调用方保证有效
+        boost::container::small_vector<net::const_buffer, 1>
+            buffers; // 用户数据引用，回调 handler 前由调用方保证有效
         size_t total = 0;                       // 待发送总字节数（buffers 求和）
         size_t offset = 0;
         size_t buf_index = 0; // 当前发送位置所在缓冲区下标（增量推进，避免每段重扫）
@@ -155,10 +159,12 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
 
 template <typename Handler>
 void tcp_flow_start_read(std::shared_ptr<tcp_flow>,
-                         std::vector<net::mutable_buffer>, size_t, Handler);
+                         boost::container::small_vector<net::mutable_buffer, 1>,
+                         size_t, Handler);
 template <typename Handler>
 void tcp_flow_start_write(std::shared_ptr<tcp_flow>,
-                          std::vector<net::const_buffer>, size_t, Handler);
+                          boost::container::small_vector<net::const_buffer, 1>,
+                          size_t, Handler);
 
 class tcp_engine : public std::enable_shared_from_this<tcp_engine>
 {
@@ -225,12 +231,14 @@ private:
     friend struct tcp_flow;
     template <typename Handler>
     friend void tcp_flow_start_read(std::shared_ptr<tcp_flow>,
-                                    std::vector<net::mutable_buffer>, size_t,
-                                    Handler);
+                                    boost::container::small_vector<
+                                        net::mutable_buffer, 1>,
+                                    size_t, Handler);
     template <typename Handler>
     friend void tcp_flow_start_write(std::shared_ptr<tcp_flow>,
-                                     std::vector<net::const_buffer>, size_t,
-                                     Handler);
+                                     boost::container::small_vector<
+                                         net::const_buffer, 1>,
+                                     size_t, Handler);
 
     void handle_segment(const std::shared_ptr<tcp_flow> &f,
                         const tcp_header &th, const uint8_t *data,
@@ -265,8 +273,9 @@ private:
 // ---- 供 tun_tcp_socket 调用的入口（内部自动派发到 Strand）----
 template <typename Handler>
 void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
-                         std::vector<net::mutable_buffer> buffers, size_t total,
-                         Handler handler)
+                         boost::container::small_vector<net::mutable_buffer, 1>
+                             buffers,
+                         size_t total, Handler handler)
 {
     if (!flow) {
         handler(boost::system::error_code(net::error::bad_descriptor), 0);
@@ -307,8 +316,9 @@ void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
 
 template <typename Handler>
 void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow,
-                          std::vector<net::const_buffer> buffers, size_t total,
-                          Handler handler)
+                          boost::container::small_vector<net::const_buffer, 1>
+                              buffers,
+                          size_t total, Handler handler)
 {
     if (!flow) {
         handler(boost::system::error_code(net::error::bad_descriptor), 0);

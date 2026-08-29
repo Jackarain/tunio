@@ -341,6 +341,204 @@ static void test_zero_window_flow_control()
     peer.close();
 }
 
+static void test_zero_window_persist_probe()
+{
+    // 零窗口持久计时器：客户端通告窗口 0 且不主动发窗口更新时，引擎必须
+    // 周期性发送窗口探测；探测字节被确认后写操作完成且不丢失/重复数据.
+    engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+                   std::chrono::seconds(30), 1024 * 1024, 1024 * 1024,
+                   std::chrono::milliseconds(150));
+    auto &io = env.io;
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        if (!ec) {
+            peer.accept();
+        }
+        accept_done.set_value(ec);
+    });
+
+    env.dev.send(
+        make_tcp(CLIENT_IP, DEST_IP, 12355, DEST_PORT, 0x02, 4000, 0, 0, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    const uint32_t engine_iss = ti.seq;
+
+    // 客户端 ACK（窗口 0）
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12355, DEST_PORT, 0x10, 4001,
+                          engine_iss + 1, 0, {}));
+    future_get(accept_done.get_future());
+
+    // 写入因窗口 0 挂起
+    std::promise<std::pair<boost::system::error_code, size_t>> write_done;
+    peer.async_write_some(net::buffer("x", 1),
+                          [&](boost::system::error_code ec, size_t n) {
+                              write_done.set_value({ec, n});
+                          });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto wf = write_done.get_future();
+    if (wf.wait_for(std::chrono::milliseconds(0)) ==
+        std::future_status::ready) {
+        throw std::runtime_error("write should be blocked by zero window");
+    }
+
+    // 第一轮窗口探测（约 150ms 后）：1 字节数据，seq = iss + 1
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no first window probe");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    assert((ti.flags & 0x10) != 0);
+    assert(ti.seq == engine_iss + 1);
+    assert(ti.len == 1 && ti.data[0] == 'x');
+
+    // 客户端仍通告窗口 0：探测字节被丢弃，引擎应继续周期探测
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12355, DEST_PORT, 0x10, 4001,
+                          engine_iss + 1, 0, {}));
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no second window probe");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    assert((ti.flags & 0x10) != 0);
+    assert(ti.seq == engine_iss + 1);
+    assert(ti.len == 1 && ti.data[0] == 'x');
+
+    // 窗口恢复并接收探测字节：写操作完成，探测字节不重复发送
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12355, DEST_PORT, 0x10, 4001,
+                          engine_iss + 2, 4096, {}));
+    auto [wec, wn] = future_get(std::move(wf));
+    assert(!wec && wn == 1);
+    // 探测字节已作为数据交付，引擎不应再发送数据段；若有也必须是后续序号
+    if (env.dev.read_packet(pkt, 200)) {
+        if (!verify_packet(pkt)) {
+            throw std::runtime_error("verify_packet failed");
+        }
+        if (!parse_ip(pkt, ipi)) {
+            throw std::runtime_error("parse_ip failed");
+        }
+        if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+            throw std::runtime_error("parse_tcp failed");
+        }
+        assert(ti.seq == engine_iss + 2);
+    }
+
+    peer.close();
+}
+
+static void test_syn_with_data()
+{
+    // TFO：客户端 SYN 携带数据。引擎缓存数据并在 SYN-ACK 中捎带确认，
+    // 握手完成后交付给应用；数据不丢失也不重复.
+    engine_env env;
+    auto &io = env.io;
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        if (!ec) {
+            peer.accept();
+        }
+        accept_done.set_value(ec);
+    });
+
+    const std::string hello = "hello-tfo";
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12356, DEST_PORT, 0x02, 5000, 0,
+                          65535, {hello.begin(), hello.end()}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    assert(ti.ack == 5001 + hello.size()); // SYN-ACK 捎带确认 TFO 数据
+    const uint32_t engine_iss = ti.seq;
+    future_get(accept_done.get_future());
+
+    // 握手完成前注册读（挂起，握手完成后交付 TFO 数据）
+    std::promise<std::pair<boost::system::error_code, size_t>> read_done;
+    char buf[64];
+    peer.async_read_some(net::buffer(buf),
+                         [&](boost::system::error_code ec, size_t n) {
+                             read_done.set_value({ec, n});
+                         });
+
+    // 客户端 ACK 完成握手
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12356, DEST_PORT, 0x10,
+                          5001 + hello.size(), engine_iss + 1, 65535, {}));
+
+    auto [rec, rn] = future_get(read_done.get_future());
+    assert(!rec && rn == hello.size());
+    assert(std::string(buf, rn) == hello);
+
+    // 客户端重传数据（seq 已确认过）应被当作重复段丢弃，不重复交付
+    std::promise<std::pair<boost::system::error_code, size_t>> again_done;
+    peer.async_read_some(net::buffer(buf),
+                         [&](boost::system::error_code ec, size_t n) {
+                             again_done.set_value({ec, n});
+                         });
+    auto agf = again_done.get_future();
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12356, DEST_PORT, 0x18, 5001,
+                          engine_iss + 1, 65535, {hello.begin(),
+                                                  hello.end()}));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (agf.wait_for(std::chrono::milliseconds(0)) ==
+        std::future_status::ready) {
+        throw std::runtime_error("duplicate TFO data must not be delivered");
+    }
+
+    // 客户端发送新的按序数据：挂起读交付该数据后完成，避免 close 时
+    // 引擎异步完成读回调引用已析构的 promise.
+    const std::string tail = "tail";
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12356, DEST_PORT, 0x18,
+                          5001 + hello.size(), engine_iss + 1, 65535,
+                          {tail.begin(), tail.end()}));
+    auto [aec, an] = future_get(std::move(agf));
+    assert(!aec && an == tail.size());
+    assert(std::string(buf, an) == tail);
+
+    peer.close();
+}
+
 static void test_rst()
 {
     engine_env env;
@@ -1468,6 +1666,8 @@ int main()
     test_shutdown_receive_discards();
     test_fin_retransmit_reacked();
     test_zero_window_flow_control();
+    test_zero_window_persist_probe();
+    test_syn_with_data();
     test_rst();
     test_app_reset();
     test_write_after_shutdown_send();
