@@ -92,6 +92,8 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     uint16_t peer_wnd = 0; // 客户端通告的接收窗口
     bool fin_sent = false;
     bool fin_received = false;
+    bool fin_pending = false; // 应用已请求关闭发送侧，但仍有未发送/未确认
+                              // 数据：FIN 推迟到数据全部确认后再发送.
     bool rst = false;         // 收到 RST 或主动 RST
     bool app_closed = false;  // 应用层已关闭
     bool rx_shutdown = false; // 应用层已关闭接收侧
@@ -145,6 +147,8 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
         size_t offset = 0;
         size_t buf_index = 0; // 当前发送位置所在缓冲区下标（增量推进，避免每段重扫）
         size_t buf_off = 0;   // 当前发送位置在 buf_index 缓冲区内的偏移
+        uint32_t start_seq = 0; // 本次写操作首字节的发送序号（snd_nxt 快照）,
+                                // 用于将未确认序列号范围映射回缓冲偏移以重传
         net::any_completion_handler<void(boost::system::error_code, size_t)>
             handler;
     };
@@ -217,6 +221,9 @@ public:
     void send_fin(tcp_flow &f);
     void abort_flow(tcp_flow &f);
     void close_flow(tcp_flow &f, const boost::system::error_code &err);
+    // 重传未确认数据 [snd_una, snd_nxt) 至多 max_bytes 字节（零窗口探测
+    // 与 RTO 超时共用）；数据仍在 active_write 的用户缓冲中，无需拷贝.
+    void retransmit_unacked(tcp_flow &f, size_t max_bytes);
     // 发送协程：持有单个写操作，按窗口/MSS 循环分片，
     // 设备写完成回调驱动背压；窗口耗尽时经 write_ch 挂起等待 ACK.
     net::awaitable<void> write_loop(std::shared_ptr<tcp_flow> f);
@@ -357,7 +364,7 @@ void tcp_flow_start_write(std::shared_ptr<tcp_flow> flow,
             return;
         }
         flow.active_write = tcp_flow::write_op{
-            std::move(buffers), total, 0, 0, 0, std::move(handler)};
+            std::move(buffers), total, 0, 0, 0, 0, std::move(handler)};
         net::co_spawn(strand, eng->write_loop(f), net::detached);
     });
 }

@@ -217,6 +217,14 @@ void tcp_engine::handle_segment(const std::shared_ptr<tcp_flow> &f,
         }
         // 任何 ACK 都意味着对端对探测做出了回应（确认或丢弃），探测状态结束
         f->probe_in_flight = false;
+        // 数据全部确认且无未发送数据：补发被推迟的 FIN（ACK 是发送侧
+        // 数据进展的可靠信号，避免 FIN 与在途数据段序列号重叠）
+        if (f->fin_pending && f->snd_una == f->snd_nxt &&
+            (!f->active_write ||
+             f->active_write->offset == f->active_write->total)) {
+            f->fin_pending = false;
+            send_fin(*f);
+        }
         if (f->state == tcp_state::FIN_WAIT_1 && f->fin_sent &&
             seq_ge(ack, f->snd_nxt)) {
             // 客户端确认了我们的 FIN
@@ -426,12 +434,13 @@ void tcp_engine::flush_reads(tcp_flow &f)
                             static_cast<std::ptrdiff_t>(f.rx_head));
         f.rx_head = 0;
     }
-    // 数据耗尽后处理 EOF
+    // 数据耗尽后处理 EOF：按 Asio 语义以 error::eof 完成读操作（对端 FIN），
+    // 避免以 (success, 0) 交付导致调用方无法区分 EOF 与空读，进而死循环.
     if (f.rx_bytes == 0 && f.fin_received) {
         while (!f.pending_reads.empty()) {
             auto op = std::move(f.pending_reads.front());
             f.pending_reads.pop_front();
-            op.handler(boost::system::error_code{}, 0);
+            op.handler(net::error::eof, 0);
         }
     }
 }
@@ -499,9 +508,17 @@ net::awaitable<void> tcp_engine::write_loop(std::shared_ptr<tcp_flow> f)
     auto writer = writer_.shared_from_this();
     auto &flow = *f;
 
+    if (!flow.active_write) {
+        // 挂起期间连接被关闭：close_flow 已以错误完成写操作.
+        co_return;
+    }
+
     if (!flow.write_ch) {
         flow.write_ch.emplace(strand_);
     }
+    // 记录本次写操作首个字节的发送序号：未确认范围 [snd_una, snd_nxt)
+    // 减去该值即用户缓冲偏移，RTO 重传据此定位数据（无需拷贝缓冲）.
+    flow.active_write->start_seq = flow.snd_nxt;
 
     // 零窗口持久计时器：对端通告窗口 0 时周期性发送窗口探测，避免依赖
     // 对端主动发送窗口更新（该 ACK 丢失时若无探测将永久挂起）；探测确认
@@ -510,36 +527,51 @@ net::awaitable<void> tcp_engine::write_loop(std::shared_ptr<tcp_flow> f)
     auto persist_interval = cfg_.tcp_persist_timeout;
     const auto persist_max = std::chrono::milliseconds(60000);
 
+    // RTO 重传计时器：对端窗口允许但 ACK 迟迟不推进时，周期性重传未确认
+    // 数据（指数退避，上限 60s）；超过最大重传次数判定发送超时以 RST 关闭.
+    net::steady_timer rto_timer(strand_);
+    auto rto = cfg_.tcp_rto_timeout;
+    const auto rto_max = std::chrono::milliseconds(60000);
+    int retransmits = 0;
+    uint32_t last_una = flow.snd_una;
+
+    using namespace net::experimental::awaitable_operators;
+
     try {
         while (flow.active_write && flow.state != tcp_state::CLOSED &&
-               !flow.rst && !flow.fin_sent) {
-            if (flow.active_write->offset == flow.active_write->total) {
-                // 挂起期间写偏移被外部推进（零窗口探测字节被确认），
-                // 数据已全部交付：成功完成写操作.
+               !flow.rst) {
+            // 写数据末尾序号：FIN 发送后 snd_nxt 会再前进 1（FIN 占序号），
+            // 写完成只要求对端确认到数据末尾，不等待 FIN 的确认.
+            const uint32_t write_end =
+                flow.active_write->start_seq +
+                static_cast<uint32_t>(flow.active_write->total);
+            if (flow.active_write->offset == flow.active_write->total &&
+                flow.snd_una == write_end) {
+                // 全部数据已发出并被对端确认：成功完成写操作（写操作在
+                // 数据确认后才回调，保证对端已实际收到全部字节）.
                 auto h = std::move(flow.active_write->handler);
                 const size_t done = flow.active_write->total;
                 flow.active_write.reset();
                 h(boost::system::error_code{}, done);
                 co_return;
             }
-            const uint32_t in_flight = flow.snd_nxt - flow.snd_una;
-            if (in_flight >= flow.peer_wnd) {
-                if (flow.peer_wnd == 0) {
-                    // 零窗口：等待窗口更新信号与持久计时器竞速；定时器
-                    // 超时则发送 1 字节窗口探测（对端即使窗口仍为 0 也会
-                    // 回复 ACK 通告窗口，从而刷新窗口状态并重置计时）.
-                    using namespace net::experimental::awaitable_operators;
-                    persist_timer.expires_after(persist_interval);
-                    auto result = co_await (
-                        flow.write_ch->async_receive(
-                            net::as_tuple(net::use_awaitable)) ||
-                        persist_timer.async_wait(
-                            net::as_tuple(net::use_awaitable)));
-                    if (result.index() == 1 &&
-                        std::get<0>(std::get<1>(result)) ==
-                            boost::system::error_code{}) {
-                        // 定时器超时：发送窗口探测（不推进序号，确认时由
-                        // handle_segment 的 ACK 处理推进写偏移）
+            if (flow.peer_wnd == 0) {
+                // 零窗口：等待窗口更新信号与持久计时器竞速；定时器超时则
+                // 发送窗口探测（对端即使窗口仍为 0 也会回复 ACK 通告窗口，
+                // 从而刷新窗口状态并重置计时）.
+                persist_timer.expires_after(persist_interval);
+                auto result = co_await (
+                    flow.write_ch->async_receive(
+                        net::as_tuple(net::use_awaitable)) ||
+                    persist_timer.async_wait(
+                        net::as_tuple(net::use_awaitable)));
+                if (result.index() == 1 &&
+                    std::get<0>(std::get<1>(result)) ==
+                        boost::system::error_code{}) {
+                    if (flow.active_write->offset <
+                        flow.active_write->total) {
+                        // 常规探测：发送下一个未发送字节（不推进序号，确认
+                        // 时由 handle_segment 的 ACK 处理推进写偏移）
                         const uint8_t *probe = nullptr;
                         {
                             auto &op = *flow.active_write;
@@ -562,71 +594,106 @@ net::awaitable<void> tcp_engine::write_loop(std::shared_ptr<tcp_flow> f)
                                          false);
                             flow.probe_in_flight = true;
                         }
-                        if (persist_interval < persist_max) {
-                            persist_interval =
-                                std::min(persist_interval * 2, persist_max);
-                        }
-                    } else {
-                        // 收到窗口信号（ACK 更新窗口）：重置退避后重新检查
-                        persist_interval = cfg_.tcp_persist_timeout;
+                    } else if (flow.snd_una != write_end) {
+                        // 数据已全部发出：重传未确认数据段首部作为探测，
+                        // 迫使对端回复 ACK 通告最新窗口.
+                        retransmit_unacked(flow, mss(f->key.family));
                     }
-                    continue;
+                    if (persist_interval < persist_max) {
+                        persist_interval =
+                            std::min(persist_interval * 2, persist_max);
+                    }
+                } else {
+                    // 收到窗口信号（ACK 更新窗口）：重置退避后重新检查
+                    persist_interval = cfg_.tcp_persist_timeout;
                 }
-                // 窗口耗尽：挂起等待 ACK 更新窗口（signal_write 唤醒）
-                co_await flow.write_ch->async_receive(net::use_awaitable);
                 continue;
             }
-            size_t chunk = 0;
-            packet_buffer pkt{};
-            {
-                auto &op = *flow.active_write;
-                // 增量定位：offset 单调推进，buf_index/buf_off 持久化在
-                // write_op 中，避免每段从头扫描整个缓冲序列.
-                while (op.buf_index < op.buffers.size() &&
-                       op.buf_off >= op.buffers[op.buf_index].size()) {
-                    op.buf_off -= op.buffers[op.buf_index].size();
-                    ++op.buf_index;
+            const uint32_t in_flight = flow.snd_nxt - flow.snd_una;
+            if (flow.active_write->offset < flow.active_write->total &&
+                in_flight < flow.peer_wnd) {
+                // 窗口允许且仍有未发送数据：发送下一个分片
+                size_t chunk = 0;
+                packet_buffer pkt{};
+                {
+                    auto &op = *flow.active_write;
+                    // 增量定位：offset 单调推进，buf_index/buf_off 持久化在
+                    // write_op 中，避免每段从头扫描整个缓冲序列.
+                    while (op.buf_index < op.buffers.size() &&
+                           op.buf_off >= op.buffers[op.buf_index].size()) {
+                        op.buf_off -= op.buffers[op.buf_index].size();
+                        ++op.buf_index;
+                    }
+                    if (op.buf_index == op.buffers.size()) {
+                        break;
+                    }
+                    const size_t remaining = op.total - op.offset;
+                    const size_t avail =
+                        op.buffers[op.buf_index].size() - op.buf_off;
+                    chunk = std::min(
+                        {remaining, avail, mss(f->key.family),
+                         static_cast<size_t>(flow.peer_wnd - in_flight)});
+                    if (chunk == 0) {
+                        break;
+                    }
+                    const uint8_t *payload =
+                        static_cast<const uint8_t *>(
+                            op.buffers[op.buf_index].data()) +
+                        op.buf_off;
+                    pkt = build_segment(flow, flow.snd_nxt, TCP_ACK | TCP_PSH,
+                                        payload, chunk, false);
+                    // 提前推进序号与写偏移：在途分片同样占用序列号空间，
+                    // 保证等待期间到达的 ACK/FIN 处理（snd_una 推进、FIN
+                    // 序号）不依赖设备写完成时序.
+                    flow.snd_nxt += static_cast<uint32_t>(chunk);
+                    op.offset += chunk;
+                    op.buf_off += chunk;
                 }
-                if (op.buf_index == op.buffers.size()) {
+                // 数据段经设备写完成回调驱动背压：设备写通道拥塞时协程挂起，
+                // 内存占用受"每流单写 + 设备队列水位"约束，不再无界累积.
+                auto [ec, n] = co_await writer->async_write(
+                    std::move(pkt), net::as_tuple(net::use_awaitable));
+                if (ec) {
                     break;
                 }
-                const size_t remaining = op.total - op.offset;
-                const size_t avail =
-                    op.buffers[op.buf_index].size() - op.buf_off;
-                chunk = std::min(
-                    {remaining, avail, mss(f->key.family),
-                     static_cast<size_t>(flow.peer_wnd - in_flight)});
-                if (chunk == 0) {
+                if (!flow.active_write) {
+                    // 挂起期间连接被关闭：写操作已由关闭路径完成，停止推进.
                     break;
                 }
-                const uint8_t *payload =
-                    static_cast<const uint8_t *>(
-                        op.buffers[op.buf_index].data()) +
-                    op.buf_off;
-                pkt = build_segment(flow, flow.snd_nxt, TCP_ACK | TCP_PSH,
-                                    payload, chunk, false);
+                continue;
             }
-            // 数据段经设备写完成回调驱动背压：设备写通道拥塞时协程挂起，
-            // 内存占用受"每流单写 + 设备队列水位"约束，不再无界累积.
-            auto [ec, n] = co_await writer->async_write(
-                std::move(pkt), net::as_tuple(net::use_awaitable));
-            if (ec) {
-                break;
+            // 窗口耗尽或数据已全部发出：等待 ACK 推进窗口，或 RTO 超时
+            // 重传未确认数据（链路丢段时 snd_una 永不推进，若无重传将
+            // 永久挂起，大流量传输即死锁）.
+            rto_timer.expires_after(rto);
+            auto result = co_await (
+                flow.write_ch->async_receive(
+                    net::as_tuple(net::use_awaitable)) ||
+                rto_timer.async_wait(net::as_tuple(net::use_awaitable)));
+            if (result.index() == 1 &&
+                std::get<0>(std::get<1>(result)) ==
+                    boost::system::error_code{}) {
+                if (flow.snd_una == last_una) {
+                    // RTO 超时且无任何 ACK 进展：重传未确认数据并退避
+                    if (++retransmits > cfg_.tcp_rto_max_retransmits) {
+                        abort_flow(flow);
+                        break;
+                    }
+                    if (flow.snd_una != write_end) {
+                        retransmit_unacked(flow, SIZE_MAX);
+                    }
+                    rto = std::min(rto * 2, rto_max);
+                } else {
+                    // 超时前已有 ACK 进展（竞态）：重置退避
+                    rto = cfg_.tcp_rto_timeout;
+                    retransmits = 0;
+                }
+            } else if (flow.snd_una != last_una) {
+                // ACK 推进窗口：重置重传退避
+                rto = cfg_.tcp_rto_timeout;
+                retransmits = 0;
             }
-            if (!flow.active_write) {
-                // 挂起期间连接被关闭：写操作已由关闭路径完成，停止推进.
-                break;
-            }
-            auto &op = *flow.active_write;
-            flow.snd_nxt += static_cast<uint32_t>(chunk);
-            op.offset += chunk;
-            op.buf_off += chunk;
-            if (op.offset == op.total) {
-                auto h = std::move(op.handler);
-                flow.active_write.reset();
-                h(boost::system::error_code{}, op.total);
-                co_return;
-            }
+            last_una = flow.snd_una;
         }
     } catch (...) {
         // 异常兜底：以错误完成挂起写操作，避免 detached 协程抛出
@@ -640,6 +707,48 @@ net::awaitable<void> tcp_engine::write_loop(std::shared_ptr<tcp_flow> f)
         h(err, 0);
     }
     co_return;
+}
+
+void tcp_engine::retransmit_unacked(tcp_flow &f, size_t max_bytes)
+{
+    if (!f.active_write || f.snd_una == f.snd_nxt) {
+        return;
+    }
+    auto &op = *f.active_write;
+    // 未确认范围 [snd_una, snd_nxt) 映射为写缓冲偏移（offset 与
+    // snd_nxt - start_seq 同步推进，探测字节确认时两者同步递增）.
+    const size_t begin = static_cast<size_t>(f.snd_una - op.start_seq);
+    // 终点不得超过用户缓冲长度：FIN 发送后 snd_nxt 含 FIN 的序号空间.
+    const size_t end =
+        std::min(static_cast<size_t>(f.snd_nxt - op.start_seq), op.total);
+    size_t off = begin;
+    size_t budget = max_bytes;
+    const size_t seg_mss = mss(f.key.family);
+    size_t bi = 0;   // 当前缓冲下标
+    size_t base = 0; // bi 缓冲的起始流偏移
+    while (bi < op.buffers.size() &&
+           base + op.buffers[bi].size() <= off) {
+        base += op.buffers[bi].size();
+        ++bi;
+    }
+    while (bi < op.buffers.size() && off < end && budget > 0) {
+        const size_t bo = off - base;
+        const size_t avail = op.buffers[bi].size() - bo;
+        const size_t want = std::min({end - off, avail, budget, seg_mss});
+        if (want == 0) {
+            break;
+        }
+        const uint8_t *payload =
+            static_cast<const uint8_t *>(op.buffers[bi].data()) + bo;
+        send_segment(f, op.start_seq + static_cast<uint32_t>(off),
+                     TCP_ACK | TCP_PSH, payload, want, false);
+        off += want;
+        budget -= want;
+        if (off >= base + op.buffers[bi].size()) {
+            base += op.buffers[bi].size();
+            ++bi;
+        }
+    }
 }
 
 void tcp_engine::signal_write(tcp_flow &f)
@@ -696,6 +805,14 @@ void tcp_engine::on_ack_timer(const boost::system::error_code &ec)
 void tcp_engine::send_fin(tcp_flow &f)
 {
     if (f.fin_sent || f.state == tcp_state::CLOSED) {
+        return;
+    }
+    if ((f.active_write &&
+         f.active_write->offset < f.active_write->total) ||
+        f.snd_una != f.snd_nxt) {
+        // 仍有未发送或未确认数据：推迟 FIN，等数据全部确认后再发送，
+        // 避免 FIN 与在途数据段序列号重叠导致对端丢弃 FIN 或后续数据.
+        f.fin_pending = true;
         return;
     }
     f.fin_sent = true;
@@ -907,7 +1024,13 @@ void tcp_flow_close(std::shared_ptr<tcp_flow> flow)
         }
         f.rx_data.clear();
         f.rx_head = 0;
-        eng->send_fin(f);
+        if (f.snd_una != f.snd_nxt) {
+            // 有未确认数据（在途或已丢失）：此时 FIN 序号会超前于对端
+            // 期望序号而被当作乱序丢弃，改发 RST 快速释放连接.
+            eng->abort_flow(f);
+        } else {
+            eng->send_fin(f);
+        }
     });
 }
 
