@@ -163,6 +163,25 @@ void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
         f->snd_una = f->iss;
         f->state = tcp_state::SYN_RCVD;
         f->peer_wnd = ntohs(th.window);
+        // 解析对端 SYN 通告的 Window Scale（RFC 7323 选项 kind=3, len=3），
+        // 取 min(对端, 本端 7) 作为协商缩放；对端未通告则维持 0（65535 窗口）
+        for (size_t o = sizeof(tcp_header);
+             o + 2 <= hlen && payload[o] != 0;) {
+            const uint8_t kind = payload[o];
+            if (kind == 1) {
+                ++o; // NOP
+                continue;
+            }
+            const uint8_t olen = payload[o + 1];
+            if (olen < 2 || o + olen > hlen) {
+                break; // 非法选项：终止解析
+            }
+            if (kind == 3 && olen == 3) {
+                f->rcv_wnd_scale =
+                    std::min(payload[o + 2], tcp_flow::k_rcv_wnd_scale);
+            }
+            o += olen;
+        }
         f->created_at = std::chrono::steady_clock::now();
         flows_.emplace(key, f);
         if (data_len > 0 && ntohl(th.seq) + 1 == f->rcv_nxt) {
@@ -323,12 +342,10 @@ void tcp_engine::deliver_data(tcp_flow &f, const uint8_t *data, size_t len)
         // 应用已关闭接收侧：数据不再入队，丢弃并推进序号后正常确认，
         // 避免无消费方时 rx_data 持续积压占用缓冲记账.
         f.rcv_nxt += static_cast<uint32_t>(len);
-        if (++f.ack_pending >= 2) {
-            send_ack(f);
-            f.ack_pending = 0;
-        } else {
-            defer_ack(f);
-        }
+        // 每段立即确认：避免 delayed ACK 40ms 兜底在低 cwnd 时把
+        // 一问一答周期拉长到 40ms，拖慢内核发送节奏.
+        send_ack(f);
+        f.ack_pending = 0;
         return;
     }
     if (f.rx_bytes + len > cfg_.max_rx_queue_per_flow ||
@@ -364,25 +381,16 @@ void tcp_engine::deliver_data(tcp_flow &f, const uint8_t *data, size_t len)
         if (n < len) {
             flush_reads(f);
         }
-        if (++f.ack_pending >= 2) {
-            send_ack(f);
-            f.ack_pending = 0;
-        } else {
-            defer_ack(f);
-        }
+        send_ack(f);
+        f.ack_pending = 0;
         return;
     }
     f.rx_data.insert(f.rx_data.end(), data, data + len);
     f.rx_bytes += len;
     f.rcv_nxt += static_cast<uint32_t>(len);
-    // delayed ACK：每 2 个数据段确认一次；单段交由 40ms 定时器兜底，
-    // 期间引擎发送的任何段都会捎带最新 rcv_nxt（见 send_segment）。
-    if (++f.ack_pending >= 2) {
-        send_ack(f);
-        f.ack_pending = 0;
-    } else {
-        defer_ack(f);
-    }
+    // 每段立即确认：ACK 及时性优先，避免 40ms 兜底拖慢内核发送节奏.
+    send_ack(f);
+    f.ack_pending = 0;
     flush_reads(f);
 }
 
@@ -406,6 +414,7 @@ void tcp_engine::flush_reads(tcp_flow &f)
         f.rx_bytes -= copied;
         account_->release(copied);
         op.handler(boost::system::error_code{}, copied);
+        notify_window_updated(f);
     }
     // 头部偏移过大时压缩连续缓冲，保持内存占用与 cache 友好
     if (f.rx_head > 0 &&
@@ -443,6 +452,7 @@ void tcp_engine::flush_ooo(tcp_flow &f)
         // 缓存占用先归还记账，交付路径（rx_data/直投）再重新记账，
         // 总量保持一致；deliver_data 内部的限额判定因此只面对 rx_data.
         account_->release(len);
+        notify_window_updated(f);
         if (len > 0) {
             deliver_data(f, seg.data.data(), len);
         }
@@ -522,7 +532,8 @@ packet_buffer tcp_engine::build_segment(tcp_flow &f, uint32_t seq,
     f.ack_pending = 0;
     const int family = f.key.family;
     const size_t ip_hdr_len = ip_header_size(family);
-    const size_t tcp_hdr_len = with_mss ? 24 : 20;
+    // MSS(4) + Window Scale(3) + NOP(1) 对齐到 8 字节
+    const size_t tcp_hdr_len = with_mss ? 28 : 20;
     const size_t total = ip_hdr_len + tcp_hdr_len + len;
     packet_buffer pkt = writer_.acquire(cfg_.mtu + 64, 64);
     pkt.resize(total);
@@ -536,9 +547,20 @@ packet_buffer tcp_engine::build_segment(tcp_flow &f, uint32_t seq,
     th->dst_port = f.key.src_port;
     th->seq = htonl(seq);
     th->ack = htonl(f.rcv_nxt);
-    th->data_offset = static_cast<uint8_t>((with_mss ? 6 : 5) << 4);
+    th->data_offset = static_cast<uint8_t>((with_mss ? 7 : 5) << 4);
     th->flags = flags;
-    th->window = htons(tcp_flow::fixed_rcv_wnd);
+    // 动态接收窗口：通告 min(固定上限, 剩余接收缓冲)，剩余缓冲耗尽时
+    // 通告 0 施加背压，避免固定大窗口误导对端超发导致队列积压丢包
+    // （对齐 gVisor selectWindow 的窗口-可用缓冲联动）。窗口缩放仅在
+    // 连接建立后生效（RFC 7323）：SYN-ACK 阶段 window 未缩放，协商
+    // 完成后按 rcv_wnd_scale 右移后写入字段（上限 65535 由对端解释）。
+    const uint8_t scale =
+        f.state == tcp_state::SYN_ACK_SENT ? 0 : f.rcv_wnd_scale;
+    uint32_t wnd = current_wnd(f);
+    f.last_wnd_advertised = wnd;
+    const uint32_t scaled = wnd >> scale;
+    th->window =
+        htons(static_cast<uint16_t>(scaled > 65535 ? 65535 : scaled));
     th->checksum = 0;
     th->urgent = 0;
 
@@ -549,6 +571,10 @@ packet_buffer tcp_engine::build_segment(tcp_flow &f, uint32_t seq,
         const size_t mss = this->mss(family);
         opt[2] = static_cast<uint8_t>(mss >> 8);
         opt[3] = static_cast<uint8_t>(mss & 0xff);
+        opt[4] = 3; // kind = Window Scale
+        opt[5] = 3; // len = 3
+        opt[6] = tcp_flow::k_rcv_wnd_scale;
+        opt[7] = 1; // NOP 对齐
     }
     if (len > 0) {
         std::memcpy(base + ip_hdr_len + tcp_hdr_len, payload, len);
@@ -836,6 +862,41 @@ void tcp_engine::signal_write(tcp_flow &f)
 void tcp_engine::send_ack(tcp_flow &f)
 {
     send_segment(f, f.snd_nxt, TCP_ACK, nullptr, 0, false);
+}
+
+uint32_t tcp_engine::current_wnd(const tcp_flow &f) const
+{
+    const uint32_t queued =
+        static_cast<uint32_t>(f.rx_bytes + f.ooo_bytes);
+    uint32_t wnd = tcp_flow::fixed_rcv_wnd;
+    if (cfg_.max_rx_queue_per_flow > queued) {
+        wnd = std::min(
+            wnd, static_cast<uint32_t>(cfg_.max_rx_queue_per_flow - queued));
+    } else {
+        wnd = 0;
+    }
+    const uint32_t mss_bytes = mss(f.key.family);
+    if (wnd < mss_bytes) {
+        wnd = 0; // 小于一个 MSS 通告 0，触发对端窗口探测
+    }
+    return wnd;
+}
+
+void tcp_engine::notify_window_updated(tcp_flow &f)
+{
+    if (f.state == tcp_state::CLOSED) {
+        return;
+    }
+    const uint32_t wnd = current_wnd(f);
+    const uint32_t mss_bytes = mss(f.key.family);
+    const bool was_zero = f.last_wnd_advertised == 0;
+    // 窗口从 0 恢复（>=MSS）或增长超过一个 MSS：主动发 ACK 通告新窗口，
+    // 避免零窗口死锁下仅靠对端窗口探测（指数退避）缓慢恢复.
+    if ((was_zero && wnd >= mss_bytes) ||
+        (!was_zero && wnd > f.last_wnd_advertised + mss_bytes)) {
+        send_ack(f);
+    }
+    f.last_wnd_advertised = wnd;
 }
 
 void tcp_engine::defer_ack(tcp_flow &f)

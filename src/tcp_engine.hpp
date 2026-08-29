@@ -74,7 +74,11 @@ class tcp_engine;
 // TCP 最小控制块：仅维护转发所需的最精简状态
 struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
 {
-    static constexpr uint32_t fixed_rcv_wnd = 65535;
+    // 接收窗口（未缩放字节数）：1MB，与 gVisor 默认接收缓冲对齐。大窗口
+    // 使内核发送方不被 rwnd 限制在 64KB，上传吞吐不再受 窗口/RTT 约束.
+    static constexpr uint32_t fixed_rcv_wnd = 1048576;
+    // 本端通告的 Window Scale（RFC 7323）：1MB 需 scale=7（1<<7 对齐）
+    static constexpr uint8_t k_rcv_wnd_scale = 7;
 
     five_tuple key;
     // 弱引用避免与引擎（flows_ 持有流强引用）构成循环引用；访问前须
@@ -91,6 +95,8 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     // ---- 状态机 ----
     tcp_state state = tcp_state::CLOSED;
     uint16_t peer_wnd = 0; // 客户端通告的接收窗口
+    uint8_t rcv_wnd_scale = 0; // 协商后的接收窗口缩放（min(本端, 对端)）
+    uint32_t last_wnd_advertised = 0; // 最近通告的接收窗口（未缩放），窗口恢复检测
     bool fin_sent = false;
     bool fin_received = false;
     bool fin_pending = false; // 应用已请求关闭发送侧，但仍有未发送/未确认
@@ -264,6 +270,8 @@ private:
                         const tcp_header &th, const uint8_t *data,
                         size_t data_len);
     void send_ack(tcp_flow &f);
+    uint32_t current_wnd(const tcp_flow &f) const;
+    void notify_window_updated(tcp_flow &f);
     void defer_ack(tcp_flow &f);
     void on_ack_timer(const boost::system::error_code &ec);
     void deliver_data(tcp_flow &f, const uint8_t *data, size_t len);

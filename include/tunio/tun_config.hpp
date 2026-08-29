@@ -151,10 +151,11 @@ struct tun_config
     // ---- 资源上限 ----
     size_t max_tcp_flows = 65536;
     size_t max_udp_flows = 65536;
-    size_t max_rx_queue_per_flow = 1024 * 1024;
+    size_t max_rx_queue_per_flow = 8 * 1024 * 1024;
     // 乱序重排缓存：单流最多缓存的乱序段数（超出后丢弃并发 Dup-ACK，
-    // 防止恶意对端用海量乱序段耗尽内存）
-    size_t tcp_ooo_max_segments = 128;
+    // 防止恶意对端用海量乱序段耗尽内存）。需覆盖大窗口（1MB/MSS≈757 段）
+    // 下并发读产生的整窗乱序，否则乱序段被拒导致重传风暴.
+    size_t tcp_ooo_max_segments = 4096;
     // 单写模型下为兼容占位：发送背压由"每流单写 + 设备写回调"约束，
     // 该字段不再参与发送路径判定.
     size_t max_tx_queue_per_flow = 1024 * 1024;
