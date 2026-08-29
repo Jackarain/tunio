@@ -395,7 +395,7 @@ private:
 
 #### 5.2 数据接收与转发
 
-- **设备读取**：`tunio` 内部读泵以 Strand 串行执行 `async_read_packet`。注入设备为字节流（如 socketpair）时，一次读取可能粘合或拆散多个报文：引擎按 IP 头长度逐包解析，未凑成完整报文的尾部字节保留在 `packet_buffer` 中（`rewind`），与下一次读取拼接后继续解析；真实 TUN 设备为包语义，天然每次恰好一个报文。
+- **设备读取**：`tunio` 内部读泵以 Strand 串行执行 `async_read_packet`。TUN 设备为包语义，每次读取恰为一个完整 IP 报文，读取成功后直接按报文长度校验并交给协议引擎，无需按流拆包拼接（注入设备同样应按包语义提供完整报文）。
 - **IP 分片策略**：引擎不做 IP 重组，收到 IPv4 分片包（带分片偏移或 MF 标志）或带 Fragment 扩展头（Next Header = 44）的 IPv6 报文时直接丢弃并计入 `rx_dropped`。
 
 - **顺序检查**：收到数据段后，检查 `SEQ == rcv_nxt`。
