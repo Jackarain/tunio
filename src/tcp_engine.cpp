@@ -160,11 +160,12 @@ void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
         f->snd_nxt = f->iss;
         f->snd_una = f->iss;
         f->state = tcp_state::SYN_RCVD;
-        // 解析对端 SYN 通告的 Window Scale（RFC 7323 选项 kind=3, len=3），
-        // 取 min(对端, 本端 7) 作为协商缩放；对端未通告则维持 0（不缩放）。
-        // 协商值同时用于两个方向：通告本端窗口时右移（rcv），解释对端
-        // 窗口字段时左移（snd）。
+        // 解析对端 SYN 通告的 Window Scale（RFC 7323 选项 kind=3, len=3）。
+        // 两方向缩放独立（RFC 7323 §2.2）：解释对端窗口字段时左移对端通告
+        // 原值（snd）；本端广告窗口时右移本端通告值（rcv，固定 7）。对端未
+        // 通告或值 >14（RFC 7323 规定忽略）时视为未启用缩放，本端也不缩放。
         uint8_t wscale = 0;
+        bool wscale_ok = false;
         for (size_t o = sizeof(tcp_header);
              o + 2 <= hlen && payload[o] != 0;) {
             const uint8_t kind = payload[o];
@@ -177,12 +178,17 @@ void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
                 break; // 非法选项：终止解析
             }
             if (kind == 3 && olen == 3) {
-                wscale = std::min(payload[o + 2], tcp_flow::k_rcv_wnd_scale);
+                if (payload[o + 2] <= 14) {
+                    wscale = payload[o + 2];
+                    wscale_ok = true;
+                }
             }
             o += olen;
         }
-        f->rcv_wnd_scale = wscale;
-        f->snd_wnd_scale = wscale;
+        f->wscale_ok = wscale_ok;
+        f->snd_wnd_scale = wscale_ok ? wscale : 0;
+        f->rcv_wnd_scale =
+            wscale_ok ? tcp_flow::k_rcv_wnd_scale : 0;
         // SYN 段窗口字段本身不缩放（RFC 7323 §2.2），按原值记录
         f->peer_wnd = ntohs(th.window);
         f->created_at = std::chrono::steady_clock::now();
@@ -570,10 +576,15 @@ packet_buffer tcp_engine::build_segment(tcp_flow &f, uint32_t seq,
         const size_t mss = this->mss(family);
         opt[2] = static_cast<uint8_t>(mss >> 8);
         opt[3] = static_cast<uint8_t>(mss & 0xff);
-        opt[4] = 3; // kind = Window Scale
-        opt[5] = 3; // len = 3
-        opt[6] = tcp_flow::k_rcv_wnd_scale;
-        opt[7] = 1; // NOP 对齐
+        // 对端未通告 WS 时 SYN-ACK 不携带 Window Scale 选项（RFC 7323：
+        // 收到对端 WS 选项才在本端 SYN-ACK 中通告），避免老栈按未缩放
+        // 解释本端窗口字段时被 7 倍放大导致超发.
+        if (f.wscale_ok) {
+            opt[4] = 3; // kind = Window Scale
+            opt[5] = 3; // len = 3
+            opt[6] = tcp_flow::k_rcv_wnd_scale;
+            opt[7] = 1; // NOP 对齐
+        }
     }
     if (len > 0) {
         std::memcpy(base + ip_hdr_len + tcp_hdr_len, payload, len);

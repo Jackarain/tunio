@@ -95,9 +95,12 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
 
     // ---- 状态机 ----
     tcp_state state = tcp_state::CLOSED;
-    uint32_t peer_wnd = 0; // 客户端通告的接收窗口（按协商 scale 放大后的实际值）
-    uint8_t snd_wnd_scale = 0; // 解释对端窗口字段时左移的缩放（min(对端, 本端 7)）
-    uint8_t rcv_wnd_scale = 0; // 协商后的接收窗口缩放（min(本端, 对端)）
+    uint32_t peer_wnd = 0; // 客户端通告的接收窗口（按对端 scale 放大后的实际值）
+    // RFC 7323 §2.2 两方向缩放独立：解释对端窗口字段时左移对端通告原值
+    uint8_t snd_wnd_scale = 0;
+    // 本端通告的窗口缩放：广告窗口字段时右移本端通告值（对端通告 WS 时为 7）
+    uint8_t rcv_wnd_scale = 0;
+    bool wscale_ok = false; // 对端 SYN 通告了有效 WS 选项（值 0-14）
     uint32_t last_wnd_advertised = 0; // 最近通告的接收窗口（未缩放），窗口恢复检测
     bool fin_sent = false;
     bool fin_received = false;

@@ -314,9 +314,11 @@ inline std::vector<uint8_t> make_tcp(uint32_t src, uint32_t dst, uint16_t sport,
                                      uint16_t dport, uint8_t flags,
                                      uint32_t seq, uint32_t ack, uint16_t win,
                                      const std::vector<uint8_t> &data,
-                                     bool mss = false)
+                                     bool mss = false, int wscale = -1)
 {
-    const size_t hlen = mss ? 24 : 20;
+    // wscale >= 0 时携带 Window Scale 选项（RFC 7323 kind=3, len=3）
+    const bool with_ws = wscale >= 0;
+    const size_t hlen = 20 + (mss ? 4 : 0) + (with_ws ? 4 : 0);
     std::vector<uint8_t> seg(hlen + data.size(), 0);
     seg[0] = static_cast<uint8_t>(sport >> 8);
     seg[1] = static_cast<uint8_t>(sport & 0xff);
@@ -325,15 +327,24 @@ inline std::vector<uint8_t> make_tcp(uint32_t src, uint32_t dst, uint16_t sport,
     uint32_t s = htonl(seq), a = htonl(ack);
     std::memcpy(&seg[4], &s, 4);
     std::memcpy(&seg[8], &a, 4);
-    seg[12] = static_cast<uint8_t>((mss ? 6 : 5) << 4);
+    seg[12] = static_cast<uint8_t>((hlen / 4) << 4);
     seg[13] = flags;
     seg[14] = static_cast<uint8_t>(win >> 8);
     seg[15] = static_cast<uint8_t>(win & 0xff);
+    size_t opt = 20;
     if (mss) {
-        seg[20] = 2; // MSS 选项
-        seg[21] = 4;
-        seg[22] = 0x05;
-        seg[23] = 0xb4;
+        seg[opt] = 2; // MSS 选项
+        seg[opt + 1] = 4;
+        seg[opt + 2] = 0x05;
+        seg[opt + 3] = 0xb4;
+        opt += 4;
+    }
+    if (with_ws) {
+        seg[opt] = 3; // Window Scale 选项
+        seg[opt + 1] = 3;
+        seg[opt + 2] = static_cast<uint8_t>(wscale);
+        seg[opt + 3] = 1; // NOP 对齐
+        opt += 4;
     }
     if (!data.empty()) {
         std::memcpy(seg.data() + hlen, data.data(), data.size());

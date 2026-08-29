@@ -272,6 +272,362 @@ static void test_fin_retransmit_reacked()
     assert((ti.flags & 0x10) != 0 && ti.ack == 3002);
 }
 
+// 解析 SYN-ACK 中的 Window Scale 选项（kind=3, len=3）；返回是否携带及值
+static bool synack_wscale(const std::vector<uint8_t> &pkt, int *out_ws)
+{
+    ip_hdr_info ipi;
+    if (!parse_ip(pkt, ipi)) {
+        return false;
+    }
+    const uint8_t *tp = ipi.payload;
+    const size_t hlen = static_cast<size_t>((tp[12] >> 4) * 4);
+    for (size_t o = 20; o + 2 <= hlen && o < ipi.payload_len;) {
+        const uint8_t kind = tp[o];
+        if (kind == 0) {
+            break; // EOL
+        }
+        if (kind == 1) {
+            ++o; // NOP
+            continue;
+        }
+        const uint8_t olen = tp[o + 1];
+        if (olen < 2 || o + olen > hlen) {
+            break;
+        }
+        if (kind == 3 && olen == 3) {
+            *out_ws = tp[o + 2];
+            return true;
+        }
+        o += olen;
+    }
+    return false;
+}
+
+// 读取引擎发出的数据段并累计载荷字节；返回累计值
+static size_t drain_data_segments(engine_env &env, std::vector<uint8_t> &pkt,
+                                  ip_hdr_info &ipi, tcp_hdr_info &ti,
+                                  size_t target)
+{
+    size_t sent = 0;
+    while (sent < target) {
+        if (!env.dev.read_packet(pkt)) {
+            throw std::runtime_error("no data segment");
+        }
+        if (!verify_packet(pkt)) {
+            throw std::runtime_error("verify_packet failed");
+        }
+        if (!parse_ip(pkt, ipi)) {
+            throw std::runtime_error("parse_ip failed");
+        }
+        if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+            throw std::runtime_error("parse_tcp failed");
+        }
+        if (ti.len == 0) {
+            throw std::runtime_error("unexpected control segment");
+        }
+        sent += ti.len;
+    }
+    return sent;
+}
+
+static void test_wscale_negotiation()
+{
+    // 场景 1: 对端通告 WS=3（macOS/iOS 常见）。本端 SYN-ACK 通告 7；对端
+    // 窗口字段按对端通告原值 3 放大（1000 << 3 = 8000）后才限发送.
+    {
+        engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+                       std::chrono::seconds(30), 1024 * 1024,
+                       std::chrono::milliseconds(5000),
+                       std::chrono::milliseconds(5000));
+        auto &io = env.io;
+        tun_tcp_acceptor acceptor(env.engine);
+        tun_tcp_socket peer(io.get_executor());
+        std::promise<boost::system::error_code> accept_done;
+        acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+            if (!ec) {
+                peer.accept();
+            }
+            accept_done.set_value(ec);
+        });
+
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12380, DEST_PORT, 0x02, 5000,
+                              0, 4096, {}, true, 3));
+        std::vector<uint8_t> pkt;
+        if (!env.dev.read_packet(pkt)) {
+            throw std::runtime_error("no SYN-ACK");
+        }
+        ip_hdr_info ipi;
+        if (!parse_ip(pkt, ipi)) {
+            throw std::runtime_error("parse_ip failed");
+        }
+        tcp_hdr_info ti;
+        if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+            throw std::runtime_error("parse_tcp failed");
+        }
+        assert((ti.flags & 0x12) == 0x12);
+        int ws = -1;
+        assert(synack_wscale(pkt, &ws) && ws == 7); // 本端固定通告 7
+        const uint32_t engine_iss = ti.seq;
+
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12380, DEST_PORT, 0x10, 5001,
+                              engine_iss + 1, 1000, {}, false, 3));
+        future_get(accept_done.get_future());
+
+        std::promise<std::pair<boost::system::error_code, size_t>> write_done;
+        std::string payload(100000, 'x');
+        peer.async_write_some(
+            net::buffer(payload), [&](boost::system::error_code ec, size_t n) {
+                write_done.set_value({ec, n});
+            });
+
+        // 窗口 1000<<3=8000：引擎发送 8000 字节后挂起，不得超发
+        const size_t sent = drain_data_segments(env, pkt, ipi, ti, 8000);
+        assert(sent == 8000);
+        if (env.dev.read_packet(pkt, 200)) {
+            throw std::runtime_error("over-sent beyond scaled peer window");
+        }
+
+        // 客户端 ACK 推进并放大窗口 -> 恢复发送，全部发出后最终 ACK 完成写
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12380, DEST_PORT, 0x10, 5001,
+                              engine_iss + 1 + static_cast<uint32_t>(sent),
+                              32767, {}, false, 3));
+        const size_t sent2 = drain_data_segments(env, pkt, ipi, ti, 92000);
+        assert(sent + sent2 == 100000);
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12380, DEST_PORT, 0x10, 5001,
+                              engine_iss + 1 + 100000, 32767, {}, false, 3));
+        auto [wec, wn] = future_get(write_done.get_future(), 8000);
+        assert(!wec && wn == 100000);
+        peer.close();
+    }
+
+    // 场景 2: 对端未通告 WS。本端 SYN-ACK 不携带 WS 选项；对端窗口字段
+    // 不缩放（1000 原值），引擎发送 1000 字节后挂起.
+    {
+        engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+                       std::chrono::seconds(30), 1024 * 1024,
+                       std::chrono::milliseconds(5000),
+                       std::chrono::milliseconds(5000));
+        auto &io = env.io;
+        tun_tcp_acceptor acceptor(env.engine);
+        tun_tcp_socket peer(io.get_executor());
+        std::promise<boost::system::error_code> accept_done;
+        acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+            if (!ec) {
+                peer.accept();
+            }
+            accept_done.set_value(ec);
+        });
+
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12381, DEST_PORT, 0x02, 6000,
+                              0, 4096, {}, true));
+        std::vector<uint8_t> pkt;
+        if (!env.dev.read_packet(pkt)) {
+            throw std::runtime_error("no SYN-ACK");
+        }
+        ip_hdr_info ipi;
+        if (!parse_ip(pkt, ipi)) {
+            throw std::runtime_error("parse_ip failed");
+        }
+        tcp_hdr_info ti;
+        if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+            throw std::runtime_error("parse_tcp failed");
+        }
+        int ws = -1;
+        assert(!synack_wscale(pkt, &ws)); // 未协商: SYN-ACK 不带 WS
+        const uint32_t engine_iss = ti.seq;
+
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12381, DEST_PORT, 0x10, 6001,
+                              engine_iss + 1, 1000, {}));
+        future_get(accept_done.get_future());
+
+        std::promise<std::pair<boost::system::error_code, size_t>> write_done;
+        std::string payload(100000, 'x');
+        peer.async_write_some(
+            net::buffer(payload), [&](boost::system::error_code ec, size_t n) {
+                write_done.set_value({ec, n});
+            });
+
+        const size_t sent = drain_data_segments(env, pkt, ipi, ti, 1000);
+        assert(sent == 1000);
+        if (env.dev.read_packet(pkt, 200)) {
+            throw std::runtime_error("over-sent beyond unscaled peer window");
+        }
+        // 未协商 WS：窗口字段上限 65535，逐段 ACK 推进（对端实际行为）
+        size_t acked = sent;
+        while (acked < 100000) {
+            // 引擎挂起在窗口耗尽时：先 ACK 推进窗口，再读新数据
+            env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12381, DEST_PORT, 0x10,
+                                  6001, engine_iss + 1 +
+                                           static_cast<uint32_t>(acked),
+                                  65535, {}));
+            if (!env.dev.read_packet(pkt)) {
+                throw std::runtime_error("no data segment");
+            }
+            if (!verify_packet(pkt)) {
+                throw std::runtime_error("verify_packet failed");
+            }
+            if (!parse_ip(pkt, ipi)) {
+                throw std::runtime_error("parse_ip failed");
+            }
+            if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+                throw std::runtime_error("parse_tcp failed");
+            }
+            if (ti.len == 0) {
+                throw std::runtime_error("unexpected control segment");
+            }
+            acked += ti.len;
+        }
+        assert(acked == 100000);
+        // 循环末次读到的段尚未确认：补最终 ACK 完成写操作
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12381, DEST_PORT, 0x10,
+                              6001, engine_iss + 1 + 100000, 65535, {}));
+        auto [wec, wn] = future_get(write_done.get_future(), 8000);
+        assert(!wec && wn == 100000);
+        peer.close();
+    }
+
+    // 场景 3: 对端通告 WS=8（> 本端 7）。本端 SYN-ACK 仍通告 7；解释对端
+    // 窗口字段用对端原值 8（1000 << 8 = 256000），不截断到本端 7.
+    {
+        engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+                       std::chrono::seconds(30), 1024 * 1024,
+                       std::chrono::milliseconds(5000),
+                       std::chrono::milliseconds(5000));
+        auto &io = env.io;
+        tun_tcp_acceptor acceptor(env.engine);
+        tun_tcp_socket peer(io.get_executor());
+        std::promise<boost::system::error_code> accept_done;
+        acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+            if (!ec) {
+                peer.accept();
+            }
+            accept_done.set_value(ec);
+        });
+
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12382, DEST_PORT, 0x02, 7000,
+                              0, 4096, {}, true, 8));
+        std::vector<uint8_t> pkt;
+        if (!env.dev.read_packet(pkt)) {
+            throw std::runtime_error("no SYN-ACK");
+        }
+        ip_hdr_info ipi;
+        if (!parse_ip(pkt, ipi)) {
+            throw std::runtime_error("parse_ip failed");
+        }
+        tcp_hdr_info ti;
+        if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+            throw std::runtime_error("parse_tcp failed");
+        }
+        int ws = -1;
+        assert(synack_wscale(pkt, &ws) && ws == 7); // 本端始终通告 7
+        const uint32_t engine_iss = ti.seq;
+
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12382, DEST_PORT, 0x10, 7001,
+                              engine_iss + 1, 1000, {}, false, 8));
+        future_get(accept_done.get_future());
+
+        std::promise<std::pair<boost::system::error_code, size_t>> write_done;
+        std::string payload(100000, 'x');
+        peer.async_write_some(
+            net::buffer(payload), [&](boost::system::error_code ec, size_t n) {
+                write_done.set_value({ec, n});
+            });
+
+        // 窗口 256000 > 100000：全部数据一次发出，无需窗口恢复
+        drain_data_segments(env, pkt, ipi, ti, 100000);
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12382, DEST_PORT, 0x10, 7001,
+                              engine_iss + 1 + 100000, 32767, {}, false, 8));
+        auto [wec, wn] = future_get(write_done.get_future(), 8000);
+        assert(!wec && wn == 100000);
+        peer.close();
+    }
+
+    // 场景 4: 对端通告 WS=15（RFC 7323 规定 >14 视为无效，忽略该选项）。
+    // 本端 SYN-ACK 不带 WS；对端窗口字段不缩放.
+    {
+        engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+                       std::chrono::seconds(30), 1024 * 1024,
+                       std::chrono::milliseconds(5000),
+                       std::chrono::milliseconds(5000));
+        auto &io = env.io;
+        tun_tcp_acceptor acceptor(env.engine);
+        tun_tcp_socket peer(io.get_executor());
+        std::promise<boost::system::error_code> accept_done;
+        acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+            if (!ec) {
+                peer.accept();
+            }
+            accept_done.set_value(ec);
+        });
+
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12383, DEST_PORT, 0x02, 8000,
+                              0, 4096, {}, true, 15));
+        std::vector<uint8_t> pkt;
+        if (!env.dev.read_packet(pkt)) {
+            throw std::runtime_error("no SYN-ACK");
+        }
+        ip_hdr_info ipi;
+        if (!parse_ip(pkt, ipi)) {
+            throw std::runtime_error("parse_ip failed");
+        }
+        tcp_hdr_info ti;
+        if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+            throw std::runtime_error("parse_tcp failed");
+        }
+        int ws = -1;
+        assert(!synack_wscale(pkt, &ws)); // 无效 WS 按未通告处理
+        const uint32_t engine_iss = ti.seq;
+
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12383, DEST_PORT, 0x10, 8001,
+                              engine_iss + 1, 1000, {}));
+        future_get(accept_done.get_future());
+
+        std::promise<std::pair<boost::system::error_code, size_t>> write_done;
+        std::string payload(100000, 'x');
+        peer.async_write_some(
+            net::buffer(payload), [&](boost::system::error_code ec, size_t n) {
+                write_done.set_value({ec, n});
+            });
+
+        const size_t sent = drain_data_segments(env, pkt, ipi, ti, 1000);
+        assert(sent == 1000);
+        if (env.dev.read_packet(pkt, 200)) {
+            throw std::runtime_error("over-sent with invalid WS");
+        }
+        size_t acked = sent;
+        while (acked < 100000) {
+            // 引擎挂起在窗口耗尽时：先 ACK 推进窗口，再读新数据
+            env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12383, DEST_PORT, 0x10,
+                                  8001, engine_iss + 1 +
+                                           static_cast<uint32_t>(acked),
+                                  65535, {}));
+            if (!env.dev.read_packet(pkt)) {
+                throw std::runtime_error("no data segment");
+            }
+            if (!verify_packet(pkt)) {
+                throw std::runtime_error("verify_packet failed");
+            }
+            if (!parse_ip(pkt, ipi)) {
+                throw std::runtime_error("parse_ip failed");
+            }
+            if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+                throw std::runtime_error("parse_tcp failed");
+            }
+            if (ti.len == 0) {
+                throw std::runtime_error("unexpected control segment");
+            }
+            acked += ti.len;
+        }
+        assert(acked == 100000);
+        // 循环末次读到的段尚未确认：补最终 ACK 完成写操作
+        env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12383, DEST_PORT, 0x10,
+                              8001, engine_iss + 1 + 100000, 65535, {}));
+        auto [wec, wn] = future_get(write_done.get_future(), 8000);
+        assert(!wec && wn == 100000);
+        peer.close();
+    }
+}
+
 static void test_zero_window_flow_control()
 {
     engine_env env;
@@ -2200,6 +2556,7 @@ int main()
     test_fin_retransmit_reacked();
     test_zero_window_flow_control();
     test_zero_window_persist_probe();
+    test_wscale_negotiation();
     test_syn_with_data();
     test_rst();
     test_app_reset();
