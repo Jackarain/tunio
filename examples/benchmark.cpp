@@ -213,7 +213,9 @@ public:
     fake_device()
     {
         int sv[2];
-        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+        // SOCK_DGRAM：一次 read 恰为一个完整报文，与真实 TUN 包语义一致，
+        // 引擎按包语义读取（无流拆包），流式注入会出现半包/粘包随机丢包.
+        if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) {
             throw std::runtime_error("socketpair failed");
         }
         fd_ = sv[0];
@@ -442,7 +444,6 @@ static void bench_tcp_write(long long n, long long warmup)
     measure("tcp_write_some", n, warmup, [&] {
         peer.async_write_some(net::buffer(wbuf), [&](boost::system::error_code,
                                                      size_t) { done.post(); });
-        done.wait();
         if (!env.dev.read_packet(pkt)) {
             throw std::runtime_error("no tcp data segment");
         }
@@ -454,6 +455,7 @@ static void bench_tcp_write(long long n, long long warmup)
         std::memcpy(ack_seg.data() + 28, &a, 4);
         refresh_tcp_checksum(ack_seg, CLIENT_IP, DEST_IP);
         env.dev.send(ack_seg);
+        done.wait();
     });
 }
 
