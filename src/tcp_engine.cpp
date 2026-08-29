@@ -160,9 +160,11 @@ void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
         f->snd_nxt = f->iss;
         f->snd_una = f->iss;
         f->state = tcp_state::SYN_RCVD;
-        f->peer_wnd = ntohs(th.window);
         // 解析对端 SYN 通告的 Window Scale（RFC 7323 选项 kind=3, len=3），
-        // 取 min(对端, 本端 7) 作为协商缩放；对端未通告则维持 0（65535 窗口）
+        // 取 min(对端, 本端 7) 作为协商缩放；对端未通告则维持 0（不缩放）。
+        // 协商值同时用于两个方向：通告本端窗口时右移（rcv），解释对端
+        // 窗口字段时左移（snd）。
+        uint8_t wscale = 0;
         for (size_t o = sizeof(tcp_header);
              o + 2 <= hlen && payload[o] != 0;) {
             const uint8_t kind = payload[o];
@@ -175,11 +177,14 @@ void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
                 break; // 非法选项：终止解析
             }
             if (kind == 3 && olen == 3) {
-                f->rcv_wnd_scale =
-                    std::min(payload[o + 2], tcp_flow::k_rcv_wnd_scale);
+                wscale = std::min(payload[o + 2], tcp_flow::k_rcv_wnd_scale);
             }
             o += olen;
         }
+        f->rcv_wnd_scale = wscale;
+        f->snd_wnd_scale = wscale;
+        // SYN 段窗口字段本身不缩放（RFC 7323 §2.2），按原值记录
+        f->peer_wnd = ntohs(th.window);
         f->created_at = std::chrono::steady_clock::now();
         flows_.emplace(key, f);
         if (data_len > 0 && ntohl(th.seq) + 1 == f->rcv_nxt) {
@@ -257,7 +262,8 @@ void tcp_engine::handle_segment(const std::shared_ptr<tcp_flow> &f,
             return;
         }
     }
-    f->peer_wnd = wnd;
+    // 对端通告的窗口字段按协商 scale 放大后才是实际可用发送窗口（RFC 7323）
+    f->peer_wnd = static_cast<uint32_t>(wnd) << f->snd_wnd_scale;
 
     if (flags & TCP_RST) {
         f->rst = true;
@@ -774,7 +780,9 @@ net::awaitable<void> tcp_engine::write_loop(std::shared_ptr<tcp_flow> f)
                         break;
                     }
                     if (flow.snd_una != write_end) {
-                        retransmit_unacked(flow, SIZE_MAX);
+                        // 重传量按对端当前窗口限幅，避免窗口收缩后超窗
+                        // 加重网络负担；窗口足够时等效全量重传
+                        retransmit_unacked(flow, flow.peer_wnd);
                     }
                     rto = std::min(rto * 2, rto_max);
                 } else {
