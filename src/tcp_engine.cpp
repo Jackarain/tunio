@@ -665,6 +665,12 @@ net::awaitable<void> tcp_engine::write_loop(std::shared_ptr<tcp_flow> f)
             // 窗口耗尽或数据已全部发出：等待 ACK 推进窗口，或 RTO 超时
             // 重传未确认数据（链路丢段时 snd_una 永不推进，若无重传将
             // 永久挂起，大流量传输即死锁）.
+            if (flow.snd_una != last_una) {
+                // 上次检查后 ACK 已推进发送序号：无需等待（写入期间到达的
+                // ACK 可能因写通道无等待者而错过信号，直接重查避免 RTO）.
+                last_una = flow.snd_una;
+                continue;
+            }
             rto_timer.expires_after(rto);
             auto result = co_await (
                 flow.write_ch->async_receive(
