@@ -356,7 +356,7 @@ static void test_zero_window_persist_probe()
     // 零窗口持久计时器：客户端通告窗口 0 且不主动发窗口更新时，引擎必须
     // 周期性发送窗口探测；探测字节被确认后写操作完成且不丢失/重复数据.
     engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
-                   std::chrono::seconds(30), 1024 * 1024, 1024 * 1024,
+                   std::chrono::seconds(30), 1024 * 1024,
                    std::chrono::milliseconds(150));
     auto &io = env.io;
     tun_tcp_acceptor acceptor(env.engine);
@@ -1010,7 +1010,7 @@ static void test_write_queue_limit()
     // 单写模型：窗口为 0 时写操作挂起等待窗口更新，
     // 上一写未完成时重叠写立即返回 no_buffer_space.
     engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
-                   std::chrono::seconds(30), 1024 * 1024, 16);
+                   std::chrono::seconds(30), 1024 * 1024);
     auto &io = env.io;
     tun_tcp_acceptor acceptor(env.engine);
     tun_tcp_socket peer(io.get_executor());
@@ -1093,7 +1093,7 @@ static void test_write_large_single_op()
     // 单写模型：单次写入可大于队列上限，数据按 MSS 分片全部发送后
     // 才回调，不受"队列空间"限制（无排队字节记账）.
     engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
-                   std::chrono::seconds(30), 1024 * 1024, 16);
+                   std::chrono::seconds(30), 1024 * 1024);
     auto &io = env.io;
     tun_tcp_acceptor acceptor(env.engine);
     tun_tcp_socket peer(io.get_executor());
@@ -1240,7 +1240,7 @@ static void test_rto_retransmit()
     // RTO 重传：数据段在链路丢失（对端不 ACK）时，引擎按 RTO 周期重传
     // 未确认数据（相同序号与载荷），确认后写完成且不再重传.
     engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
-                   std::chrono::seconds(30), 1024 * 1024, 1024 * 1024,
+                   std::chrono::seconds(30), 1024 * 1024,
                    std::chrono::milliseconds(5000),
                    std::chrono::milliseconds(50));
     auto &io = env.io;
@@ -1485,7 +1485,7 @@ static void test_rto_exhaustion()
     // RTO 重传超限：对端始终不确认，重传次数超过上限后引擎发送 RST
     // 并以 connection_reset 完成挂起写，避免连接永久悬挂.
     engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
-                   std::chrono::seconds(30), 1024 * 1024, 1024 * 1024,
+                   std::chrono::seconds(30), 1024 * 1024,
                    std::chrono::milliseconds(5000),
                    std::chrono::milliseconds(20), 3);
     auto &io = env.io;

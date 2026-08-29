@@ -156,9 +156,6 @@ struct tun_config
     // 防止恶意对端用海量乱序段耗尽内存）。需覆盖大窗口（1MB/MSS≈757 段）
     // 下并发读产生的整窗乱序，否则乱序段被拒导致重传风暴.
     size_t tcp_ooo_max_segments = 4096;
-    // 单写模型下为兼容占位：发送背压由"每流单写 + 设备写回调"约束，
-    // 该字段不再参与发送路径判定.
-    size_t max_tx_queue_per_flow = 1024 * 1024;
     size_t max_total_buffer = 512 * 1024 * 1024;
 
     // ---- 超时策略 ----
@@ -177,10 +174,6 @@ struct tun_config
     std::chrono::milliseconds tcp_rto_timeout{200};
     int tcp_rto_max_retransmits = 8;
 
-    // ---- 可选 Checksum 控制 ----
-    // 用户态 TUN 收发的报文必须由本引擎计算校验和，该开关保留用于兼容设计文档；
-    // 引擎始终计算并校验 IP/TCP/UDP 校验和。当前实现不使用该字段（兼容占位）。
-    [[maybe_unused]] bool enable_checksum_offload = true;
 };
 
 // 引擎统计信息
