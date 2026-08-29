@@ -127,7 +127,7 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     uint8_t ack_pending = 0; // 待确认的数据段计数
     bool ack_deferred = false;
 
-    // ---- 挂起操作 ----
+    // ---- 挂起读操作（单读模型：同一时刻至多一个未完成读）----
     struct read_op
     {
         // 小缓冲优化：单缓冲区（最常见调用形式）在栈上存储，避免堆分配
@@ -136,7 +136,7 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
         net::any_completion_handler<void(boost::system::error_code, size_t)>
             handler;
     };
-    std::deque<read_op> pending_reads;
+    std::optional<read_op> active_read;
 
     // ---- 挂起写操作（单写模型：同一时刻至多一个未完成写）----
     struct write_op
@@ -315,8 +315,13 @@ void tcp_flow_start_read(std::shared_ptr<tcp_flow> flow,
             handler(boost::system::error_code{}, 0);
             return;
         }
-        flow.pending_reads.push_back(
-            {std::move(buffers), total, std::move(handler)});
+        if (flow.active_read) {
+            // 单读模型：上一读操作尚未完成，拒绝重叠读以施加背压
+            handler(boost::system::error_code(net::error::no_buffer_space), 0);
+            return;
+        }
+        flow.active_read = tcp_flow::read_op{std::move(buffers), total,
+                                             std::move(handler)};
         eng->flush_reads(flow);
     });
 }

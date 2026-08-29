@@ -358,9 +358,9 @@ void tcp_engine::deliver_data(tcp_flow &f, const uint8_t *data, size_t len)
     }
     // 直投：接收缓冲无积压且用户读操作等待时，跳过 rx_data 中间缓冲，
     // 直接拷入用户缓冲，减少一次全量 memcpy。
-    if (f.rx_data.empty() && !f.pending_reads.empty()) {
-        auto op = std::move(f.pending_reads.front());
-        f.pending_reads.pop_front();
+    if (f.rx_data.empty() && f.active_read) {
+        auto op = std::move(*f.active_read);
+        f.active_read.reset();
         const size_t n = std::min(op.total, len);
         size_t copied = 0;
         for (auto &buf : op.buffers) {
@@ -407,9 +407,9 @@ void tcp_engine::deliver_data(tcp_flow &f, const uint8_t *data, size_t len)
 
 void tcp_engine::flush_reads(tcp_flow &f)
 {
-    while (!f.pending_reads.empty() && f.rx_bytes > 0) {
-        auto op = std::move(f.pending_reads.front());
-        f.pending_reads.pop_front();
+    if (f.active_read && f.rx_bytes > 0) {
+        auto op = std::move(*f.active_read);
+        f.active_read.reset();
         const size_t n = std::min(op.total, f.rx_bytes);
         size_t copied = 0;
         for (auto &buf : op.buffers) {
@@ -437,9 +437,9 @@ void tcp_engine::flush_reads(tcp_flow &f)
     // 数据耗尽后处理 EOF：按 Asio 语义以 error::eof 完成读操作（对端 FIN），
     // 避免以 (success, 0) 交付导致调用方无法区分 EOF 与空读，进而死循环.
     if (f.rx_bytes == 0 && f.fin_received) {
-        while (!f.pending_reads.empty()) {
-            auto op = std::move(f.pending_reads.front());
-            f.pending_reads.pop_front();
+        if (f.active_read) {
+            auto op = std::move(*f.active_read);
+            f.active_read.reset();
             op.handler(net::error::eof, 0);
         }
     }
@@ -881,10 +881,11 @@ void tcp_engine::close_flow(tcp_flow &f, const boost::system::error_code &err)
     if (f.state == tcp_state::CLOSED) {
         return;
     }
-    for (auto &op : f.pending_reads) {
+    if (f.active_read) {
+        auto op = std::move(*f.active_read);
+        f.active_read.reset();
         op.handler(err, 0);
     }
-    f.pending_reads.clear();
     if (f.active_write) {
         auto h = std::move(f.active_write->handler);
         f.active_write.reset();
@@ -982,11 +983,12 @@ void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow)
             return;
         }
         f.rx_shutdown = true;
-        for (auto &op : f.pending_reads) {
+        if (f.active_read) {
+            auto op = std::move(*f.active_read);
+            f.active_read.reset();
             op.handler(boost::system::error_code(net::error::operation_aborted),
                        0);
         }
-        f.pending_reads.clear();
         if (f.rx_bytes > 0) {
             eng->account().release(f.rx_bytes);
             f.rx_bytes = 0;
@@ -1011,11 +1013,12 @@ void tcp_flow_close(std::shared_ptr<tcp_flow> flow)
             return;
         }
         f.app_closed = true;
-        for (auto &op : f.pending_reads) {
+        if (f.active_read) {
+            auto op = std::move(*f.active_read);
+            f.active_read.reset();
             op.handler(boost::system::error_code(net::error::operation_aborted),
                        0);
         }
-        f.pending_reads.clear();
         if (f.active_write) {
             auto h = std::move(f.active_write->handler);
             f.active_write.reset();
