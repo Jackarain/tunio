@@ -51,6 +51,7 @@ struct options
     std::string proxy_host = "127.0.0.1";
     uint16_t proxy_port = 1080;
     bool udp = true;
+    bool utun_prefix = false;
     int inject_fd = -1;
     size_t threads = 1;
 };
@@ -66,6 +67,7 @@ void usage(const char *prog)
         << "  --ip6-prefix <len>     IPv6 前缀长度（默认 64）\n"
         << "  --mtu <bytes>          MTU（默认 1500）\n"
         << "  --proxy <host:port>    SOCKS5 代理地址（默认 127.0.0.1:1080）\n"
+        << "  --utun-prefix          注入的 fd 为 macOS utun（读写带 4 字节家族前缀）\n"
         << "  --no-udp               禁用 UDP 转发\n"
         << "  --inject-fd <fd>       注入外部已打开的 TUN 文件描述符\n"
         << "  --threads <n>          io_context 线程数（默认 1）\n";
@@ -103,6 +105,8 @@ options parse_args(int argc, char **argv)
             opt.proxy_host = val.substr(0, pos);
             opt.proxy_port =
                 static_cast<uint16_t>(std::stoul(val.substr(pos + 1)));
+        } else if (arg == "--utun-prefix") {
+            opt.utun_prefix = true;
         } else if (arg == "--no-udp") {
             opt.udp = false;
         } else if (arg == "--inject-fd") {
@@ -302,6 +306,7 @@ int main(int argc, char **argv)
     if (opt.inject_fd >= 0) {
         cfg.external_handle = opt.inject_fd;
         cfg.external_mtu = opt.mtu;
+        cfg.utun_prefix = opt.utun_prefix;
     }
 
     boost::system::error_code ec;
