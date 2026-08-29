@@ -142,10 +142,6 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     size_t ooo_bytes = 0; // 缓存数据字节数（限额与记账）
     size_t ooo_count = 0; // 缓存段数
 
-    // ---- delayed ACK ----
-    uint8_t ack_pending = 0; // 待确认的数据段计数
-    bool ack_deferred = false;
-
     // ---- 挂起读操作（单读模型：同一时刻至多一个未完成读）----
     struct read_op
     {
@@ -272,8 +268,6 @@ private:
     void send_ack(tcp_flow &f);
     uint32_t current_wnd(const tcp_flow &f) const;
     void notify_window_updated(tcp_flow &f);
-    void defer_ack(tcp_flow &f);
-    void on_ack_timer(const boost::system::error_code &ec);
     void deliver_data(tcp_flow &f, const uint8_t *data, size_t len);
     void flush_reads(tcp_flow &f);
     void flush_ooo(tcp_flow &f);
@@ -297,9 +291,6 @@ private:
         pending_accepts_;
     std::deque<std::shared_ptr<tcp_flow>> pending_flows_;
     net::steady_timer sweep_timer_;
-    net::steady_timer ack_timer_;
-    std::deque<std::shared_ptr<tcp_flow>> ack_deferred_;
-    bool ack_timer_waiting_ = false;
 };
 
 // ---- 供 tun_tcp_socket 调用的入口（内部自动派发到 Strand）----

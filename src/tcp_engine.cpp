@@ -46,14 +46,12 @@ tcp_engine::tcp_engine(net::any_io_executor strand, device_writer &writer,
     , mss4_(cfg.mtu > 40 ? cfg.mtu - 40 : 536)
     , mss6_(cfg.mtu > 60 ? cfg.mtu - 60 : 1220)
     , sweep_timer_(strand_)
-    , ack_timer_(strand_)
 {
 }
 
 tcp_engine::~tcp_engine()
 {
     sweep_timer_.cancel();
-    ack_timer_.cancel();
 }
 
 void tcp_engine::start_sweep()
@@ -345,7 +343,6 @@ void tcp_engine::deliver_data(tcp_flow &f, const uint8_t *data, size_t len)
         // 每段立即确认：避免 delayed ACK 40ms 兜底在低 cwnd 时把
         // 一问一答周期拉长到 40ms，拖慢内核发送节奏.
         send_ack(f);
-        f.ack_pending = 0;
         return;
     }
     if (f.rx_bytes + len > cfg_.max_rx_queue_per_flow ||
@@ -382,7 +379,6 @@ void tcp_engine::deliver_data(tcp_flow &f, const uint8_t *data, size_t len)
             flush_reads(f);
         }
         send_ack(f);
-        f.ack_pending = 0;
         return;
     }
     f.rx_data.insert(f.rx_data.end(), data, data + len);
@@ -390,7 +386,6 @@ void tcp_engine::deliver_data(tcp_flow &f, const uint8_t *data, size_t len)
     f.rcv_nxt += static_cast<uint32_t>(len);
     // 每段立即确认：ACK 及时性优先，避免 40ms 兜底拖慢内核发送节奏.
     send_ack(f);
-    f.ack_pending = 0;
     flush_reads(f);
 }
 
@@ -528,8 +523,6 @@ packet_buffer tcp_engine::build_segment(tcp_flow &f, uint32_t seq,
                                         uint8_t flags, const uint8_t *payload,
                                         size_t len, bool with_mss)
 {
-    // 任何段都携带最新 rcv_nxt，视为已完成一次数据确认
-    f.ack_pending = 0;
     const int family = f.key.family;
     const size_t ip_hdr_len = ip_header_size(family);
     // MSS(4) + Window Scale(3) + NOP(1) 对齐到 8 字节
@@ -899,45 +892,6 @@ void tcp_engine::notify_window_updated(tcp_flow &f)
     f.last_wnd_advertised = wnd;
 }
 
-void tcp_engine::defer_ack(tcp_flow &f)
-{
-    if (f.ack_deferred) {
-        return;
-    }
-    f.ack_deferred = true;
-    ack_deferred_.push_back(f.shared_from_this());
-    if (ack_timer_waiting_) {
-        return;
-    }
-    ack_timer_waiting_ = true;
-    ack_timer_.expires_after(std::chrono::milliseconds(40));
-    // 定时器以引擎 Strand 构造，完成回调已在 Strand 上，无需再派发
-    ack_timer_.async_wait(
-        [self = weak_from_this()](const boost::system::error_code &ec) {
-            if (auto s = self.lock()) {
-                s->on_ack_timer(ec);
-            }
-        });
-}
-
-void tcp_engine::on_ack_timer(const boost::system::error_code &ec)
-{
-    ack_timer_waiting_ = false;
-    if (ec) {
-        return;
-    }
-    std::deque<std::shared_ptr<tcp_flow>> deferred;
-    deferred.swap(ack_deferred_);
-    for (auto &f : deferred) {
-        f->ack_deferred = false;
-        if (f->state == tcp_state::CLOSED || f->ack_pending == 0) {
-            continue;
-        }
-        send_ack(*f);
-        f->ack_pending = 0;
-    }
-}
-
 void tcp_engine::send_fin(tcp_flow &f)
 {
     if (f.fin_sent || f.state == tcp_state::CLOSED) {
@@ -1070,9 +1024,6 @@ void tcp_engine::cancel_accepts()
 void tcp_engine::close_all()
 {
     sweep_timer_.cancel();
-    ack_timer_.cancel();
-    ack_timer_waiting_ = false;
-    ack_deferred_.clear();
     std::vector<std::shared_ptr<tcp_flow>> all;
     all.reserve(flows_.size());
     for (auto &[key, f] : flows_) {
