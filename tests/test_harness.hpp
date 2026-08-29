@@ -501,14 +501,16 @@ inline bool parse_udp(const uint8_t *p, size_t n, udp_hdr_info &out)
     return true;
 }
 
-// ---- 虚拟 TUN 设备（socketpair 注入）----
+// ---- 虚拟 TUN 设备（socketpair 数据报注入，对齐 TUN 包语义）----
 class fake_device
 {
 public:
     fake_device()
     {
         int sv[2];
-        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+        // SOCK_DGRAM：一次 read 恰为一个完整报文，与真实 TUN 包语义一致，
+        // 引擎无需按流拆包拼接.
+        if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) {
             throw std::runtime_error("socketpair failed");
         }
         fd_ = sv[0];
