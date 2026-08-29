@@ -34,7 +34,7 @@ public:
     bool open(const device_config &cfg, boost::system::error_code &ec);
 
     bool assign(native_handle_type handle, size_t mtu,
-                boost::system::error_code &ec)
+        boost::system::error_code &ec)
     {
         desc_.assign(static_cast<native_handle_type>(handle), ec);
         if (!ec) {
@@ -73,7 +73,7 @@ public:
     void async_write(packet_buffer &buf, Handler &&handler)
     {
         desc_.async_write_some(net::buffer(buf.data(), buf.size()),
-                               std::forward<Handler>(handler));
+            std::forward<Handler>(handler));
     }
 
     net::posix::stream_descriptor desc_;

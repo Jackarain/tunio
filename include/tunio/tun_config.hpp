@@ -61,8 +61,8 @@ struct five_tuple
 
 // 构造五元组：IP 为网络字节序字节，IPv4 仅拷贝前 4 字节
 inline five_tuple make_five_tuple(const uint8_t *src_ip, const uint8_t *dst_ip,
-                                  uint16_t src_port, uint16_t dst_port,
-                                  uint8_t protocol, uint8_t family) noexcept
+    uint16_t src_port, uint16_t dst_port, uint8_t protocol,
+    uint8_t family) noexcept
 {
     five_tuple k{};
     k.family = family;
@@ -78,8 +78,8 @@ inline five_tuple make_five_tuple(const uint8_t *src_ip, const uint8_t *dst_ip,
 inline bool operator==(const five_tuple &lhs, const five_tuple &rhs) noexcept
 {
     return lhs.family == rhs.family && lhs.src_ip == rhs.src_ip &&
-           lhs.dst_ip == rhs.dst_ip && lhs.src_port == rhs.src_port &&
-           lhs.dst_port == rhs.dst_port && lhs.protocol == rhs.protocol;
+        lhs.dst_ip == rhs.dst_ip && lhs.src_port == rhs.src_port &&
+        lhs.dst_port == rhs.dst_port && lhs.protocol == rhs.protocol;
 }
 
 inline bool operator!=(const five_tuple &lhs, const five_tuple &rhs) noexcept
@@ -98,8 +98,7 @@ struct udp_session_key
 
 // 构造 UDP 会话键：IP 为网络字节序字节，IPv4 仅拷贝前 4 字节
 inline udp_session_key make_udp_session_key(const uint8_t *src_ip,
-                                            uint16_t src_port,
-                                            uint8_t family) noexcept
+    uint16_t src_port, uint8_t family) noexcept
 {
     udp_session_key k{};
     k.family = family;
@@ -110,14 +109,14 @@ inline udp_session_key make_udp_session_key(const uint8_t *src_ip,
 }
 
 inline bool operator==(const udp_session_key &lhs,
-                       const udp_session_key &rhs) noexcept
+    const udp_session_key &rhs) noexcept
 {
     return lhs.family == rhs.family && lhs.src_ip == rhs.src_ip &&
-           lhs.src_port == rhs.src_port;
+        lhs.src_port == rhs.src_port;
 }
 
 inline bool operator!=(const udp_session_key &lhs,
-                       const udp_session_key &rhs) noexcept
+    const udp_session_key &rhs) noexcept
 {
     return !(lhs == rhs);
 }

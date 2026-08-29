@@ -36,8 +36,8 @@ uint32_t random_iss()
 } // namespace
 
 tcp_engine::tcp_engine(net::any_io_executor strand, device_writer &writer,
-                       const tun_config &cfg, engine_stats &stats,
-                       std::shared_ptr<buffer_accountant> account)
+    const tun_config &cfg, engine_stats &stats,
+    std::shared_ptr<buffer_accountant> account)
     : strand_(std::move(strand))
     , writer_(writer)
     , cfg_(cfg)
@@ -72,8 +72,8 @@ void tcp_engine::on_sweep(const boost::system::error_code &ec)
     if (ec) {
         return;
     }
-    const auto now = std::chrono::steady_clock::now();
-    std::vector<std::shared_ptr<tcp_flow>> victims;
+    const auto now = tcp_clock::now();
+    std::vector<tcp_flow_ptr> victims;
     for (const auto &[key, f] : flows_) {
         (void)key;
         if ((f->state == tcp_state::SYN_RCVD ||
@@ -110,7 +110,7 @@ void tcp_engine::on_sweep(const boost::system::error_code &ec)
 }
 
 void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
-                           size_t len)
+    size_t len)
 {
     if (len < sizeof(tcp_header)) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
@@ -122,7 +122,7 @@ void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
 
     // 校验 TCP 校验和
     if (tcp_udp_checksum(ip.family, ip.src_ip, ip.dst_ip, IPPROTO_TCP_V,
-                         payload, len) != 0) {
+        payload, len) != 0) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
     }
@@ -137,7 +137,7 @@ void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
     const bool is_syn = (th.flags & TCP_SYN) != 0 && (th.flags & TCP_ACK) == 0;
     const five_tuple key =
         make_five_tuple(ip.src_ip, ip.dst_ip, th.src_port, th.dst_port,
-                        IPPROTO_TCP_V, ip.family);
+            IPPROTO_TCP_V, ip.family);
     const uint8_t *data = payload + hlen;
     const size_t data_len = len - hlen;
 
@@ -167,7 +167,7 @@ void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
         uint8_t wscale = 0;
         bool wscale_ok = false;
         for (size_t o = sizeof(tcp_header);
-             o + 2 <= hlen && payload[o] != 0;) {
+            o + 2 <= hlen && payload[o] != 0;) {
             const uint8_t kind = payload[o];
             if (kind == 1) {
                 ++o; // NOP
@@ -191,7 +191,7 @@ void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
             wscale_ok ? tcp_flow::k_rcv_wnd_scale : 0;
         // SYN 段窗口字段本身不缩放（RFC 7323 §2.2），按原值记录
         f->peer_wnd = ntohs(th.window);
-        f->created_at = std::chrono::steady_clock::now();
+        f->created_at = tcp_clock::now();
         flows_.emplace(key, f);
         if (data_len > 0 && ntohl(th.seq) + 1 == f->rcv_nxt) {
             // TFO：SYN 携带数据（seq = irs + 1）。缓存并按序推进 rcv_nxt，
@@ -214,13 +214,12 @@ void tcp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
     // 持有强引用：handle_segment 内会内联调用用户完成回调（当流绑定引擎
     // Strand 时），回调中 reset() 后销毁流可能擦除 flows_ 并释放最后引用；
     // 强引用保证回调返回后 f 仍然有效，避免 use-after-free。
-    std::shared_ptr<tcp_flow> f = it->second;
+    tcp_flow_ptr f = it->second;
     handle_segment(f, th, data, data_len);
 }
 
-void tcp_engine::handle_segment(const std::shared_ptr<tcp_flow> &f,
-                                const tcp_header &th, const uint8_t *data,
-                                size_t data_len)
+void tcp_engine::handle_segment(const tcp_flow_ptr &f,
+    const tcp_header &th, const uint8_t *data, size_t data_len)
 {
     const uint32_t seq = ntohl(th.seq);
     const uint32_t ack = ntohl(th.ack);
@@ -259,8 +258,8 @@ void tcp_engine::handle_segment(const std::shared_ptr<tcp_flow> &f,
             f->state =
                 f->fin_received ? tcp_state::TIME_WAIT : tcp_state::FIN_WAIT_2;
             if (f->state == tcp_state::TIME_WAIT) {
-                f->destroy_at = std::chrono::steady_clock::now() +
-                                cfg_.tcp_time_wait_timeout;
+                f->destroy_at =
+                    tcp_clock::now() + cfg_.tcp_time_wait_timeout;
             }
         } else if (f->state == tcp_state::LAST_ACK && f->fin_sent &&
                    seq_ge(ack, f->snd_nxt)) {
@@ -414,7 +413,7 @@ void tcp_engine::flush_reads(tcp_flow &f)
             }
             const size_t take = std::min(buf.size(), n - copied);
             std::memcpy(buf.data(), f.rx_data.data() + f.rx_head + copied,
-                        take);
+                take);
             copied += take;
         }
         f.rx_head += copied;
@@ -426,9 +425,8 @@ void tcp_engine::flush_reads(tcp_flow &f)
     // 头部偏移过大时压缩连续缓冲，保持内存占用与 cache 友好
     if (f.rx_head > 0 &&
         (f.rx_head == f.rx_data.size() || f.rx_head >= 65536)) {
-        f.rx_data.erase(f.rx_data.begin(),
-                        f.rx_data.begin() +
-                            static_cast<std::ptrdiff_t>(f.rx_head));
+        f.rx_data.erase(f.rx_data.begin(), f.rx_data.begin() +
+            static_cast<std::ptrdiff_t>(f.rx_head));
         f.rx_head = 0;
     }
     // 数据耗尽后处理 EOF：按 Asio 语义以 error::eof 完成读操作（对端 FIN），
@@ -477,7 +475,7 @@ void tcp_engine::flush_ooo(tcp_flow &f)
 }
 
 bool tcp_engine::ooo_append(tcp_flow &f, uint32_t seq, const uint8_t *data,
-                            size_t len, bool fin)
+    size_t len, bool fin)
 {
     if (f.ooo_cache.find(seq) != f.ooo_cache.end()) {
         return false; // 重复乱序段：忽略
@@ -516,8 +514,8 @@ void tcp_engine::handle_fin(tcp_flow &f, uint32_t fin_seq)
             break;
         case tcp_state::FIN_WAIT_2:
             f.state = tcp_state::TIME_WAIT;
-            f.destroy_at = std::chrono::steady_clock::now() +
-                           cfg_.tcp_time_wait_timeout;
+            f.destroy_at =
+                tcp_clock::now() + cfg_.tcp_time_wait_timeout;
             break;
         case tcp_state::TIME_WAIT:
             break;
@@ -532,8 +530,7 @@ void tcp_engine::handle_fin(tcp_flow &f, uint32_t fin_seq)
 }
 
 packet_buffer tcp_engine::build_segment(tcp_flow &f, uint32_t seq,
-                                        uint8_t flags, const uint8_t *payload,
-                                        size_t len, bool with_mss)
+    uint8_t flags, const uint8_t *payload, size_t len, bool with_mss)
 {
     const int family = f.key.family;
     const size_t ip_hdr_len = ip_header_size(family);
@@ -544,8 +541,9 @@ packet_buffer tcp_engine::build_segment(tcp_flow &f, uint32_t seq,
     pkt.resize(total);
     uint8_t *base = pkt.data();
 
-    build_ip_header(base, family, f.key.dst_ip.data(), f.key.src_ip.data(),
-                    IPPROTO_TCP_V, total, writer_.alloc_ip_id());
+    build_ip_header(base, family, f.key.dst_ip.data(),
+        f.key.src_ip.data(), IPPROTO_TCP_V, total,
+        writer_.alloc_ip_id());
 
     auto *th = reinterpret_cast<tcp_header *>(base + ip_hdr_len);
     th->src_port = f.key.dst_port;
@@ -597,14 +595,15 @@ packet_buffer tcp_engine::build_segment(tcp_flow &f, uint32_t seq,
         std::memcpy(base + ip_hdr_len + tcp_hdr_len, payload, len);
     }
     th->checksum = htons(
-        tcp_udp_checksum(family, f.key.dst_ip.data(), f.key.src_ip.data(),
-                         IPPROTO_TCP_V, base + ip_hdr_len, tcp_hdr_len + len));
+        tcp_udp_checksum(family, f.key.dst_ip.data(),
+            f.key.src_ip.data(), IPPROTO_TCP_V, base + ip_hdr_len,
+            tcp_hdr_len + len));
 
     return pkt;
 }
 
 void tcp_engine::send_segment(tcp_flow &f, uint32_t seq, uint8_t flags,
-                              const uint8_t *payload, size_t len, bool with_mss)
+    const uint8_t *payload, size_t len, bool with_mss)
 {
     // 控制段（SYN/SYN+ACK/FIN/RST/ACK）直通：不参与数据背压，确保
     // 连接建立/关闭的关键段不被数据发送队列阻塞.
@@ -612,7 +611,7 @@ void tcp_engine::send_segment(tcp_flow &f, uint32_t seq, uint8_t flags,
         build_segment(f, seq, flags, payload, len, with_mss));
 }
 
-net::awaitable<void> tcp_engine::write_loop(std::shared_ptr<tcp_flow> f)
+net::awaitable<void> tcp_engine::write_loop(tcp_flow_ptr f)
 {
     // 强引用保活：协程可能在引擎/设备写器析构后仍挂起（等写完成回调），
     // 捕获 shared_ptr 避免协程恢复时访问已销毁对象.
@@ -744,7 +743,7 @@ net::awaitable<void> tcp_engine::write_loop(std::shared_ptr<tcp_flow> f)
                         op.buffers[op.buf_index].size() - op.buf_off;
                     chunk = std::min(
                         {remaining, avail, mss(f->key.family),
-                         static_cast<size_t>(flow.peer_wnd - in_flight)});
+                            static_cast<size_t>(flow.peer_wnd - in_flight)});
                     if (chunk == 0) {
                         break;
                     }
@@ -889,8 +888,8 @@ uint32_t tcp_engine::current_wnd(const tcp_flow &f) const
         static_cast<uint32_t>(f.rx_bytes + f.ooo_bytes);
     uint32_t wnd = tcp_flow::fixed_rcv_wnd;
     if (cfg_.max_rx_queue_per_flow > queued) {
-        wnd = std::min(
-            wnd, static_cast<uint32_t>(cfg_.max_rx_queue_per_flow - queued));
+        wnd = std::min(wnd,
+            static_cast<uint32_t>(cfg_.max_rx_queue_per_flow - queued));
     } else {
         wnd = 0;
     }
@@ -935,13 +934,13 @@ void tcp_engine::send_fin(tcp_flow &f)
     switch (f.state) {
     case tcp_state::ESTABLISHED:
         f.state = tcp_state::FIN_WAIT_1;
-        f.close_started_at = std::chrono::steady_clock::now();
+        f.close_started_at = tcp_clock::now();
         send_segment(f, f.snd_nxt, TCP_ACK | TCP_FIN, nullptr, 0, false);
         f.snd_nxt += 1;
         break;
     case tcp_state::CLOSE_WAIT:
         f.state = tcp_state::LAST_ACK;
-        f.close_started_at = std::chrono::steady_clock::now();
+        f.close_started_at = tcp_clock::now();
         send_segment(f, f.snd_nxt, TCP_ACK | TCP_FIN, nullptr, 0, false);
         f.snd_nxt += 1;
         break;
@@ -986,7 +985,8 @@ void tcp_engine::abort_flow(tcp_flow &f)
     close_flow(f, net::error::connection_reset);
 }
 
-void tcp_engine::close_flow(tcp_flow &f, const boost::system::error_code &err)
+void tcp_engine::close_flow(tcp_flow &f,
+    const boost::system::error_code &err)
 {
     if (f.state == tcp_state::CLOSED) {
         return;
@@ -1050,7 +1050,7 @@ void tcp_engine::cancel_accepts()
 void tcp_engine::close_all()
 {
     sweep_timer_.cancel();
-    std::vector<std::shared_ptr<tcp_flow>> all;
+    std::vector<tcp_flow_ptr> all;
     all.reserve(flows_.size());
     for (auto &[key, f] : flows_) {
         (void)key;
@@ -1063,7 +1063,7 @@ void tcp_engine::close_all()
     cancel_accepts();
 }
 
-void tcp_flow_shutdown_send(std::shared_ptr<tcp_flow> flow)
+void tcp_flow_shutdown_send(tcp_flow_ptr flow)
 {
     if (!flow) {
         return;
@@ -1081,7 +1081,7 @@ void tcp_flow_shutdown_send(std::shared_ptr<tcp_flow> flow)
     });
 }
 
-void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow)
+void tcp_flow_shutdown_receive(tcp_flow_ptr flow)
 {
     if (!flow) {
         return;
@@ -1117,7 +1117,7 @@ void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow)
     });
 }
 
-void tcp_flow_close(std::shared_ptr<tcp_flow> flow)
+void tcp_flow_close(tcp_flow_ptr flow)
 {
     if (!flow) {
         return;
@@ -1168,7 +1168,7 @@ void tcp_flow_close(std::shared_ptr<tcp_flow> flow)
     });
 }
 
-void tcp_flow_reset(std::shared_ptr<tcp_flow> flow)
+void tcp_flow_reset(tcp_flow_ptr flow)
 {
     if (!flow) {
         return;
@@ -1186,7 +1186,7 @@ void tcp_flow_reset(std::shared_ptr<tcp_flow> flow)
     });
 }
 
-void tcp_flow_accept(std::shared_ptr<tcp_flow> flow)
+void tcp_flow_accept(tcp_flow_ptr flow)
 {
     if (!flow) {
         return;
@@ -1200,7 +1200,7 @@ void tcp_flow_accept(std::shared_ptr<tcp_flow> flow)
     });
 }
 
-void tcp_flow_reject(std::shared_ptr<tcp_flow> flow)
+void tcp_flow_reject(tcp_flow_ptr flow)
 {
     if (!flow) {
         return;
@@ -1214,10 +1214,11 @@ void tcp_flow_reject(std::shared_ptr<tcp_flow> flow)
     });
 }
 
-bool tcp_flow_is_open(const std::shared_ptr<tcp_flow> &flow)
+bool tcp_flow_is_open(const tcp_flow_ptr &flow)
 {
-    return flow && !flow->eng.expired() && flow->state != tcp_state::CLOSED &&
-           !flow->app_closed && !flow->rst;
+    return flow && !flow->eng.expired() &&
+        flow->state != tcp_state::CLOSED && !flow->app_closed &&
+        !flow->rst;
 }
 
 net::ip::tcp::endpoint tcp_flow::original_destination() const

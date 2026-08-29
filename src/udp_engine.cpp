@@ -25,8 +25,8 @@ namespace detail {
 namespace {
 
 // 由网络字节序地址字节与端口构造 Asio endpoint（family: 4 或 6）
-net::ip::udp::endpoint make_udp_endpoint(uint8_t family, const uint8_t *addr,
-                                         uint16_t port)
+net::ip::udp::endpoint make_udp_endpoint(uint8_t family,
+    const uint8_t *addr, uint16_t port)
 {
     if (family == 6) {
         net::ip::address_v6::bytes_type b{};
@@ -41,8 +41,8 @@ net::ip::udp::endpoint make_udp_endpoint(uint8_t family, const uint8_t *addr,
 } // namespace
 
 udp_engine::udp_engine(net::any_io_executor strand, device_writer &writer,
-                       const tun_config &cfg, engine_stats &stats,
-                       std::shared_ptr<buffer_accountant> account)
+    const tun_config &cfg, engine_stats &stats,
+    std::shared_ptr<buffer_accountant> account)
     : strand_(std::move(strand))
     , writer_(writer)
     , cfg_(cfg)
@@ -59,7 +59,7 @@ udp_engine::~udp_engine()
 }
 
 void udp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
-                           size_t len)
+    size_t len)
 {
     if (len < sizeof(udp_header)) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
@@ -98,7 +98,7 @@ void udp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
     if (it != sessions_.end()) {
         // 强引用：deliver_datagram 内联调用用户完成回调时，回调可能关闭并
         // 擦除会话（remove_session），强引用保证回调返回后 s 仍有效。
-        std::shared_ptr<udp_session> s = it->second;
+        udp_session_ptr s = it->second;
         if (!s->closed) {
             deliver_datagram(s, data, data_len, sender);
             return;
@@ -116,7 +116,7 @@ void udp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
     s->key = key;
     s->eng = shared_from_this();
     s->timeout = cfg_.udp_idle_timeout;
-    s->expiry = std::chrono::steady_clock::now() + s->timeout;
+    s->expiry = udp_clock::now() + s->timeout;
     sessions_.emplace(key, s);
     stats_.udp_sessions.fetch_add(1, std::memory_order_relaxed);
 
@@ -133,9 +133,9 @@ void udp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
     }
 }
 
-void udp_engine::deliver_datagram(const std::shared_ptr<udp_session> &s,
-                                  const uint8_t *data, size_t len,
-                                  const net::ip::udp::endpoint &sender)
+void udp_engine::deliver_datagram(const udp_session_ptr &s,
+    const uint8_t *data, size_t len,
+    const net::ip::udp::endpoint &sender)
 {
     if (s->closed) {
         return;
@@ -175,12 +175,12 @@ void udp_engine::deliver_datagram(const std::shared_ptr<udp_session> &s,
     s->rx_bytes += len;
 }
 
-void udp_engine::refresh_expiry(const std::shared_ptr<udp_session> &s)
+void udp_engine::refresh_expiry(const udp_session_ptr &s)
 {
     if (s->closed) {
         return;
     }
-    s->expiry = std::chrono::steady_clock::now() + s->timeout;
+    s->expiry = udp_clock::now() + s->timeout;
     ++s->expiry_gen;
     expiry_heap_.push_back({s->expiry, s->expiry_gen, s});
     std::push_heap(expiry_heap_.begin(), expiry_heap_.end(),
@@ -239,7 +239,7 @@ void udp_engine::on_expiry_timer(const boost::system::error_code &ec)
         arm_expiry_timer();
         return;
     }
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = udp_clock::now();
     while (!expiry_heap_.empty()) {
         auto &top = expiry_heap_.front();
         if (top.at > now) {
@@ -257,7 +257,7 @@ void udp_engine::on_expiry_timer(const boost::system::error_code &ec)
     arm_expiry_timer();
 }
 
-void udp_engine::remove_session(std::shared_ptr<udp_session> s)
+void udp_engine::remove_session(udp_session_ptr s)
 {
     if (s->closed) {
         return;
@@ -289,7 +289,7 @@ void udp_engine::close_all()
 {
     expiry_timer_.cancel();
     timer_waiting_ = false;
-    std::vector<std::shared_ptr<udp_session>> all;
+    std::vector<udp_session_ptr> all;
     all.reserve(sessions_.size());
     for (auto &[key, s] : sessions_) {
         (void)key;
@@ -303,7 +303,7 @@ void udp_engine::close_all()
     expiry_heap_.clear();
 }
 
-void udp_session_close(std::shared_ptr<udp_session> session)
+void udp_session_close(udp_session_ptr session)
 {
     if (!session) {
         return;
@@ -313,11 +313,11 @@ void udp_session_close(std::shared_ptr<udp_session> session)
         return;
     }
     net::dispatch(eng->strand(),
-                  [session, eng]() { eng->remove_session(session); });
+        [session, eng]() { eng->remove_session(session); });
 }
 
-void udp_session_set_timeout(std::shared_ptr<udp_session> session,
-                             std::chrono::seconds timeout)
+void udp_session_set_timeout(udp_session_ptr session,
+    std::chrono::seconds timeout)
 {
     if (!session) {
         return;
@@ -335,7 +335,7 @@ void udp_session_set_timeout(std::shared_ptr<udp_session> session,
     });
 }
 
-bool udp_session_is_open(const std::shared_ptr<udp_session> &session)
+bool udp_session_is_open(const udp_session_ptr &session)
 {
     return session && !session->closed && !session->eng.expired();
 }
