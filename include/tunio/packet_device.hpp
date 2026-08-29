@@ -59,8 +59,7 @@ class packet_device
 {
 public:
     explicit packet_device(net::io_context &ctx)
-        : ctx_(ctx)
-        , impl_(ctx)
+        : impl_(ctx)
     {
     }
 
@@ -117,7 +116,6 @@ public:
     }
 
 private:
-    net::io_context &ctx_;
     detail::device_impl impl_;
 };
 
