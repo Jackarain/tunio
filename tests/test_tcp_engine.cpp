@@ -821,6 +821,78 @@ static void test_zero_window_persist_probe()
     peer.close();
 }
 
+static void test_synack_wscale_buffer_reuse()
+{
+    // 回归：缓冲池复用不得让"不带 WS"的 SYN-ACK 残留上一连接的 WS 选项。
+    // 先建立带 WS 连接（SYN-ACK 携带 WS 选项后缓冲回收入池），再建立不带
+    // WS 连接，断言其 SYN-ACK 选项区无 WS（修复前 opt[4..7] 残留垃圾字节）.
+    engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+                   std::chrono::seconds(30), 1024 * 1024,
+                   std::chrono::milliseconds(5000),
+                   std::chrono::milliseconds(5000));
+    auto &io = env.io;
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer_a(io.get_executor());
+    tun_tcp_socket peer_b(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_a;
+    acceptor.async_accept(peer_a, [&](boost::system::error_code ec) {
+        if (!ec) {
+            peer_a.accept();
+        }
+        accept_a.set_value(ec);
+    });
+
+    // 连接 A：对端通告 WS=3，SYN-ACK 携带 WS 选项，缓冲随后回收入池
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12390, DEST_PORT, 0x02, 9000, 0,
+                          4096, {}, true, 3));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK A");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    tcp_hdr_info ti;
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    int ws = -1;
+    assert(synack_wscale(pkt, &ws) && ws == 7);
+    // 不回复 ACK；等待 SYN-ACK 缓冲异步回收入池（写完成回调在 Strand 上）
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // 连接 B：对端未通告 WS，复用缓冲的 SYN-ACK 不得携带 WS 选项
+    std::promise<boost::system::error_code> accept_b;
+    acceptor.async_accept(peer_b, [&](boost::system::error_code ec) {
+        if (!ec) {
+            peer_b.accept();
+        }
+        accept_b.set_value(ec);
+    });
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12391, DEST_PORT, 0x02, 9100, 0,
+                          4096, {}, true));
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK B");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    if (!parse_ip(pkt, ipi)) {
+        throw std::runtime_error("parse_ip failed");
+    }
+    if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse_tcp failed");
+    }
+    assert(!synack_wscale(pkt, &ws)); // 复用缓冲不得残留 WS 选项
+    peer_a.close();
+    peer_b.close();
+}
+
 static void test_syn_with_data()
 {
     // TFO：客户端 SYN 携带数据。引擎缓存数据并在 SYN-ACK 中捎带确认，
@@ -2557,6 +2629,7 @@ int main()
     test_zero_window_flow_control();
     test_zero_window_persist_probe();
     test_wscale_negotiation();
+    test_synack_wscale_buffer_reuse();
     test_syn_with_data();
     test_rst();
     test_app_reset();

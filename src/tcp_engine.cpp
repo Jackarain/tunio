@@ -584,6 +584,13 @@ packet_buffer tcp_engine::build_segment(tcp_flow &f, uint32_t seq,
             opt[5] = 3; // len = 3
             opt[6] = tcp_flow::k_rcv_wnd_scale;
             opt[7] = 1; // NOP 对齐
+        } else {
+            // 显式 NOP 填充：缓冲池复用可能残留上一连接的 WS 选项字节，
+            // 未初始化字节会破坏"不携带 WS 选项"的语义（RFC 7323）
+            opt[4] = 1;
+            opt[5] = 1;
+            opt[6] = 1;
+            opt[7] = 1;
         }
     }
     if (len > 0) {
