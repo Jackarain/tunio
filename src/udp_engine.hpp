@@ -16,6 +16,7 @@
 #include "tunio/tun_config.hpp"
 
 #include <boost/asio.hpp>
+#include <boost/container/small_vector.hpp>
 #include <boost/unordered/unordered_flat_map.hpp>
 
 #include <algorithm>
@@ -62,7 +63,7 @@ struct udp_session : public std::enable_shared_from_this<udp_session>
 
     struct read_op
     {
-        std::vector<net::mutable_buffer> buffers;
+        boost::container::small_vector<net::mutable_buffer, 1> buffers;
         size_t total = 0;
         net::ip::udp::endpoint *sender = nullptr; // 出参，完成时填充目标远端
         net::any_completion_handler<void(boost::system::error_code, size_t)>
@@ -91,12 +92,15 @@ struct udp_session : public std::enable_shared_from_this<udp_session>
 
 template <typename Handler>
 void udp_session_start_receive(std::shared_ptr<udp_session>,
-                               std::vector<net::mutable_buffer>, size_t,
+                               boost::container::small_vector<
+                                   net::mutable_buffer, 1>,
+                               size_t,
                                net::ip::udp::endpoint &, Handler);
 template <typename Handler>
 void udp_session_start_send(std::shared_ptr<udp_session>,
                             const net::ip::udp::endpoint &,
-                            std::vector<net::const_buffer>, size_t, Handler);
+                            boost::container::small_vector<net::const_buffer, 1>,
+                            size_t, Handler);
 
 class udp_engine : public std::enable_shared_from_this<udp_engine>
 {
@@ -144,20 +148,23 @@ private:
     friend struct udp_session;
     template <typename Handler>
     friend void udp_session_start_receive(std::shared_ptr<udp_session>,
-                                          std::vector<net::mutable_buffer>,
+                                          boost::container::small_vector<
+                                              net::mutable_buffer, 1>,
                                           size_t, net::ip::udp::endpoint &,
                                           Handler);
     template <typename Handler>
     friend void udp_session_start_send(std::shared_ptr<udp_session>,
                                        const net::ip::udp::endpoint &,
-                                       std::vector<net::const_buffer>, size_t,
-                                       Handler);
+                                       boost::container::small_vector<
+                                           net::const_buffer, 1>,
+                                       size_t, Handler);
     friend void udp_session_close(std::shared_ptr<udp_session>);
     friend void udp_session_set_timeout(std::shared_ptr<udp_session>,
                                         std::chrono::seconds);
 
     void deliver_datagram(const std::shared_ptr<udp_session> &s,
-                          udp_session::datagram datagram);
+                          const uint8_t *data, size_t len,
+                          const net::ip::udp::endpoint &sender);
     void refresh_expiry(const std::shared_ptr<udp_session> &s);
     void arm_expiry_timer();
     void on_expiry_timer(const boost::system::error_code &ec);
@@ -202,7 +209,9 @@ private:
 // ---- 供 tun_udp_socket 调用的入口（内部自动派发到 Strand）----
 template <typename Handler>
 void udp_session_start_receive(std::shared_ptr<udp_session> session,
-                               std::vector<net::mutable_buffer> buffers,
+                               boost::container::small_vector<
+                                   net::mutable_buffer, 1>
+                                   buffers,
                                size_t total, net::ip::udp::endpoint &sender,
                                Handler handler)
 {
@@ -259,7 +268,8 @@ void udp_session_start_receive(std::shared_ptr<udp_session> session,
 template <typename Handler>
 void udp_session_start_send(std::shared_ptr<udp_session> session,
                             const net::ip::udp::endpoint &remote,
-                            std::vector<net::const_buffer> buffers,
+                            boost::container::small_vector<net::const_buffer, 1>
+                                buffers,
                             size_t total, Handler handler)
 {
     if (!session) {
@@ -376,9 +386,8 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
                 off += frag_data;
                 eng->writer().async_write_and_forget(std::move(frag));
             }
-            using handler_t = std::decay_t<Handler>;
-            auto sp = std::make_shared<handler_t>(std::move(handler));
-            std::move(*sp)(boost::system::error_code{}, total);
+            // 分片全部入队即视为发送完成：数据已由引擎持有，直接调用 handler
+            std::move(handler)(boost::system::error_code{}, total);
             return;
         }
         eng->refresh_expiry(s);
@@ -412,15 +421,14 @@ void udp_session_start_send(std::shared_ptr<udp_session> session,
         }
         uh->checksum = htons(csum);
 
-        using handler_t = std::decay_t<Handler>;
-        auto sp = std::make_shared<handler_t>(std::move(handler));
         const size_t sent = total;
         // device_writer 保证完成回调在引擎 Strand 上触发，无需再派发
         eng->writer().async_write(
-            std::move(pkt), [sp, sent](const boost::system::error_code &ec,
-                                       size_t) {
+            std::move(pkt),
+            [h = std::move(handler), sent](
+                const boost::system::error_code &ec, size_t) mutable {
                 // 设备写失败时透传错误码，避免向调用方误报成功
-                std::move (*sp)(ec, ec ? 0 : sent);
+                std::move(h)(ec, ec ? 0 : sent);
             });
     });
 }

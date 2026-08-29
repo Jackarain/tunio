@@ -13,6 +13,8 @@
 #include "tunio/tun_udp_socket.hpp"
 #include "udp_engine.hpp"
 
+#include <boost/container/small_vector.hpp>
+
 #include <memory>
 #include <vector>
 
@@ -27,7 +29,8 @@ void tun_udp_socket::do_receive_from(MutableBufferSequence &&buffers,
                                      net::ip::udp::endpoint &sender,
                                      Handler handler)
 {
-    std::vector<net::mutable_buffer> seq;
+    // 单缓冲区（最常见调用形式）由 small_vector 栈上存储，避免堆分配
+    boost::container::small_vector<net::mutable_buffer, 1> seq;
     size_t total = 0;
     // 兼容单缓冲区（net::buffer(char[]) 返回 mutable_buffer）与
     // 缓冲区序列两种调用形式，语义与 Boost.Asio async_receive_from 一致.
@@ -50,7 +53,7 @@ template <typename ConstBufferSequence, typename Handler>
 void tun_udp_socket::do_send_to(const net::ip::udp::endpoint &remote,
                                 ConstBufferSequence &&buffers, Handler handler)
 {
-    std::vector<net::const_buffer> seq;
+    boost::container::small_vector<net::const_buffer, 1> seq;
     size_t total = 0;
     // 兼容单缓冲区与缓冲区序列两种调用形式，语义与 Boost.Asio
     // async_send_to 一致.

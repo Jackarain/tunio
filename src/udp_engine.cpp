@@ -88,10 +88,11 @@ void udp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
 
     const udp_session_key key =
         make_udp_session_key(ip.src_ip, uh.src_port, ip.family);
-    udp_session::datagram dg;
-    dg.data.assign(payload + sizeof(udp_header), payload + len);
     // 目标远端端点：客户端发出的数据报需送达的对端
-    dg.sender = make_udp_endpoint(ip.family, ip.dst_ip, uh.dst_port);
+    const auto sender =
+        make_udp_endpoint(ip.family, ip.dst_ip, uh.dst_port);
+    const uint8_t *data = payload + sizeof(udp_header);
+    const size_t data_len = len - sizeof(udp_header);
 
     auto it = sessions_.find(key);
     if (it != sessions_.end()) {
@@ -99,7 +100,7 @@ void udp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
         // 擦除会话（remove_session），强引用保证回调返回后 s 仍有效。
         std::shared_ptr<udp_session> s = it->second;
         if (!s->closed) {
-            deliver_datagram(s, std::move(dg));
+            deliver_datagram(s, data, data_len, sender);
             return;
         }
         sessions_.erase(it);
@@ -119,7 +120,7 @@ void udp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
     sessions_.emplace(key, s);
     stats_.udp_sessions.fetch_add(1, std::memory_order_relaxed);
 
-    deliver_datagram(s, std::move(dg));
+    deliver_datagram(s, data, data_len, sender);
     refresh_expiry(s);
 
     if (!pending_accepts_.empty()) {
@@ -133,7 +134,8 @@ void udp_engine::on_packet(const ip_packet_info &ip, const uint8_t *payload,
 }
 
 void udp_engine::deliver_datagram(const std::shared_ptr<udp_session> &s,
-                                  udp_session::datagram dg)
+                                  const uint8_t *data, size_t len,
+                                  const net::ip::udp::endpoint &sender)
 {
     if (s->closed) {
         return;
@@ -142,32 +144,35 @@ void udp_engine::deliver_datagram(const std::shared_ptr<udp_session> &s,
     if (!s->pending_reads.empty()) {
         auto op = std::move(s->pending_reads.front());
         s->pending_reads.pop_front();
-        if (dg.data.size() > op.total) {
+        if (len > op.total) {
             op.handler(boost::system::error_code(net::error::message_size), 0);
         } else {
             if (op.sender) {
-                *op.sender = dg.sender;
+                *op.sender = sender;
             }
             size_t copied = 0;
             for (auto &buf : op.buffers) {
-                if (copied >= dg.data.size()) {
+                if (copied >= len) {
                     break;
                 }
-                const size_t take = std::min(buf.size(), dg.data.size() - copied);
-                std::memcpy(buf.data(), dg.data.data() + copied, take);
+                const size_t take = std::min(buf.size(), len - copied);
+                std::memcpy(buf.data(), data + copied, take);
                 copied += take;
             }
-            op.handler(boost::system::error_code{}, dg.data.size());
+            op.handler(boost::system::error_code{}, len);
         }
         return;
     }
-    if (s->rx_bytes + dg.data.size() > cfg_.max_rx_queue_per_flow ||
-        !account_->reserve(dg.data.size())) {
+    if (s->rx_bytes + len > cfg_.max_rx_queue_per_flow ||
+        !account_->reserve(len)) {
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    udp_session::datagram dg;
+    dg.data.assign(data, data + len);
+    dg.sender = sender;
     s->rx_datagrams.push_back(std::move(dg));
-    s->rx_bytes += s->rx_datagrams.back().data.size();
+    s->rx_bytes += len;
 }
 
 void udp_engine::refresh_expiry(const std::shared_ptr<udp_session> &s)
