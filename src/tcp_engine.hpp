@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -122,6 +123,18 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     std::vector<uint8_t> rx_data;
     size_t rx_head = 0;  // 已消费偏移（rx_data 头部）
     size_t rx_bytes = 0; // 未消费字节数
+
+    // ---- 乱序重排缓存（按 seq 升序的段表）----
+    // 并发读（多 slot 读 TUN）或链路抖动会引入乱序段：超前 seq 的段
+    // 先缓存，缺失段到达后按序交付，避免依赖对端重传造成吞吐损失。
+    struct ooo_segment
+    {
+        std::vector<uint8_t> data;
+        bool fin = false; // 段携带 FIN（FIN 占一个序列号，交付后处理）
+    };
+    std::map<uint32_t, ooo_segment> ooo_cache;
+    size_t ooo_bytes = 0; // 缓存数据字节数（限额与记账）
+    size_t ooo_count = 0; // 缓存段数
 
     // ---- delayed ACK ----
     uint8_t ack_pending = 0; // 待确认的数据段计数
@@ -255,6 +268,10 @@ private:
     void on_ack_timer(const boost::system::error_code &ec);
     void deliver_data(tcp_flow &f, const uint8_t *data, size_t len);
     void flush_reads(tcp_flow &f);
+    void flush_ooo(tcp_flow &f);
+    bool ooo_append(tcp_flow &f, uint32_t seq, const uint8_t *data,
+                    size_t len, bool fin);
+    void handle_fin(tcp_flow &f, uint32_t fin_seq);
     void notify_accept(tcp_flow &f);
     void on_sweep(const boost::system::error_code &ec);
 

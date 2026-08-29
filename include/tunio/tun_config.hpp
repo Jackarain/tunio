@@ -152,6 +152,9 @@ struct tun_config
     size_t max_tcp_flows = 65536;
     size_t max_udp_flows = 65536;
     size_t max_rx_queue_per_flow = 1024 * 1024;
+    // 乱序重排缓存：单流最多缓存的乱序段数（超出后丢弃并发 Dup-ACK，
+    // 防止恶意对端用海量乱序段耗尽内存）
+    size_t tcp_ooo_max_segments = 128;
     // 单写模型下为兼容占位：发送背压由"每流单写 + 设备写回调"约束，
     // 该字段不再参与发送路径判定.
     size_t max_tx_queue_per_flow = 1024 * 1024;
@@ -185,6 +188,7 @@ struct engine_stats
     std::atomic<uint64_t> rx_packets{0};
     std::atomic<uint64_t> tx_packets{0};
     std::atomic<uint64_t> rx_dropped{0};
+    std::atomic<uint64_t> rx_ooo{0}; // 乱序缓存段数
     std::atomic<uint64_t> tcp_connections{0};
     std::atomic<uint64_t> udp_sessions{0};
     std::atomic<uint64_t> icmp_replies{0};

@@ -2010,6 +2010,93 @@ static void test_accept_idempotent()
     }
 }
 
+static void test_out_of_order_reassembly()
+{
+    // 乱序段缓存重排：超前 seq 的段先缓存（回复 Dup-ACK），缺失段到达后
+    // 按序交付，乱序段不计入 rx_dropped.
+    engine_env env;
+    auto &io = env.io;
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        if (!ec) {
+            peer.accept();
+        }
+        accept_done.set_value(ec);
+    });
+
+    // 客户端 SYN
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x02,
+                          1000, 0, 65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        throw std::runtime_error("no SYN-ACK");
+    }
+    if (!verify_packet(pkt)) {
+        throw std::runtime_error("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        throw std::runtime_error("parse SYN-ACK failed");
+    }
+    const uint32_t engine_iss = ti.seq;
+
+    // 客户端 ACK -> ESTABLISHED
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x10,
+                          1001, engine_iss + 1, 65535, {}));
+    future_get(accept_done.get_future());
+
+    const auto base_dropped = env.engine.stats().rx_dropped.load();
+    const auto base_ooo = env.engine.stats().rx_ooo.load();
+
+    // 先发超前段 "world"（seq=1006）：引擎静默缓存（不发 Dup-ACK，
+    // 避免人为乱序触发对端快速重传降窗）
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x18,
+                          1006, engine_iss + 1, 65535,
+                          {'w', 'o', 'r', 'l', 'd'}));
+    if (env.dev.read_packet(pkt, 200)) {
+        throw std::runtime_error("out-of-order segment should be buffered "
+                                 "without dup-ack");
+    }
+
+    // 应用层发起读
+    std::promise<std::pair<boost::system::error_code, size_t>> read_done;
+    std::array<char, 20> buf;
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec,
+                                               size_t n) {
+        read_done.set_value({ec, n});
+    });
+
+    // 缺失段 "hello"（seq=1001）到达：直投 5 字节，缓存段随后入队
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x18,
+                          1001, engine_iss + 1, 65535,
+                          {'h', 'e', 'l', 'l', 'o'}));
+    auto [rec, rn] = future_get(read_done.get_future());
+    assert(!rec);
+    assert(rn == 5);
+    assert(std::string(buf.data(), rn) == "hello");
+
+    // 第二次读：缓存段 "world" 按序交付
+    std::promise<std::pair<boost::system::error_code, size_t>> read_done2;
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec,
+                                               size_t n) {
+        read_done2.set_value({ec, n});
+    });
+    auto [rec2, rn2] = future_get(read_done2.get_future());
+    assert(!rec2);
+    assert(rn2 == 5);
+    assert(std::string(buf.data(), rn2) == "world");
+
+    // 乱序段被缓存而非丢弃：rx_ooo 增加，rx_dropped 保持不变
+    assert(env.engine.stats().rx_ooo.load() > base_ooo);
+    assert(env.engine.stats().rx_dropped.load() == base_dropped);
+
+    peer.close();
+}
+
 static void test_loopback_local_address_guard()
 {
     // 环路与本地地址防护：源为本机虚拟 IP 或源/目标为保留地址的入包
@@ -2117,6 +2204,7 @@ int main()
     test_implicit_accept_on_first_read();
     test_accepted_no_ack_cleanup();
     test_accept_idempotent();
+    test_out_of_order_reassembly();
     test_loopback_local_address_guard();
     return 0;
 }

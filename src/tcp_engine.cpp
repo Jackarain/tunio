@@ -285,10 +285,19 @@ void tcp_engine::handle_segment(const std::shared_ptr<tcp_flow> &f,
     if (data_len > 0) {
         if (seq == f->rcv_nxt) {
             deliver_data(*f, data, data_len);
+            // 缺失段补齐后，交付已缓存的连续乱序段
+            flush_ooo(*f);
         } else if (seq_gt(seq, f->rcv_nxt)) {
-            // 超前序列号：不缓存，发送 Dup-ACK 触发对端快速重传
-            send_ack(*f);
-            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            // 超前序列号：缓存乱序段，缺失段补齐后按序交付。缓存成功时
+            // 静默等待（缺失段在并发读场景往往即将到达），不发 Dup-ACK，
+            // 避免人为乱序触发对端快速重传与拥塞窗口减半；缓存拒绝
+            // （超限/重复）时才发 Dup-ACK 促使对端重传缺失段.
+            if (ooo_append(*f, seq, data, data_len,
+                           (flags & TCP_FIN) != 0)) {
+                stats_.rx_ooo.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                send_ack(*f);
+            }
         } else {
             // 重复或已接收段：静默丢弃
             stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
@@ -299,35 +308,7 @@ void tcp_engine::handle_segment(const std::shared_ptr<tcp_flow> &f,
     if (flags & TCP_FIN) {
         // FIN 序号 = seq + data_len（FIN 消耗一个序列号，可与数据同段）
         const uint32_t fin_seq = seq + static_cast<uint32_t>(data_len);
-        if (fin_seq == f->rcv_nxt) {
-            if (!f->fin_received) {
-                f->rcv_nxt += 1;
-                f->fin_received = true;
-            }
-            send_ack(*f);
-            switch (f->state) {
-            case tcp_state::ESTABLISHED:
-                f->state = tcp_state::CLOSE_WAIT;
-                break;
-            case tcp_state::FIN_WAIT_1:
-                // 等待客户端 ACK 我们的 FIN（ACK 分支推进到 FIN_WAIT_2 /
-                // TIME_WAIT）
-                break;
-            case tcp_state::FIN_WAIT_2:
-                f->state = tcp_state::TIME_WAIT;
-                f->destroy_at = std::chrono::steady_clock::now() +
-                                cfg_.tcp_time_wait_timeout;
-                break;
-            case tcp_state::TIME_WAIT:
-                break;
-            default:
-                break;
-            }
-            flush_reads(*f);
-        } else if (f->fin_received && fin_seq == f->rcv_nxt - 1) {
-            // 对端重传 FIN：重新确认（避免客户端长时间重复重传）
-            send_ack(*f);
-        }
+        handle_fin(*f, fin_seq);
     }
 
     signal_write(*f);
@@ -442,6 +423,94 @@ void tcp_engine::flush_reads(tcp_flow &f)
             f.active_read.reset();
             op.handler(net::error::eof, 0);
         }
+    }
+}
+
+void tcp_engine::flush_ooo(tcp_flow &f)
+{
+    bool delivered = false;
+    for (;;) {
+        auto it = f.ooo_cache.find(f.rcv_nxt);
+        if (it == f.ooo_cache.end()) {
+            break;
+        }
+        const uint32_t seg_seq = it->first;
+        auto seg = std::move(it->second);
+        const size_t len = seg.data.size();
+        f.ooo_cache.erase(it);
+        f.ooo_bytes -= len;
+        --f.ooo_count;
+        // 缓存占用先归还记账，交付路径（rx_data/直投）再重新记账，
+        // 总量保持一致；deliver_data 内部的限额判定因此只面对 rx_data.
+        account_->release(len);
+        if (len > 0) {
+            deliver_data(f, seg.data.data(), len);
+        }
+        if (seg.fin) {
+            // FIN 序号 = 段首 seq + 数据长度（FIN 消耗一个序列号）
+            handle_fin(f, seg_seq + static_cast<uint32_t>(len));
+        }
+        delivered = true;
+    }
+    // 批量补齐后立即确认全部缓存段：避免各段 delayed ACK（每 2 段/40ms）
+    // 累积延迟，使内核尽快推进发送窗口，降低 RTO 概率.
+    if (delivered) {
+        send_ack(f);
+    }
+}
+
+bool tcp_engine::ooo_append(tcp_flow &f, uint32_t seq, const uint8_t *data,
+                            size_t len, bool fin)
+{
+    if (f.ooo_cache.find(seq) != f.ooo_cache.end()) {
+        return false; // 重复乱序段：忽略
+    }
+    if (f.ooo_count >= cfg_.tcp_ooo_max_segments ||
+        f.rx_bytes + f.ooo_bytes + len > cfg_.max_rx_queue_per_flow ||
+        !account_->reserve(len)) {
+        // 缓存超限：丢弃并依赖对端重传（调用方随后发 Dup-ACK）
+        stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    tcp_flow::ooo_segment seg;
+    seg.data.assign(data, data + len);
+    seg.fin = fin;
+    f.ooo_cache.emplace(seq, std::move(seg));
+    f.ooo_bytes += len;
+    ++f.ooo_count;
+    return true;
+}
+
+void tcp_engine::handle_fin(tcp_flow &f, uint32_t fin_seq)
+{
+    if (fin_seq == f.rcv_nxt) {
+        if (!f.fin_received) {
+            f.rcv_nxt += 1;
+            f.fin_received = true;
+        }
+        send_ack(f);
+        switch (f.state) {
+        case tcp_state::ESTABLISHED:
+            f.state = tcp_state::CLOSE_WAIT;
+            break;
+        case tcp_state::FIN_WAIT_1:
+            // 等待客户端 ACK 我们的 FIN（ACK 分支推进到 FIN_WAIT_2 /
+            // TIME_WAIT）
+            break;
+        case tcp_state::FIN_WAIT_2:
+            f.state = tcp_state::TIME_WAIT;
+            f.destroy_at = std::chrono::steady_clock::now() +
+                           cfg_.tcp_time_wait_timeout;
+            break;
+        case tcp_state::TIME_WAIT:
+            break;
+        default:
+            break;
+        }
+        flush_reads(f);
+    } else if (f.fin_received && fin_seq == f.rcv_nxt - 1) {
+        // 对端重传 FIN：重新确认（避免客户端长时间重复重传）
+        send_ack(f);
     }
 }
 
@@ -902,6 +971,12 @@ void tcp_engine::close_flow(tcp_flow &f, const boost::system::error_code &err)
     }
     f.rx_data.clear();
     f.rx_head = 0;
+    if (f.ooo_bytes > 0) {
+        account_->release(f.ooo_bytes);
+        f.ooo_bytes = 0;
+    }
+    f.ooo_cache.clear();
+    f.ooo_count = 0;
     if (f.state != tcp_state::SYN_RCVD &&
         f.state != tcp_state::SYN_ACK_SENT) {
         stats_.tcp_connections.fetch_sub(1, std::memory_order_relaxed);
@@ -995,6 +1070,12 @@ void tcp_flow_shutdown_receive(std::shared_ptr<tcp_flow> flow)
         }
         f.rx_data.clear();
         f.rx_head = 0;
+        if (f.ooo_bytes > 0) {
+            eng->account().release(f.ooo_bytes);
+            f.ooo_bytes = 0;
+        }
+        f.ooo_cache.clear();
+        f.ooo_count = 0;
     });
 }
 
@@ -1033,6 +1114,12 @@ void tcp_flow_close(std::shared_ptr<tcp_flow> flow)
         }
         f.rx_data.clear();
         f.rx_head = 0;
+        if (f.ooo_bytes > 0) {
+            eng->account().release(f.ooo_bytes);
+            f.ooo_bytes = 0;
+        }
+        f.ooo_cache.clear();
+        f.ooo_count = 0;
         if (f.snd_una != f.snd_nxt) {
             // 有未确认数据（在途或已丢失）：此时 FIN 序号会超前于对端
             // 期望序号而被当作乱序丢弃，改发 RST 快速释放连接.
