@@ -84,33 +84,10 @@ public:
     // 直接设定数据长度（写报文场景）
     void resize(size_t len)
     {
-        if (len > tailroom()) {
+        if (len > capacity_ - data_offset_ - data_size_) {
             throw std::length_error("packet_buffer::resize exceeds capacity");
         }
         data_size_ = len;
-    }
-
-    // 零拷贝前置头部
-    void prepend(size_t len) noexcept
-    {
-        data_offset_ -= len;
-        data_size_ += len;
-    }
-
-    // 零拷贝裁剪头部
-    void trim(size_t len) noexcept
-    {
-        data_offset_ += len;
-        data_size_ -= len;
-    }
-
-    size_t headroom_available() const noexcept
-    {
-        return data_offset_;
-    }
-    size_t tailroom() const noexcept
-    {
-        return capacity_ - data_offset_ - data_size_;
     }
 
 private:
