@@ -175,12 +175,11 @@ public:
     const uint8_t* data() const noexcept { return storage_.get() + data_offset_; }
     size_t size() const noexcept { return data_size_; }
 
-    // 零拷贝前置头部
-    void prepend(size_t len) noexcept { data_offset_ -= len; data_size_ += len; }
-    // 零拷贝裁剪头部
-    void trim(size_t len) noexcept { data_offset_ += len; data_size_ -= len; }
-
-    size_t headroom_available() const noexcept { return data_offset_; }
+    // 实际接口（详见 packet_buffer.hpp，无 prepend/trim/headroom_available）：
+    //   commit(len)          读取完成后推进数据长度
+    //   resize(len)          直接设定数据长度（写报文场景）
+    //   writable_data()/writable_size()  可写区（供异步读取）
+    //   headroom()           头部预留大小（macOS utun 写前缀等需要 >= 4）
 };
 ```
 
@@ -215,7 +214,7 @@ struct tcp_minimal_state {
 
 ### 4. 跨平台设备抽象层
 
-引擎核心不直接依赖任何平台特定的系统调用，通过 `std::variant` 持有平台具体实现，在统一的外壳类中完成 I/O 调度。该外壳支持两种初始化模式：
+引擎核心不直接依赖任何平台特定的系统调用：`tun_device` 经类型别名 `detail::tun_device_impl` 持有按平台拆分的实现类（posix/windows/wintun/unsupported，位于 `include/tunio/detail/impl/`），在统一的外壳类中完成 I/O 调度。该外壳支持两种初始化模式：
 
 - **自主打开模式**：传入设备配置（设备名、IP 等），内部根据平台构造对应的实现类。
 - **句柄注入模式**：传入外部已打开的平台原生句柄及 MTU，直接构造对应的实现类。
@@ -249,7 +248,10 @@ public:
     }
 
     // ---- 模式 2: 句柄注入 ----
-    bool assign(native_handle_type handle, size_t mtu, boost::system::error_code& ec) {
+    // 注：真实签名含第 4 个参数 utun_prefix（macOS utun 读写携带 4 字节
+    // 家族前缀时置 true），且实现按平台拆分于 detail/impl/*.hpp，此处为
+    // 简化示意.
+    bool assign(native_handle_type handle, size_t mtu, bool utun_prefix, boost::system::error_code& ec) {
 #if defined(BOOST_ASIO_HAS_POSIX_STREAM_DESCRIPTOR)
         impl_.emplace<posix_impl>(ctx_);
 #elif defined(BOOST_ASIO_HAS_WINDOWS_OVERLAPPED_PTR)
@@ -681,6 +683,7 @@ struct engine_stats {
     std::atomic<uint64_t> rx_packets;
     std::atomic<uint64_t> tx_packets;
     std::atomic<uint64_t> rx_dropped;
+    std::atomic<uint64_t> rx_ooo;        // 乱序缓存段数
     std::atomic<uint64_t> tcp_connections;
     std::atomic<uint64_t> udp_sessions;
     std::atomic<uint64_t> icmp_replies;
@@ -727,7 +730,7 @@ struct tun_config {
     // ---- 资源上限 ----
     size_t max_tcp_flows = 65536;
     size_t max_udp_flows = 65536;
-    size_t max_rx_queue_per_flow = 1024 * 1024;
+    size_t max_rx_queue_per_flow = 8 * 1024 * 1024;
     size_t max_total_buffer = 512 * 1024 * 1024;
 
     // ---- 超时策略 ----
@@ -860,7 +863,7 @@ int main() {
     config.netmask = "255.255.255.0";
     config.mtu = 1500;
 
-    net::error_code ec;
+    boost::system::error_code ec;
     if (!engine.open(config, ec)) {
         std::cerr << "Failed to open TUN: " << ec.message() << std::endl;
         return -1;

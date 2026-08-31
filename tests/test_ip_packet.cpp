@@ -460,6 +460,44 @@ static void test_builder_double_begin()
     assert(threw);
 }
 
+static void test_builder_capacity_guard()
+{
+    // IP 头放不下（writable 16 < 20）
+    {
+        ip_packet p(16, 0);
+        bool threw = false;
+        try {
+            p.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+                net::ip::make_address_v4("10.0.0.2"));
+        } catch (const std::length_error &) {
+            threw = true;
+        }
+        assert(threw);
+    }
+    // 传输层头放不下：可用 48 字节，IP 头 20 后剩 28 < 60（20 + 40 选项）
+    {
+        ip_packet p(64, 16);
+        p.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+            net::ip::make_address_v4("10.0.0.2"));
+        uint8_t opts[40] = {};
+        bool threw = false;
+        try {
+            p.begin_tcp(1, 2, 0, 0, 0, 0, opts, 40);
+        } catch (const std::length_error &) {
+            threw = true;
+        }
+        assert(threw);
+    }
+    // 正常容量下不抛
+    {
+        ip_packet p;
+        p.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+            net::ip::make_address_v4("10.0.0.2"));
+        p.begin_udp(1, 2);
+        assert(p.valid());
+    }
+}
+
 static void test_parse_clears_builder_state()
 {
     // 构造一个包
@@ -680,6 +718,7 @@ int main()
     test_build_ip_id();
     test_builder_precondition();
     test_builder_double_begin();
+    test_builder_capacity_guard();
     test_parse_clears_builder_state();
 
     test_device_read_ip();

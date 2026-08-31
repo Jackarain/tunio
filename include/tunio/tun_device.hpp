@@ -138,10 +138,11 @@ public:
             void(boost::system::error_code, size_t)>(
             [this, &pkt](auto handler) {
                 pkt.buffer().reset();
-                if (impl_.mtu() != 0 &&
-                    pkt.buffer().writable_size() < impl_.mtu()) {
-                    // 容量不足以容纳一个完整报文：立即以 message_size 完成，
-                    // 避免截断读入后解析报出令人困惑的 invalid_total_length。
+                // 容量不足容纳一个完整报文（utun 读含 4 字节前缀）时立即以
+                // message_size 完成，避免截断读入后解析报出令人困惑的
+                // invalid_total_length.
+                if (impl_.read_size_hint() != 0 &&
+                    pkt.buffer().writable_size() < impl_.read_size_hint()) {
                     net::post(net::get_associated_executor(handler),
                         [h = std::move(handler)]() mutable {
                             h(make_error_code(net::error::message_size), 0);

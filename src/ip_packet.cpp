@@ -170,7 +170,9 @@ size_t build_ip_header(uint8_t *buf, int family, const uint8_t *src_ip,
     }
     auto *ip = reinterpret_cast<ipv6_header *>(buf);
     ip->vtc_flow = htonl(0x60000000u);
-    ip->payload_len = htons(static_cast<uint16_t>(total_len - 40));
+    // total_len < 40 时避免无符号下溢（写出错误 payload_len）
+    ip->payload_len = htons(static_cast<uint16_t>(
+        total_len > 40 ? total_len - 40 : 0));
     ip->next_header = protocol;
     ip->hop_limit = 64;
     std::memcpy(ip->src_ip, src_ip, 16);
@@ -228,6 +230,13 @@ void ip_packet::copy_and_parse(const uint8_t *data, size_t len)
 
 void ip_packet::parse(const packet_buffer &src, size_t len)
 {
+    // 源缓冲越界防御：len 不得超过 src 的可写容量。以容量为界而非
+    // src.size()：设备读入未 commit 的路径下 size() 可能为 0，而字节
+    // 已位于 data() 处.
+    if (len > src.capacity() - src.headroom()) {
+        parse_error_ = parse_error::buffer_too_small;
+        return;
+    }
     copy_and_parse(src.data(), len);
 }
 
@@ -272,6 +281,10 @@ void ip_packet::builder_begin(uint8_t version)
     bld_ = builder_state{};
     bld_.version = version;
     bld_.ip_hlen = version == 4 ? sizeof(ipv4_header) : sizeof(ipv6_header);
+    if (buf_.writable_size() < bld_.ip_hlen) {
+        throw std::length_error(
+            "ip_packet: buffer too small for IP header");
+    }
     // 预留 IP 头部空间（finalize 时回填）
     std::memset(buf_.data(), 0, bld_.ip_hlen);
     buf_.commit(bld_.ip_hlen);
@@ -279,6 +292,10 @@ void ip_packet::builder_begin(uint8_t version)
 
 void ip_packet::reserve_transport()
 {
+    if (buf_.writable_size() < bld_.transport_hlen) {
+        throw std::length_error(
+            "ip_packet: buffer too small for transport header");
+    }
     // 预留传输层头部空间（finalize 时回填）
     std::memset(buf_.writable_data(), 0, bld_.transport_hlen);
     buf_.commit(bld_.transport_hlen);
