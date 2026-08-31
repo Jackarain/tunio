@@ -15,6 +15,7 @@
 #include "tunio/tun_config.hpp"
 
 #include <boost/asio.hpp>
+#include <boost/system/errc.hpp>
 
 #include <deque>
 #include <memory>
@@ -134,10 +135,16 @@ public:
     }
 
 private:
+    // 瞬时写失败重试上限：macOS 非阻塞数据报写满返回 ENOBUFS（而非
+    // EAGAIN）时直接重试同一缓冲，等待对端/内核排空；上限防止设备真
+    // 故障时 io 线程忙等失控.
+    static constexpr int k_write_retry_limit = 4096;
+
     struct entry
     {
         packet_buffer buf;
         device_write_handler handler;
+        int retries_left = k_write_retry_limit; // 瞬时写失败剩余重试次数
     };
 
     void pump()
@@ -161,6 +168,22 @@ private:
     // 写完成回调（在 Strand 上执行）
     void on_write_done(const boost::system::error_code &ec, size_t n)
     {
+        // macOS/BSD 非阻塞数据报写满时返回 ENOBUFS（而非 EAGAIN），且内核
+        // 不给出可写通知，Asio 将其作为写失败立即完成；排空缓冲的是对端/
+        // 内核（独立于 io 线程），因此直接重试同一缓冲即可等到可写空间，
+        // 而不是上报写失败中断整条发送链.
+        if (!cancelled_ && is_transient_write_error(ec) &&
+            current_->retries_left > 0) {
+            --current_->retries_left;
+            packet_buffer &buf = current_->buf;
+            auto self = shared_from_this();
+            dev_->async_write_packet(buf,
+                net::bind_executor(strand_, [self](
+                    boost::system::error_code ec, size_t n) {
+                    self->on_write_done(ec, n);
+                }));
+            return;
+        }
         if (!ec) {
             stats_->tx_packets.fetch_add(1, std::memory_order_relaxed);
         }
@@ -176,6 +199,14 @@ private:
         recycle(std::move(current_->buf));
         current_.reset();
         pump();
+    }
+
+    // 设备写瞬时失败（可重试）判定：非阻塞写满返回 ENOBUFS/EAGAIN，与
+    // 设备本身损坏（bad_descriptor 等）区分开.
+    static bool is_transient_write_error(const boost::system::error_code &ec)
+    {
+        return ec == boost::system::errc::no_buffer_space
+            || ec == boost::system::errc::resource_unavailable_try_again;
     }
 
     net::any_io_executor strand_;
