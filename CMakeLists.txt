@@ -86,6 +86,11 @@ if(WIN32 AND USE_WINTUN_DRIVER)
   target_compile_definitions(tunio PUBLIC USE_WINTUN_DRIVER)
   # 链接 Wintun 所需的 Windows 系统库.
   target_link_libraries(tunio PRIVATE iphlpapi cfgmgr32 setupapi ws2_32)
+elseif(WIN32)
+  # TAP 驱动自主打开 (tun_device_windows.cpp) 所需系统库:
+  #   ws2_32    -> inet_pton (ws2tcpip.h)
+  #   iphlpapi  -> GetAdapterIndex / GetIpInterfaceEntry / SetIpInterfaceEntry
+  target_link_libraries(tunio PRIVATE ws2_32 iphlpapi)
 endif()
 
 target_link_libraries(tunio PUBLIC ${TUNIO_BOOST_LIBS})
