@@ -298,8 +298,8 @@ static void test_parse_buffer_too_small()
 static void test_build_ipv4_tcp()
 {
     ip_packet p;
-    p.begin_ipv4(net::ip::address_v4::from_string("10.0.0.1"),
-        net::ip::address_v4::from_string("8.8.8.8"));
+    p.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+        net::ip::make_address_v4("8.8.8.8"));
     const uint8_t mss[4] = {2, 4, 0x05, 0xb4};
     p.begin_tcp(12345, 443, 1000, 0, 0x02 /* SYN */, 65535, mss, 4);
     const std::vector<uint8_t> data = {'h', 'i'};
@@ -329,8 +329,8 @@ static void test_build_ipv4_tcp()
 static void test_build_ipv4_udp()
 {
     ip_packet p;
-    p.begin_ipv4(net::ip::address_v4::from_string("10.0.0.1"),
-        net::ip::address_v4::from_string("8.8.8.8"));
+    p.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+        net::ip::make_address_v4("8.8.8.8"));
     p.begin_udp(12345, 53);
     const char payload[] = "hello udp";
     p.append_payload(payload, sizeof(payload) - 1);
@@ -346,8 +346,8 @@ static void test_build_ipv4_udp()
 static void test_build_ipv4_icmp_echo()
 {
     ip_packet p;
-    p.begin_ipv4(net::ip::address_v4::from_string("10.0.0.1"),
-        net::ip::address_v4::from_string("10.0.0.2"));
+    p.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+        net::ip::make_address_v4("10.0.0.2"));
     p.begin_icmp(8, 0);
     p.set_icmp_echo(0xbeef, 42);
     const char payload[] = "ping";
@@ -365,8 +365,8 @@ static void test_build_ipv4_icmp_echo()
 static void test_build_ipv6_tcp()
 {
     ip_packet p;
-    p.begin_ipv6(net::ip::address_v6::from_string("fd00::1"),
-        net::ip::address_v6::from_string("fd00::2"));
+    p.begin_ipv6(net::ip::make_address_v6("fd00::1"),
+        net::ip::make_address_v6("fd00::2"));
     p.begin_tcp(20000, 8080, 5, 6, 0x10 /* ACK */, 4096);
     const std::vector<uint8_t> data = {9, 8, 7};
     p.append_payload(data.data(), data.size());
@@ -383,8 +383,8 @@ static void test_build_ipv6_tcp()
 static void test_build_ipv6_udp()
 {
     ip_packet p;
-    p.begin_ipv6(net::ip::address_v6::from_string("fd00::1"),
-        net::ip::address_v6::from_string("fd00::2"));
+    p.begin_ipv6(net::ip::make_address_v6("fd00::1"),
+        net::ip::make_address_v6("fd00::2"));
     p.begin_udp(30000, 5353);
     const char payload[] = "v6 udp";
     p.append_payload(payload, sizeof(payload) - 1);
@@ -399,8 +399,8 @@ static void test_build_ipv6_udp()
 static void test_build_ipv6_icmp6_echo()
 {
     ip_packet p;
-    p.begin_ipv6(net::ip::address_v6::from_string("fd00::1"),
-        net::ip::address_v6::from_string("fd00::2"));
+    p.begin_ipv6(net::ip::make_address_v6("fd00::1"),
+        net::ip::make_address_v6("fd00::2"));
     p.begin_icmp(128, 0);
     p.set_icmp_echo(7, 8);
     p.finalize();
@@ -416,8 +416,8 @@ static void test_build_ipv6_icmp6_echo()
 static void test_build_ip_id()
 {
     ip_packet p;
-    p.begin_ipv4(net::ip::address_v4::from_string("10.0.0.1"),
-        net::ip::address_v4::from_string("10.0.0.2"));
+    p.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+        net::ip::make_address_v4("10.0.0.2"));
     p.begin_udp(1, 2);
     p.set_ip_id(0x1234);
     p.finalize();
@@ -508,7 +508,7 @@ static void test_device_read_ip()
     auto fut = env.dev.async_read_ip(pkt, net::use_future);
     auto vec = make_tcp(0x0a000002, 0x08080808, 20000, 443, 0x12, 100, 0,
         65535, {1, 2, 3, 4});
-    ::write(env.peer, vec.data(), vec.size());
+    (void)::write(env.peer, vec.data(), vec.size());
     // use_future 对 void(ec, size_t) 签名：成功返回 size_t，设备错误抛 system_error
     const size_t n = future_get(std::move(fut));
     assert(n == vec.size());
@@ -525,8 +525,8 @@ static void test_device_write_ip()
 {
     dev_env env;
     ip_packet pkt;
-    pkt.begin_ipv4(net::ip::address_v4::from_string("10.0.0.1"),
-        net::ip::address_v4::from_string("10.0.0.2"));
+    pkt.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+        net::ip::make_address_v4("10.0.0.2"));
     pkt.begin_udp(12345, 53);
     const char hello[] = "hello";
     pkt.append_payload(hello, 5);
@@ -563,7 +563,7 @@ static void test_device_concurrent_reads()
         auto vec = make_udp(0x0a000002, 0x08080808,
             10000 + static_cast<uint16_t>(i), 53,
             {static_cast<uint8_t>(i)});
-        ::write(env.peer, vec.data(), vec.size());
+        (void)::write(env.peer, vec.data(), vec.size());
     }
     for (size_t i = 0; i < 4; ++i) {
         (void)future_get(std::move(futs[i]));
@@ -579,7 +579,7 @@ static void test_device_read_invalid()
     auto fut = env.dev.async_read_ip(pkt, net::use_future);
     std::vector<uint8_t> garbage(64, 0xab);
     garbage[0] = 0x35; // version 3
-    ::write(env.peer, garbage.data(), garbage.size());
+    (void)::write(env.peer, garbage.data(), garbage.size());
     // 设备读成功（非 I/O 错误），use_future 直接返回字节数
     const size_t n = future_get(std::move(fut));
     assert(n == garbage.size());
