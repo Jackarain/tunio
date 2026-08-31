@@ -437,6 +437,56 @@ static void test_builder_precondition()
     assert(threw);
 }
 
+static void test_builder_double_begin()
+{
+    ip_packet p;
+    p.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+        net::ip::make_address_v4("10.0.0.2"));
+    p.begin_udp(1, 2);
+    // 传输层已开始后再 begin_* 应抛 std::logic_error
+    bool threw = false;
+    try {
+        p.begin_tcp(3, 4, 0, 0, 0, 0);
+    } catch (const std::logic_error &) {
+        threw = true;
+    }
+    assert(threw);
+    threw = false;
+    try {
+        p.begin_udp(5, 6);
+    } catch (const std::logic_error &) {
+        threw = true;
+    }
+    assert(threw);
+}
+
+static void test_parse_clears_builder_state()
+{
+    // 构造一个包
+    ip_packet p;
+    p.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+        net::ip::make_address_v4("10.0.0.2"));
+    p.begin_udp(12345, 53);
+    const char hello[] = "hello";
+    p.append_payload(hello, 5);
+    p.finalize();
+    assert(p.valid() && p.is_udp());
+
+    // 解析另一报文后，builder 状态已被清除，finalize 应为 no-op
+    auto vec = make_udp(0x0a000002, 0x08080808, 30000, 53, {1, 2, 3});
+    p.parse(vec.data(), vec.size());
+    assert(p.valid() && p.is_udp());
+    assert(p.source_port() == 30000);
+    const size_t parsed_size = p.buffer().size();
+    const std::vector<uint8_t> parsed(
+        p.buffer().data(), p.buffer().data() + parsed_size);
+
+    p.finalize(); // bld_.version == 0 -> 直接返回，不改动缓冲
+    assert(p.buffer().size() == parsed_size);
+    assert(std::memcmp(p.buffer().data(), parsed.data(), parsed_size) == 0);
+    assert(p.valid() && p.is_udp() && p.source_port() == 30000);
+}
+
 // ---- 设备级测试（socketpair 注入 tun_device）----
 
 struct dev_env
@@ -587,6 +637,24 @@ static void test_device_read_invalid()
     assert(pkt.error() == ip_packet::parse_error::invalid_version);
 }
 
+static void test_device_read_capacity_guard()
+{
+    dev_env env; // mtu = 1500
+    // 缓冲可用容量 1024 - 128 = 896 < 1500：不注入任何数据也应立即失败
+    ip_packet pkt(1024, 128);
+    auto fut = env.dev.async_read_ip(pkt, net::use_future);
+    bool threw = false;
+    boost::system::error_code ec;
+    try {
+        (void)future_get(std::move(fut));
+    } catch (const boost::system::system_error &e) {
+        ec = e.code();
+        threw = true;
+    }
+    assert(threw);
+    assert(ec == net::error::message_size);
+}
+
 } // namespace
 
 int main()
@@ -611,11 +679,14 @@ int main()
     test_build_ipv6_icmp6_echo();
     test_build_ip_id();
     test_builder_precondition();
+    test_builder_double_begin();
+    test_parse_clears_builder_state();
 
     test_device_read_ip();
     test_device_write_ip();
     test_device_concurrent_reads();
     test_device_read_invalid();
+    test_device_read_capacity_guard();
 
     std::cout << "test_ip_packet: all tests passed" << std::endl;
     return 0;

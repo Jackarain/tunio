@@ -127,9 +127,10 @@ public:
     // 设备将报文直接读入 pkt 的内部缓冲并立即解析（零拷贝），完成后即可
     // 通过 pkt 的版本/地址/端口/传输层视图/载荷等访问器读取具体协议信息。
     // 完成签名与 async_read_packet 一致：void(error_code, size_t)，ec 仅反映
-    // 设备 I/O 错误；报文结构非法（解析失败）时 ec 为 no_error，通过
-    // pkt.valid() / pkt.error() 判断。每个未完成的 async_read_ip 需要独立
-    // 的 ip_packet 对象（自持缓冲），同一对象不可并发发起多次读取。
+    // 设备 I/O 错误（含 pkt 缓冲容量不足以容纳一个 MTU 报文时的
+    // net::error::message_size）；报文结构非法（解析失败）时 ec 为 no_error，
+    // 通过 pkt.valid() / pkt.error() 判断。每个未完成的 async_read_ip 需要
+    // 独立的 ip_packet 对象（自持缓冲），同一对象不可并发发起多次读取。
     template <typename CompletionToken>
     auto async_read_ip(ip_packet &pkt, CompletionToken &&token)
     {
@@ -137,6 +138,16 @@ public:
             void(boost::system::error_code, size_t)>(
             [this, &pkt](auto handler) {
                 pkt.buffer().reset();
+                if (impl_.mtu() != 0 &&
+                    pkt.buffer().writable_size() < impl_.mtu()) {
+                    // 容量不足以容纳一个完整报文：立即以 message_size 完成，
+                    // 避免截断读入后解析报出令人困惑的 invalid_total_length。
+                    net::post(net::get_associated_executor(handler),
+                        [h = std::move(handler)]() mutable {
+                            h(make_error_code(net::error::message_size), 0);
+                        });
+                    return;
+                }
                 impl_.async_read(pkt.buffer(),
                     [h = std::move(handler),
                         &pkt](const boost::system::error_code &ec, size_t n) mutable {

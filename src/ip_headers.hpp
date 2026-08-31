@@ -24,8 +24,6 @@ namespace detail {
 
 // 公开类型与工具（位于 tunio 命名空间）在 detail 中的别名
 using ::tunio::build_ip_header;
-using ::tunio::checksum_fold;
-using ::tunio::checksum_sum;
 using ::tunio::ip_checksum;
 using ::tunio::ip_header_size;
 using ::tunio::ipv4_checksum;
