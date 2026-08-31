@@ -66,9 +66,11 @@ const wchar_t k_network_connections_key[] =
 // 单个 TAP 网卡信息。
 struct tap_device_info
 {
-    std::string component_id; // ComponentId，小写，如 "tap0901"
-    std::string guid;         // NetCfgInstanceId，如 "{XXXXXXXX-...}"
+    std::string
+        component_id; // ComponentId 归一化（小写、去 root\ 前缀），如 "tap0901"
+    std::string guid; // NetCfgInstanceId，如 "{XXXXXXXX-...}"
     std::string name; // 网卡显示名（UTF-8），如 "TAP-Windows Adapter V9"
+    std::string driver_desc; // DriverDesc（UTF-8），显示名兜底
 };
 
 boost::system::error_code win_last_error()
@@ -140,8 +142,20 @@ std::string narrow(const std::wstring &ws)
     return result;
 }
 
+// 归一化 ComponentId：小写并去掉 "root\" 前缀。新版 OpenVPN 安装器
+// （2.5.6+）创建的 TAP 适配器是根枚举设备，ComponentId 形如
+// "root\tap0901"（参考 yarrick/iodine issue #73）。
+std::string normalize_component_id(std::string id)
+{
+    id = ascii_lower(id);
+    if (id.starts_with("root\\"))
+        id.erase(0, 5); // strlen("root\")
+    return id;
+}
+
 // 是否为 TAP 驱动：显式支持 tap0901、tapnordvpn、tap-tb-0901 等常见
 // ComponentId，以及任何以 "tap" 开头的变体（tap0801、tapoas 等）。
+// 入参为已归一化的 ComponentId（无 "root\" 前缀）。
 bool is_tap_component(const std::string &component_id)
 {
     static const char *const known[] = {"tap0901", "tapnordvpn", "tap-tb-0901"};
@@ -178,31 +192,62 @@ std::vector<tap_device_info> enum_tap_devices()
             continue;
 
         char comp_id[256] = {0};
+        char match_id[256] = {0};
         char inst_id[256] = {0};
+        wchar_t desc_id[256] = {0};
         DWORD type = 0;
         DWORD comp_len = static_cast<DWORD>(sizeof(comp_id));
         const bool has_comp =
             ::RegQueryValueExA(unit_key, "ComponentId", nullptr, &type,
                                reinterpret_cast<LPBYTE>(comp_id),
                                &comp_len) == ERROR_SUCCESS;
-        bool has_inst = false;
-        if (has_comp) {
-            len = static_cast<DWORD>(sizeof(inst_id));
-            has_inst =
-                ::RegQueryValueExA(unit_key, "NetCfgInstanceId", nullptr, &type,
-                                   reinterpret_cast<LPBYTE>(inst_id),
-                                   &len) == ERROR_SUCCESS;
+        // NetCfgInstanceId 独立读取：不依赖 ComponentId 是否存在，
+        // 以便 ComponentId 缺失时仍能走 MatchingDeviceId 兜底。
+        len = static_cast<DWORD>(sizeof(inst_id));
+        const bool has_inst =
+            ::RegQueryValueExA(unit_key, "NetCfgInstanceId", nullptr, &type,
+                               reinterpret_cast<LPBYTE>(inst_id),
+                               &len) == ERROR_SUCCESS;
+        bool has_match = false;
+        {
+            DWORD mlen = static_cast<DWORD>(sizeof(match_id));
+            has_match =
+                ::RegQueryValueExA(unit_key, "MatchingDeviceId", nullptr, &type,
+                                   reinterpret_cast<LPBYTE>(match_id),
+                                   &mlen) == ERROR_SUCCESS;
+        }
+        bool has_desc = false;
+        {
+            // DriverDesc 可能本地化（非 ASCII），用宽字符 API 读取。
+            DWORD dlen = static_cast<DWORD>(sizeof(desc_id));
+            has_desc =
+                ::RegQueryValueExW(unit_key, L"DriverDesc", nullptr, &type,
+                                   reinterpret_cast<LPBYTE>(desc_id),
+                                   &dlen) == ERROR_SUCCESS;
         }
         ::RegCloseKey(unit_key);
 
-        if (has_comp && has_inst) {
-            const std::string component_id = ascii_lower(comp_id);
-            if (is_tap_component(component_id)) {
-                tap_device_info dev;
-                dev.component_id = component_id;
-                dev.guid.assign(inst_id);
-                result.push_back(std::move(dev));
-            }
+        if (!has_inst)
+            continue;
+
+        // 硬件 ID 信号：优先 ComponentId，缺失时退回 MatchingDeviceId，
+        // 两者都归一化（小写 + 去 "root\" 前缀）。
+        std::string component_id =
+            has_comp ? normalize_component_id(comp_id)
+                     : (has_match ? normalize_component_id(match_id)
+                                  : std::string());
+        const bool is_tap =
+            is_tap_component(component_id) ||
+            (has_desc &&
+             ascii_lower(narrow(desc_id)).find("tap") != std::string::npos);
+
+        if (is_tap) {
+            tap_device_info dev;
+            dev.component_id = std::move(component_id);
+            dev.guid.assign(inst_id);
+            if (has_desc)
+                dev.driver_desc = narrow(desc_id);
+            result.push_back(std::move(dev));
         }
     }
     ::RegCloseKey(key);
@@ -244,6 +289,12 @@ std::vector<tap_device_info> enum_tap_devices()
     }
     ::RegCloseKey(key);
 
+    // 显示名兜底：网络连接分支缺失时退回 DriverDesc（TAP-Windows
+    // Adapter V9 的 DriverDesc 与显示名通常一致）。
+    for (auto &dev : result)
+        if (dev.name.empty())
+            dev.name = dev.driver_desc;
+
     return result;
 }
 
@@ -252,7 +303,7 @@ std::vector<tap_device_info> enum_tap_devices()
 //   ② GUID（带/不带花括号，大小写不敏感）；
 //   ③ 设备路径，如 "\\.\Global\{GUID}.tap"；
 //   ④ 网卡显示名（如 "TAP-Windows Adapter V9"）；
-//   ⑤ ComponentId（如 "tap0901" -> 第一块该驱动的网卡）。
+//   ⑤ ComponentId（如 "tap0901" 或 "root\tap0901" -> 第一块该驱动的网卡）。
 std::string resolve_tap_guid(const std::vector<tap_device_info> &devs,
                              const std::string &name)
 {
@@ -282,9 +333,11 @@ std::string resolve_tap_guid(const std::vector<tap_device_info> &devs,
             return dev.guid;
     }
 
-    // 显示名 / ComponentId。
+    // 显示名 / ComponentId（输入与存储的 component_id 均做归一化，
+    // 因此 "tap0901" 与 "root\tap0901" 写法都能匹配）。
+    const std::string norm_name = normalize_component_id(name);
     for (const auto &dev : devs) {
-        if (iequals(dev.name, name) || iequals(dev.component_id, name))
+        if (iequals(dev.name, name) || iequals(dev.component_id, norm_name))
             return dev.guid;
     }
 
