@@ -143,7 +143,9 @@ public:
                 // invalid_total_length.
                 if (impl_.read_size_hint() != 0 &&
                     pkt.buffer().writable_size() < impl_.read_size_hint()) {
-                    net::post(net::get_associated_executor(handler),
+                    // 用 dispatch 在 handler 的关联执行器上完成（post 在
+                    // Asio 1.38+ 的默认 inline_executor 上无法编译）.
+                    net::dispatch(net::get_associated_executor(handler),
                         [h = std::move(handler)]() mutable {
                             h(make_error_code(net::error::message_size), 0);
                         });

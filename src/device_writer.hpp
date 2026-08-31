@@ -94,8 +94,12 @@ public:
                                    void(boost::system::error_code, size_t)>(
             [this](auto handler, packet_buffer buf) {
                 if (queue_.size() >= k_queue_max_entries) {
-                    // 队列饱和：以 no_buffer_space 完成，避免无界积压
-                    net::post(net::get_associated_executor(handler),
+                    // 队列饱和：以 no_buffer_space 完成，避免无界积压。
+                    // 用 dispatch 在 handler 的关联执行器上完成：新版 Asio
+                    // （1.38+）的默认关联执行器为 inline_executor，无法满足
+                    // post 的 blocking.never 约束（编译失败），dispatch 无此
+                    // 限制，且与引擎其余完成回调派发方式保持一致.
+                    net::dispatch(net::get_associated_executor(handler),
                         [h = std::move(handler)]() mutable {
                             h(make_error_code(net::error::no_buffer_space), 0);
                         });
