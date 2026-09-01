@@ -35,9 +35,15 @@ public:
 
     bool open(const device_config &cfg, boost::system::error_code &ec);
 
+    // 对注入的 TUN fd 应用默认发送队列长度（Linux 下经 TUNGETIFF 取接口名
+    // 后设置；非 TUN 句柄或无权限时静默跳过，失败不视为错误）.
+    void apply_default_tx_queue_len(native_handle_type handle);
+
     bool assign(native_handle_type handle, size_t mtu, bool utun_prefix,
         boost::system::error_code &ec)
     {
+        // 与自主打开一致：对注入的设备 fd 同样调整默认发送队列长度.
+        apply_default_tx_queue_len(handle);
         desc_.assign(static_cast<native_handle_type>(handle), ec);
         if (!ec) {
             open_ = true;

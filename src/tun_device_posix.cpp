@@ -143,6 +143,18 @@ bool add_ipv6_address(int ioctl_sock, const std::string &ifname,
     }
 }
 
+// 通过 ioctl socket 设置接口发送队列长度；非致命——失败时保留内核默认值.
+void set_tx_queue_len(int sock, const char *ifname, int qlen)
+{
+    struct ifreq ifr;
+    std::memset(&ifr, 0, sizeof(ifr));
+    std::strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    ifr.ifr_qlen = qlen;
+    if (::ioctl(sock, SIOCSIFTXQLEN, &ifr) < 0) {
+        // 非致命：保留内核默认队列长度.
+    }
+}
+
 } // namespace
 #endif
 
@@ -183,6 +195,10 @@ bool posix_tun_device_impl::open(const device_config &cfg,
         ::close(fd);
         return false;
     }
+
+    // 默认调整发送队列长度（txqueuelen）为 4096，避免设备写拥塞时内核
+    // 队列过短导致突发丢包；非致命——失败时保留内核默认值，不阻断打开.
+    set_tx_queue_len(s, dev_name.c_str(), 4096);
 
     // 未指定 IPv4 地址时（如外部脚本负责配置地址/路由/UP），仅设置 MTU，
     // 不与外部配置冲突；与“只创建设备”的旧语义保持一致。
@@ -290,6 +306,28 @@ bool posix_tun_device_impl::open(const device_config &cfg,
     ec = boost::system::error_code(boost::system::errc::operation_not_supported,
                                    boost::system::generic_category());
     return false;
+#endif
+}
+
+void posix_tun_device_impl::apply_default_tx_queue_len(
+    native_handle_type handle)
+{
+#if defined(__linux__)
+    // 注入的 TUN fd 经 TUNGETIFF 取回接口名，再经 ioctl socket 应用默认
+    // 发送队列长度；非 TUN 句柄（如测试用 socketpair）或缺少权限时静默跳过.
+    struct ifreq ifr;
+    std::memset(&ifr, 0, sizeof(ifr));
+    if (::ioctl(handle, TUNGETIFF, &ifr) < 0) {
+        return;
+    }
+    const int s = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) {
+        return;
+    }
+    set_tx_queue_len(s, ifr.ifr_name, 4096);
+    ::close(s);
+#else
+    (void)handle;
 #endif
 }
 
