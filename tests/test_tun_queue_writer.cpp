@@ -94,17 +94,23 @@ std::future<write_result> post_write(
 struct io_guard
 {
     net::io_context &io;
+    net::executor_work_guard<net::io_context::executor_type> guard;
     std::shared_ptr<tunio::tun_device> dev;
     int fd;
     std::thread thread;
 
     io_guard(net::io_context &i, std::shared_ptr<tunio::tun_device> d, int f)
-        : io(i), dev(std::move(d)), fd(f), thread([&] { io.run(); })
+        : io(i)
+        , guard(net::make_work_guard(io))
+        , dev(std::move(d))
+        , fd(f)
+        , thread([&] { io.run(); })
     {
     }
 
     ~io_guard()
     {
+        guard.reset();
         io.stop();
         if (thread.joinable()) {
             thread.join();
