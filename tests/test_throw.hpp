@@ -10,12 +10,13 @@
 
 #pragma once
 
-#include <stdexcept>
-#include <string>
+// 测试宏（基于 Boost.Test）：与标准 assert 不同，不受 NDEBUG 影响，
+// Release 构建下同样生效，避免测试因断言被编译掉而形同虚设。
+// 使用前需先包含 boost/test/included/unit_test.hpp（每个测试文件
+// 定义 BOOST_TEST_MODULE 后包含）。
 
-// 测试异常宏：在信息前附加文件与行号，保证所有测试抛出点的异常信息
-// 唯一，崩溃时可直接定位到具体抛异常的代码位置.
-#define TEST_THROW(msg) \
-    throw std::runtime_error(std::string(__FILE__) + ":" + \
-        std::to_string(__LINE__) + " " + (msg))
+// 断言失败：中止当前测试用例并报告失败（等价 BOOST_REQUIRE）.
+#define TEST_ASSERT(...) BOOST_REQUIRE(__VA_ARGS__)
 
+// 直接失败：中止当前测试用例并报告信息（等价 BOOST_FAIL）.
+#define TEST_THROW(msg) BOOST_FAIL(msg)

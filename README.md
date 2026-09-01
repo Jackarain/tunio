@@ -63,7 +63,8 @@ ctest --test-dir build --output-on-failure
 
 常用选项：
 
-- `TUNIO_BUILD_TESTS`（默认 `ON`）：构建单元测试。
+- `TUNIO_BUILD_TESTS`（默认 `ON`）：构建单元测试（基于 Boost.Test，
+  header-only 模式，无需额外链接测试库）。
 - `TUNIO_BUILD_EXAMPLES`（默认 `ON`）：构建示例程序。
 - `USE_WINTUN_DRIVER`（默认 `OFF`，仅 Windows）：使用 Wintun 驱动。
 - `TUNIO_DISABLE_LOOPBACK_GUARD`（默认 `OFF`）：关闭环路与本地地址防护

@@ -8,6 +8,8 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 
+#define BOOST_TEST_MODULE tun_queue_writer
+#include <boost/test/included/unit_test.hpp>
 #include "tun_queue_writer.hpp"
 #include "tunio/tun_config.hpp"
 #include "test_throw.hpp"
@@ -114,7 +116,7 @@ struct io_guard
 
 } // namespace
 
-int main()
+BOOST_AUTO_TEST_CASE(tun_queue_writer)
 {
     int sv[2];
     if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) {
@@ -156,18 +158,18 @@ int main()
             if (r.ec) {
                 got_error = true;
             } else {
-                assert(r.n == k_payload);
+                TEST_ASSERT(r.n == k_payload);
                 ++successes;
             }
         }
-        assert(got_error);
+        TEST_ASSERT(got_error);
         std::vector<uint8_t> stash;
         for (int i = 0; i < successes; ++i) {
             drain_one(sv[0], stash);
         }
-        assert(stash.size() == successes * k_payload);
+        TEST_ASSERT(stash.size() == successes * k_payload);
         auto r = wait_future(post_write(writer, strand, payload), 5000);
-        assert(!r.ec && r.n == k_payload);
+        TEST_ASSERT(!r.ec && r.n == k_payload);
     }
 #endif
 
@@ -185,10 +187,8 @@ int main()
         }
         for (auto &f : futs) {
             auto r = wait_future(std::move(f), 30000);
-            assert(!r.ec && r.n == k_payload);
+            TEST_ASSERT(!r.ec && r.n == k_payload);
         }
-        assert(stash.size() == k_packets * k_payload);
+        TEST_ASSERT(stash.size() == k_packets * k_payload);
     }
-
-    return 0;
 }
