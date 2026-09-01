@@ -12,9 +12,9 @@
 //   1. pick_tx_queue：写队列选择的确定性 / 同流同队列 / 多流分布；
 //   2. 引擎级多队列：多句柄注入（多 socketpair 模拟多队列 fd），验证
 //      读侧各队列并发处理、写侧按哈希分发后仍能读回；
-//   3. 真实 TUN 设备环回（需 root + /dev/net/tun，不可用时跳过）：
-//      自主打开 num_queues 队列，经独立注入 fd 发送 ICMP Echo，验证
-//      内核回包经多队列读回.
+//   3. 真实 TUN 设备环回（仅 Linux：需 root + /dev/net/tun，不可用时
+//      跳过）：自主打开 num_queues 队列，经独立注入 fd 发送 ICMP Echo，
+//      验证内核回包经多队列读回.
 
 #define BOOST_TEST_MODULE multi_queue
 #include <boost/test/included/unit_test.hpp>
@@ -32,10 +32,13 @@
 #include <vector>
 
 #include <fcntl.h>
-#include <linux/if.h>
-#include <linux/if_tun.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+
+#if defined(__linux__)
+#include <linux/if.h>
+#include <linux/if_tun.h>
+#endif
 
 using namespace test;
 
@@ -276,7 +279,9 @@ BOOST_AUTO_TEST_CASE(test_engine_many_queues)
     TEST_ASSERT(replies == k_queues);
 }
 
-// 3. 真实 TUN 多队列环回（需要 root + /dev/net/tun；不可用时跳过）
+// 3. 真实 TUN 多队列环回（仅 Linux：需要 root + /dev/net/tun；
+//    不可用时跳过；macOS 等平台无 /dev/net/tun 与 IFF_MULTI_QUEUE）
+#if defined(__linux__)
 BOOST_AUTO_TEST_CASE(test_real_multi_queue_tun)
 {
     // 真实多队列 TUN 环回：需要 root + /dev/net/tun + 内核支持
@@ -404,5 +409,6 @@ BOOST_AUTO_TEST_CASE(test_real_multi_queue_tun)
 
     ::close(inject_fd);
 }
+#endif // __linux__
 
 } // namespace
