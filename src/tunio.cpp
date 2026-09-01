@@ -218,7 +218,11 @@ void tunio_impl::start_read()
     if (!open_.load(std::memory_order_acquire)) {
         return;
     }
-    for (size_t i = 0; i < k_read_slots; ++i) {
+    // 槽总数 = num_queues_ * slots_per_queue_（队列数 > 32 时每队列 1 槽，
+    // 总数可能大于 k_read_slots），必须按实际槽数启动，保证每个队列
+    // 至少挂起一个读取，否则后半队列的入站包无人读取.
+    const size_t total = read_inflight_.size();
+    for (size_t i = 0; i < total; ++i) {
         start_read_slot(i);
     }
 }

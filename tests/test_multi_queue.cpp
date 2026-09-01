@@ -94,6 +94,12 @@ void test_pick_tx_queue()
     std::memcpy(junk.writable_data(), "not-an-ip", 9);
     junk.resize(9);
     assert(tunio::detail::pick_tx_queue(junk, 4) == 0);
+
+    // 残缺 IPv6 头（< 40 字节固定头）：回退队列 0，不得越界读地址区
+    tunio::packet_buffer short6(64, 16);
+    short6.writable_data()[0] = 0x60; // version 6
+    short6.resize(20);
+    assert(tunio::detail::pick_tx_queue(short6, 4) == 0);
 }
 
 // 2. 引擎级多队列：多 socketpair 注入，读侧各队列并发、写侧哈希分发
@@ -207,6 +213,49 @@ void test_engine_multi_queue_multithread()
     t2.join();
 }
 
+// 2.2 队列数超过读槽基准（32）时每队列仍至少一个读槽：向每个队列注入
+// ICMP Echo，验证所有队列都能被读取并回复（回归：start_read 曾只启动
+// 前 k_read_slots 个槽，队列 32+ 无读槽导致入站包无人读取）.
+void test_engine_many_queues()
+{
+    constexpr size_t k_queues = 40; // > k_read_slots（32）
+    engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+                   std::chrono::seconds(30), 1024 * 1024,
+                   std::chrono::milliseconds(5000),
+                   std::chrono::milliseconds(200), 8, k_queues);
+    assert(env.engine.queue_count() == k_queues);
+
+    constexpr uint16_t k_base_id = 7000;
+    const std::vector<uint8_t> payload = {0x11, 0x22};
+    for (size_t q = 0; q < k_queues; ++q) {
+        env.dev.send(make_icmp_echo(ip("10.0.0.2"), ip("10.0.0.1"),
+                                    static_cast<uint16_t>(k_base_id + q),
+                                    static_cast<uint16_t>(q), payload),
+                     q);
+    }
+    bool seen[k_queues] = {};
+    size_t replies = 0;
+    for (size_t i = 0; i < 2 * k_queues && replies < k_queues; ++i) {
+        std::vector<uint8_t> pkt;
+        if (!env.dev.read_packet(pkt, 3000)) {
+            break;
+        }
+        ip_hdr_info ipi;
+        if (!parse_ip(pkt, ipi) || ipi.proto != 1 ||
+            ipi.payload_len < 8 + payload.size() || ipi.payload[0] != 0) {
+            continue;
+        }
+        const uint16_t id =
+            static_cast<uint16_t>((ipi.payload[4] << 8) | ipi.payload[5]);
+        const size_t idx = static_cast<size_t>(id - k_base_id);
+        if (idx < k_queues && !seen[idx]) {
+            seen[idx] = true;
+            ++replies;
+        }
+    }
+    assert(replies == k_queues);
+}
+
 // 3. 真实 TUN 多队列环回（需要 root + /dev/net/tun；不可用时跳过）
 void test_real_multi_queue_tun()
 {
@@ -317,6 +366,7 @@ int main()
     test_pick_tx_queue();
     test_engine_multi_queue();
     test_engine_multi_queue_multithread();
+    test_engine_many_queues();
     test_real_multi_queue_tun();
     return 0;
 }

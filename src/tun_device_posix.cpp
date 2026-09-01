@@ -167,7 +167,7 @@ bool posix_tun_device_impl::open(const device_config &cfg,
 
     // 多队列校验：0 或超上限（内核 MAX_TAP_QUEUES）视为非法配置；
     // 单队列（默认）保持不带 IFF_MULTI_QUEUE 的旧行为，兼容老内核.
-    if (cfg.num_queues < 1 || cfg.num_queues > tunio::max_multi_queues) {
+    if (cfg.num_queues < 1 || cfg.num_queues > max_multi_queues) {
         ec = boost::system::error_code(EINVAL,
             boost::system::generic_category());
         return false;

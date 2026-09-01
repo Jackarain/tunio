@@ -58,6 +58,12 @@ public:
                 boost::system::generic_category());
             return false;
         }
+        // 与自主打开一致：句柄数（队列数）上限为内核 MAX_TAP_QUEUES.
+        if (handles.size() > max_multi_queues) {
+            ec = boost::system::error_code(EINVAL,
+                boost::system::generic_category());
+            return false;
+        }
         // 与自主打开一致：对注入的设备 fd 同样调整默认发送队列长度.
         std::vector<net::posix::stream_descriptor> new_descs;
         new_descs.reserve(handles.size());
