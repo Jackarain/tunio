@@ -33,6 +33,38 @@ uint32_t random_iss()
     return rng();
 }
 
+// 解析对端 SYN 通告的 Window Scale（RFC 7323 选项 kind=3, len=3）。
+// 两方向缩放独立（RFC 7323 §2.2）：解释对端窗口字段时左移对端通告原值
+//（snd）；本端广告窗口时右移本端通告值（rcv，固定 7）。对端未通告或值
+// >14（RFC 7323 规定忽略）时视为未启用缩放，本端也不缩放。
+void parse_syn_wscale(
+    const uint8_t* payload, size_t hlen, uint8_t& wscale, bool& wscale_ok)
+{
+    wscale = 0;
+    wscale_ok = false;
+
+    for (size_t o = sizeof(tcp_header); o + 2 <= hlen && payload[o] != 0;)
+    {
+        const uint8_t kind = payload[o];
+        if (kind == 1)
+        {
+            ++o; // NOP
+            continue;
+        }
+
+        const uint8_t olen = payload[o + 1];
+        if (olen < 2 || o + olen > hlen)
+            break; // 非法选项：终止解析
+
+        if (kind == 3 && olen == 3 && payload[o + 2] <= 14)
+        {
+            wscale = payload[o + 2];
+            wscale_ok = true;
+        }
+        o += olen;
+    }
+}
+
 } // namespace
 
 // ---- 全局缓冲区记账 ----
@@ -231,33 +263,9 @@ void tcp_engine::on_packet(
         f->snd_nxt = f->iss;
         f->snd_una = f->iss;
         f->state = tcp_state::SYN_RCVD;
-        // 解析对端 SYN 通告的 Window Scale（RFC 7323 选项 kind=3, len=3）。
-        // 两方向缩放独立（RFC 7323 §2.2）：解释对端窗口字段时左移对端通告
-        // 原值（snd）；本端广告窗口时右移本端通告值（rcv，固定 7）。对端未
-        // 通告或值 >14（RFC 7323 规定忽略）时视为未启用缩放，本端也不缩放。
         uint8_t wscale = 0;
         bool wscale_ok = false;
-        for (size_t o = sizeof(tcp_header); o + 2 <= hlen && payload[o] != 0;)
-        {
-            const uint8_t kind = payload[o];
-            if (kind == 1)
-            {
-                ++o; // NOP
-                continue;
-            }
-            const uint8_t olen = payload[o + 1];
-            if (olen < 2 || o + olen > hlen)
-                break; // 非法选项：终止解析
-            if (kind == 3 && olen == 3)
-            {
-                if (payload[o + 2] <= 14)
-                {
-                    wscale = payload[o + 2];
-                    wscale_ok = true;
-                }
-            }
-            o += olen;
-        }
+        parse_syn_wscale(payload, hlen, wscale, wscale_ok);
         f->wscale_ok = wscale_ok;
         f->snd_wnd_scale = wscale_ok ? wscale : 0;
         f->rcv_wnd_scale = wscale_ok ? tcp_flow::k_rcv_wnd_scale : 0;
@@ -305,51 +313,8 @@ void tcp_engine::handle_segment(const tcp_flow_ptr& f,
     // ---- ACK 与窗口更新 ----
     if (flags & TCP_ACK)
     {
-        if (seq_gt(ack, f->snd_una) && seq_ge(f->snd_nxt, ack))
-            f->snd_una = ack;
-        else if (f->probe_in_flight && ack == f->snd_nxt + 1 &&
-            seq_gt(ack, f->snd_una))
-        {
-            // 零窗口探测的 1 字节被对端接收：探测未计入 snd_nxt，确认后
-            // 同步推进序号与写偏移，避免 in_flight 回绕与数据错位。
-            f->snd_una = ack;
-            f->snd_nxt = ack;
-            if (f->active_write &&
-                f->active_write->offset < f->active_write->total)
-            {
-                ++f->active_write->offset;
-                ++f->active_write->buf_off;
-            }
-        }
-
-        // 任何 ACK 都意味着对端对探测做出了回应（确认或丢弃），探测状态结束
-        f->probe_in_flight = false;
-
-        // 数据全部确认且无未发送数据：补发被推迟的 FIN（ACK 是发送侧
-        // 数据进展的可靠信号，避免 FIN 与在途数据段序列号重叠）
-        if (f->fin_pending && f->snd_una == f->snd_nxt &&
-            (!f->active_write ||
-                f->active_write->offset == f->active_write->total))
-        {
-            f->fin_pending = false;
-            send_fin(*f);
-        }
-
-        if (f->state == tcp_state::FIN_WAIT_1 && f->fin_sent &&
-            seq_ge(ack, f->snd_nxt))
-        {
-            // 客户端确认了我们的 FIN
-            f->state =
-                f->fin_received ? tcp_state::TIME_WAIT : tcp_state::FIN_WAIT_2;
-            if (f->state == tcp_state::TIME_WAIT)
-                f->destroy_at = tcp_clock::now() + cfg_.tcp_time_wait_timeout;
-        }
-        else if (f->state == tcp_state::LAST_ACK && f->fin_sent &&
-            seq_ge(ack, f->snd_nxt))
-        {
-            close_flow(*f, boost::system::error_code{});
+        if (!handle_ack(*f, ack))
             return;
-        }
     }
 
     // 对端通告的窗口字段按协商 scale 放大后才是实际可用发送窗口（RFC 7323）
@@ -398,51 +363,7 @@ void tcp_engine::handle_segment(const tcp_flow_ptr& f,
 
     // ---- 已建立连接的数据处理 ----
     if (data_len > 0)
-    {
-        if (seq == f->rcv_nxt)
-        {
-            deliver_data(*f, data, data_len);
-
-            // 缺失段补齐后，交付已缓存的连续乱序段
-            flush_ooo(*f);
-        }
-        else if (seq_gt(seq, f->rcv_nxt))
-        {
-            // 超前序列号：缓存乱序段，缺失段补齐后按序交付。缓存成功时
-            // 静默等待（缺失段在并发读场景往往即将到达），不发 Dup-ACK，
-            // 避免人为乱序触发对端快速重传与拥塞窗口减半；缓存拒绝
-            // （超限/重复）时才发 Dup-ACK 促使对端重传缺失段。
-            if (ooo_append(*f, seq, data, data_len, (flags & TCP_FIN) != 0))
-                stats_.rx_ooo.fetch_add(1, std::memory_order_relaxed);
-            else
-                send_ack(*f);
-        }
-        else
-        {
-            // 段头低于 rcv_nxt：可能是重复段，也可能是 ACK 丢失后对端从
-            // snd_una 重传的部分重叠段（段尾超出 rcv_nxt）。后者若整段丢弃，
-            // 对端每次 RTO 重传同一段又被丢弃，连接死锁至重传耗尽后 RST。
-            const uint32_t seg_end = seq + static_cast<uint32_t>(data_len);
-            if (seq_gt(seg_end, f->rcv_nxt))
-            {
-                // 部分重叠：修剪已确认前缀，仅交付 [rcv_nxt, seg_end) 尾部
-                //（rcv_nxt - seq 为前向距离，因 seg_end > rcv_nxt 必小于
-                // data_len，不会下溢）.
-                const size_t skip = static_cast<size_t>(f->rcv_nxt - seq);
-                deliver_data(*f, data + skip, data_len - skip);
-
-                // 尾部补齐后继续交付后续连续乱序段
-                flush_ooo(*f);
-            }
-            else
-            {
-                // 整段已被确认（重复段）：补发 re-ACK 使 ACK 丢失后重传的
-                // 对端立即推进 snd_una，而非再等一个 RTO 周期。
-                stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
-                send_ack(*f);
-            }
-        }
-    }
+        handle_data(*f, seq, data, data_len, flags);
 
     // ---- FIN ----
     if (flags & TCP_FIN)
@@ -453,6 +374,104 @@ void tcp_engine::handle_segment(const tcp_flow_ptr& f,
     }
 
     signal_write(*f);
+}
+
+bool tcp_engine::handle_ack(tcp_flow& f, uint32_t ack)
+{
+    if (seq_gt(ack, f.snd_una) && seq_ge(f.snd_nxt, ack))
+        f.snd_una = ack;
+    else if (f.probe_in_flight && ack == f.snd_nxt + 1 &&
+        seq_gt(ack, f.snd_una))
+    {
+        // 零窗口探测的 1 字节被对端接收：探测未计入 snd_nxt，确认后
+        // 同步推进序号与写偏移，避免 in_flight 回绕与数据错位。
+        f.snd_una = ack;
+        f.snd_nxt = ack;
+        if (f.active_write && f.active_write->offset < f.active_write->total)
+        {
+            ++f.active_write->offset;
+            ++f.active_write->buf_off;
+        }
+    }
+
+    // 任何 ACK 都意味着对端对探测做出了回应（确认或丢弃），探测状态结束
+    f.probe_in_flight = false;
+
+    // 数据全部确认且无未发送数据：补发被推迟的 FIN（ACK 是发送侧
+    // 数据进展的可靠信号，避免 FIN 与在途数据段序列号重叠）
+    if (f.fin_pending && f.snd_una == f.snd_nxt &&
+        (!f.active_write || f.active_write->offset == f.active_write->total))
+    {
+        f.fin_pending = false;
+        send_fin(f);
+    }
+
+    if (f.state == tcp_state::FIN_WAIT_1 && f.fin_sent &&
+        seq_ge(ack, f.snd_nxt))
+    {
+        // 客户端确认了我们的 FIN
+        f.state = f.fin_received ? tcp_state::TIME_WAIT : tcp_state::FIN_WAIT_2;
+        if (f.state == tcp_state::TIME_WAIT)
+            f.destroy_at = tcp_clock::now() + cfg_.tcp_time_wait_timeout;
+    }
+    else if (f.state == tcp_state::LAST_ACK && f.fin_sent &&
+        seq_ge(ack, f.snd_nxt))
+    {
+        close_flow(f, boost::system::error_code{});
+        return false; // 流已关闭：调用方停止后续处理
+    }
+    return true;
+}
+
+void tcp_engine::handle_data(tcp_flow& f,
+    uint32_t seq,
+    const uint8_t* data,
+    size_t data_len,
+    uint8_t flags)
+{
+    if (seq == f.rcv_nxt)
+    {
+        deliver_data(f, data, data_len);
+
+        // 缺失段补齐后，交付已缓存的连续乱序段
+        flush_ooo(f);
+    }
+    else if (seq_gt(seq, f.rcv_nxt))
+    {
+        // 超前序列号：缓存乱序段，缺失段补齐后按序交付。缓存成功时
+        // 静默等待（缺失段在并发读场景往往即将到达），不发 Dup-ACK，
+        // 避免人为乱序触发对端快速重传与拥塞窗口减半；缓存拒绝
+        // （超限/重复）时才发 Dup-ACK 促使对端重传缺失段。
+        if (ooo_append(f, seq, data, data_len, (flags & TCP_FIN) != 0))
+            stats_.rx_ooo.fetch_add(1, std::memory_order_relaxed);
+        else
+            send_ack(f);
+    }
+    else
+    {
+        // 段头低于 rcv_nxt：可能是重复段，也可能是 ACK 丢失后对端从
+        // snd_una 重传的部分重叠段（段尾超出 rcv_nxt）。后者若整段丢弃，
+        // 对端每次 RTO 重传同一段又被丢弃，连接死锁至重传耗尽后 RST。
+        const uint32_t seg_end = seq + static_cast<uint32_t>(data_len);
+        if (seq_gt(seg_end, f.rcv_nxt))
+        {
+            // 部分重叠：修剪已确认前缀，仅交付 [rcv_nxt, seg_end) 尾部
+            //（rcv_nxt - seq 为前向距离，因 seg_end > rcv_nxt 必小于
+            // data_len，不会下溢）.
+            const size_t skip = static_cast<size_t>(f.rcv_nxt - seq);
+            deliver_data(f, data + skip, data_len - skip);
+
+            // 尾部补齐后继续交付后续连续乱序段
+            flush_ooo(f);
+        }
+        else
+        {
+            // 整段已被确认（重复段）：补发 re-ACK 使 ACK 丢失后重传的
+            // 对端立即推进 snd_una，而非再等一个 RTO 周期。
+            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            send_ack(f);
+        }
+    }
 }
 
 // ---- 数据交付与乱序重排 ----
@@ -773,6 +792,64 @@ void tcp_engine::send_segment(tcp_flow& f,
 
 // ---- 发送协程与重传 ----
 
+bool tcp_engine::build_next_segment(
+    tcp_flow& f, uint32_t in_flight, packet_buffer& pkt)
+{
+    auto& op = *f.active_write;
+    // 增量定位：offset 单调推进，buf_index/buf_off 持久化在 write_op 中，
+    // 避免每段从头扫描整个缓冲序列。
+    while (op.buf_index < op.buffers.size() &&
+        op.buf_off >= op.buffers[op.buf_index].size())
+    {
+        op.buf_off -= op.buffers[op.buf_index].size();
+        ++op.buf_index;
+    }
+    if (op.buf_index == op.buffers.size())
+        return false;
+
+    const size_t remaining = op.total - op.offset;
+    const size_t avail = op.buffers[op.buf_index].size() - op.buf_off;
+    const size_t chunk = std::min({remaining,
+        avail,
+        mss(f.key.family),
+        static_cast<size_t>(f.peer_wnd - in_flight)});
+    if (chunk == 0)
+        return false;
+
+    const uint8_t* payload =
+        static_cast<const uint8_t*>(op.buffers[op.buf_index].data()) +
+        op.buf_off;
+    pkt = build_segment(f, f.snd_nxt, TCP_ACK | TCP_PSH, payload, chunk, false);
+
+    // 提前推进序号与写偏移：在途分片同样占用序列号空间，保证等待期间
+    // 到达的 ACK/FIN 处理（snd_una 推进、FIN 序号）不依赖设备写完成时序。
+    f.snd_nxt += static_cast<uint32_t>(chunk);
+    op.offset += chunk;
+    op.buf_off += chunk;
+    return true;
+}
+
+void tcp_engine::send_window_probe(tcp_flow& f)
+{
+    auto& op = *f.active_write;
+    // 增量定位：offset 单调推进，buf_index/buf_off 持久化在 write_op 中，
+    // 避免每段从头扫描整个缓冲序列。
+    while (op.buf_index < op.buffers.size() &&
+        op.buf_off >= op.buffers[op.buf_index].size())
+    {
+        op.buf_off -= op.buffers[op.buf_index].size();
+        ++op.buf_index;
+    }
+    if (op.buf_index >= op.buffers.size() || op.offset >= op.total)
+        return; // 无剩余字节可探测
+
+    const uint8_t* probe =
+        static_cast<const uint8_t*>(op.buffers[op.buf_index].data()) +
+        op.buf_off;
+    send_segment(f, f.snd_nxt, TCP_ACK, probe, 1, false);
+    f.probe_in_flight = true;
+}
+
 net::awaitable<void> tcp_engine::write_loop(tcp_flow_ptr f)
 {
     // 强引用保活：协程可能在引擎/设备写器析构后仍挂起（等写完成回调），
@@ -862,29 +939,7 @@ net::awaitable<void> tcp_engine::write_loop(tcp_flow_ptr f)
                     {
                         // 常规探测：发送下一个未发送字节（不推进序号，确认
                         // 时由 handle_segment 的 ACK 处理推进写偏移）
-                        const uint8_t* probe = nullptr;
-                        {
-                            auto& op = *flow.active_write;
-                            while (op.buf_index < op.buffers.size() &&
-                                op.buf_off >= op.buffers[op.buf_index].size())
-                            {
-                                op.buf_off -= op.buffers[op.buf_index].size();
-                                ++op.buf_index;
-                            }
-                            if (op.buf_index < op.buffers.size() &&
-                                op.offset < op.total)
-                            {
-                                probe = static_cast<const uint8_t*>(
-                                            op.buffers[op.buf_index].data()) +
-                                    op.buf_off;
-                            }
-                        }
-                        if (probe)
-                        {
-                            send_segment(
-                                flow, flow.snd_nxt, TCP_ACK, probe, 1, false);
-                            flow.probe_in_flight = true;
-                        }
+                        send_window_probe(flow);
                     }
                     // 数据已全部发出：重传未确认数据段首部作为探测，
                     // 迫使对端回复 ACK 通告最新窗口。
@@ -904,46 +959,9 @@ net::awaitable<void> tcp_engine::write_loop(tcp_flow_ptr f)
                 in_flight < flow.peer_wnd)
             {
                 // 窗口允许且仍有未发送数据：发送下一个分片
-                size_t chunk = 0;
                 packet_buffer pkt{};
-                {
-                    auto& op = *flow.active_write;
-                    // 增量定位：offset 单调推进，buf_index/buf_off 持久化在
-                    // write_op 中，避免每段从头扫描整个缓冲序列。
-                    while (op.buf_index < op.buffers.size() &&
-                        op.buf_off >= op.buffers[op.buf_index].size())
-                    {
-                        op.buf_off -= op.buffers[op.buf_index].size();
-                        ++op.buf_index;
-                    }
-                    if (op.buf_index == op.buffers.size())
-                        break;
-                    const size_t remaining = op.total - op.offset;
-                    const size_t avail =
-                        op.buffers[op.buf_index].size() - op.buf_off;
-                    chunk = std::min({remaining,
-                        avail,
-                        mss(f->key.family),
-                        static_cast<size_t>(flow.peer_wnd - in_flight)});
-                    if (chunk == 0)
-                        break;
-                    const uint8_t* payload =
-                        static_cast<const uint8_t*>(
-                            op.buffers[op.buf_index].data()) +
-                        op.buf_off;
-                    pkt = build_segment(flow,
-                        flow.snd_nxt,
-                        TCP_ACK | TCP_PSH,
-                        payload,
-                        chunk,
-                        false);
-                    // 提前推进序号与写偏移：在途分片同样占用序列号空间，
-                    // 保证等待期间到达的 ACK/FIN 处理（snd_una 推进、FIN
-                    // 序号）不依赖设备写完成时序。
-                    flow.snd_nxt += static_cast<uint32_t>(chunk);
-                    op.offset += chunk;
-                    op.buf_off += chunk;
-                }
+                if (!build_next_segment(flow, in_flight, pkt))
+                    break;
                 // 数据段经设备写完成回调驱动背压：设备写通道拥塞时协程挂起，
                 // 内存占用受"每流单写 + 设备队列水位"约束，不再无界累积。
                 auto [ec, n] = co_await writer->async_write(

@@ -215,11 +215,14 @@ public:
     void on_packet(
         const ip_packet_info& ip, const uint8_t* payload, size_t len);
 
+    // ---- 连接生命周期 API ----
     // 等待新连接；完成回调签名 void(error_code, shared_ptr<tcp_flow>)
     template <typename Handler> void async_accept(Handler handler);
     void cancel_accepts();
     void close_all();
     void start_sweep();
+
+    // ---- 查询接口 ----
     // 仅限在 io 线程（或引擎 Strand 上）调用：直接读取流表大小
     size_t flow_count() const
     {
@@ -246,6 +249,7 @@ public:
     {
         return family == 6 ? mss6_ : mss4_;
     }
+
     // ---- 由 tcp_flow 调用的发送辅助 ----
     packet_buffer build_segment(tcp_flow& f,
         uint32_t seq,
@@ -284,20 +288,44 @@ private:
     friend void tcp_flow_start_write(
         tcp_flow_ptr, const_buffer_sequence, size_t, Handler);
 
+    // ---- 段处理（收包路径，Strand 上调用）----
     void handle_segment(const tcp_flow_ptr& f,
         const tcp_header& th,
         const uint8_t* data,
         size_t data_len);
-    void send_ack(tcp_flow& f);
-    uint32_t current_wnd(const tcp_flow& f) const;
-    void notify_window_updated(tcp_flow& f);
+    // 处理 ACK 字段：推进发送序号 / 探测确认 / 补发推迟的 FIN / 关闭确认。
+    // 返回 false 表示连接已在内部关闭，调用方应停止后续处理。
+    bool handle_ack(tcp_flow& f, uint32_t ack);
+    // 处理已建立连接的数据段：按序交付 / 乱序缓存 / 重叠修剪。
+    void handle_data(tcp_flow& f,
+        uint32_t seq,
+        const uint8_t* data,
+        size_t data_len,
+        uint8_t flags);
+    void handle_fin(tcp_flow& f, uint32_t fin_seq);
+
+    // ---- 数据交付与乱序重排 ----
     void deliver_data(tcp_flow& f, const uint8_t* data, size_t len);
     void flush_reads(tcp_flow& f);
     void flush_ooo(tcp_flow& f);
     bool ooo_append(
         tcp_flow& f, uint32_t seq, const uint8_t* data, size_t len, bool fin);
-    void handle_fin(tcp_flow& f, uint32_t fin_seq);
+
+    // ---- 发送辅助 ----
+    void send_ack(tcp_flow& f);
+    uint32_t current_wnd(const tcp_flow& f) const;
+    void notify_window_updated(tcp_flow& f);
+    // 构造并发送下一个数据分片（write_loop 发送路径）；返回 false 表示
+    // 缓冲耗尽或窗口不足以容纳一个分片。
+    bool build_next_segment(
+        tcp_flow& f, uint32_t in_flight, packet_buffer& pkt);
+    // 零窗口探测：发送下一个未发送字节（不推进序号），无剩余数据时不动作。
+    void send_window_probe(tcp_flow& f);
+
+    // ---- 流生命周期 ----
     void notify_accept(tcp_flow& f);
+
+    // ---- 会话清扫 ----
     void on_sweep(const boost::system::error_code& ec);
 
     net::any_io_executor strand_;
