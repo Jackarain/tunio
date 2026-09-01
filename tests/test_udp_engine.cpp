@@ -80,19 +80,19 @@ static void test_datagram_roundtrip()
 
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no UDP reply packet");
+        TEST_THROW("no UDP reply packet");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     assert(ipi.src == DEST_IP && ipi.dst == CLIENT_IP && ipi.proto == 17);
     udp_hdr_info ui;
     if (!parse_udp(ipi.payload, ipi.payload_len, ui)) {
-        throw std::runtime_error("parse_udp failed");
+        TEST_THROW("parse_udp failed");
     }
     assert(ui.sport == 53 && ui.dport == 53000);
     assert(std::string(reinterpret_cast<const char *>(ui.data), ui.n) == reply);
@@ -158,16 +158,16 @@ static void test_multiple_remotes()
     assert(!e1 && sn1 == q1.size());
     std::vector<uint8_t> pkt1;
     if (!env.dev.read_packet(pkt1)) {
-        throw std::runtime_error("no first udp reply");
+        TEST_THROW("no first udp reply");
     }
     ip_hdr_info i1;
     if (!parse_ip(pkt1, i1)) {
-        throw std::runtime_error("parse first reply failed");
+        TEST_THROW("parse first reply failed");
     }
     assert(i1.src == DEST_IP && i1.dst == CLIENT_IP);
     udp_hdr_info u1;
     if (!parse_udp(i1.payload, i1.payload_len, u1)) {
-        throw std::runtime_error("parse first udp failed");
+        TEST_THROW("parse first udp failed");
     }
     assert(u1.sport == 53 && u1.dport == 53100);
 
@@ -180,16 +180,16 @@ static void test_multiple_remotes()
     assert(!e2 && sn2 == q2.size());
     std::vector<uint8_t> pkt2;
     if (!env.dev.read_packet(pkt2)) {
-        throw std::runtime_error("no second udp reply");
+        TEST_THROW("no second udp reply");
     }
     ip_hdr_info i2;
     if (!parse_ip(pkt2, i2)) {
-        throw std::runtime_error("parse second reply failed");
+        TEST_THROW("parse second reply failed");
     }
     assert(i2.src == DEST_IP2 && i2.dst == CLIENT_IP);
     udp_hdr_info u2;
     if (!parse_udp(i2.payload, i2.payload_len, u2)) {
-        throw std::runtime_error("parse second udp failed");
+        TEST_THROW("parse second udp failed");
     }
     assert(u2.sport == 80 && u2.dport == 53100);
 
@@ -304,15 +304,15 @@ static void test_large_datagram_fragmented()
 
     std::vector<uint8_t> f1, f2;
     if (!env.dev.read_packet(f1)) {
-        throw std::runtime_error("no first fragment");
+        TEST_THROW("no first fragment");
     }
     if (!env.dev.read_packet(f2)) {
-        throw std::runtime_error("no second fragment");
+        TEST_THROW("no second fragment");
     }
 
     ip_hdr_info i1, i2;
     if (!parse_ip(f1, i1) || !parse_ip(f2, i2)) {
-        throw std::runtime_error("parse fragment failed");
+        TEST_THROW("parse fragment failed");
     }
     assert(i1.proto == 17 && i2.proto == 17);
     assert(i1.src == DEST_IP && i2.src == DEST_IP);

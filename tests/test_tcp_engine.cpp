@@ -55,19 +55,19 @@ static void test_handshake_data_fin()
     // 引擎 SYN-ACK（携带 MSS 选项）
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     assert(ipi.src == DEST_IP && ipi.dst == CLIENT_IP && ipi.proto == 6);
     tcp_hdr_info ti;
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x12) == 0x12); // SYN|ACK
     assert(ti.ack == 1001);
@@ -108,16 +108,16 @@ static void test_handshake_data_fin()
 
     // 引擎 ACK 客户端数据
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no ACK");
+        TEST_THROW("no ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x10) != 0 && ti.ack == 1001 + hello.size());
 
@@ -130,16 +130,16 @@ static void test_handshake_data_fin()
         });
 
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no data packet");
+        TEST_THROW("no data packet");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert(ipi.src == DEST_IP && ipi.dst == CLIENT_IP);
     assert(ti.sport == DEST_PORT && ti.dport == CLIENT_PORT);
@@ -171,16 +171,16 @@ static void test_handshake_data_fin()
 
     // 引擎 ACK FIN
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no FIN ACK");
+        TEST_THROW("no FIN ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert(ti.ack == 1001 + hello.size() + 1);
 
@@ -191,16 +191,16 @@ static void test_handshake_data_fin()
     }
     assert(!peer.is_open());
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no FIN from engine");
+        TEST_THROW("no FIN from engine");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x01) != 0);
     const uint32_t fin_seq = ti.seq;
@@ -229,12 +229,12 @@ static void test_fin_retransmit_reacked()
         3000, 0, 65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     const uint32_t engine_iss = ti.seq;
 
@@ -258,7 +258,7 @@ static void test_fin_retransmit_reacked()
     // 引擎 ACK FIN
     if (!env.dev.read_packet(pkt) || !parse_ip(pkt, ipi) ||
         !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("no FIN ACK");
+        TEST_THROW("no FIN ACK");
     }
     assert(ti.ack == 3002);
 
@@ -267,7 +267,7 @@ static void test_fin_retransmit_reacked()
         3001, engine_iss + 1, 65535, {}));
     if (!env.dev.read_packet(pkt) || !parse_ip(pkt, ipi) ||
         !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("no FIN re-ACK");
+        TEST_THROW("no FIN re-ACK");
     }
     assert((ti.flags & 0x10) != 0 && ti.ack == 3002);
 }
@@ -311,19 +311,19 @@ static size_t drain_data_segments(engine_env &env, std::vector<uint8_t> &pkt,
     size_t sent = 0;
     while (sent < target) {
         if (!env.dev.read_packet(pkt)) {
-            throw std::runtime_error("no data segment");
+            TEST_THROW("no data segment");
         }
         if (!verify_packet(pkt)) {
-            throw std::runtime_error("verify_packet failed");
+            TEST_THROW("verify_packet failed");
         }
         if (!parse_ip(pkt, ipi)) {
-            throw std::runtime_error("parse_ip failed");
+            TEST_THROW("parse_ip failed");
         }
         if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         if (ti.len == 0) {
-            throw std::runtime_error("unexpected control segment");
+            TEST_THROW("unexpected control segment");
         }
         sent += ti.len;
     }
@@ -354,15 +354,15 @@ static void test_wscale_negotiation()
             0, 4096, {}, true, 3));
         std::vector<uint8_t> pkt;
         if (!env.dev.read_packet(pkt)) {
-            throw std::runtime_error("no SYN-ACK");
+            TEST_THROW("no SYN-ACK");
         }
         ip_hdr_info ipi;
         if (!parse_ip(pkt, ipi)) {
-            throw std::runtime_error("parse_ip failed");
+            TEST_THROW("parse_ip failed");
         }
         tcp_hdr_info ti;
         if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         assert((ti.flags & 0x12) == 0x12);
         int ws = -1;
@@ -384,7 +384,7 @@ static void test_wscale_negotiation()
         const size_t sent = drain_data_segments(env, pkt, ipi, ti, 8000);
         assert(sent == 8000);
         if (env.dev.read_packet(pkt, 200)) {
-            throw std::runtime_error("over-sent beyond scaled peer window");
+            TEST_THROW("over-sent beyond scaled peer window");
         }
 
         // 客户端 ACK 推进并放大窗口 -> 恢复发送，全部发出后最终 ACK 完成写
@@ -422,15 +422,15 @@ static void test_wscale_negotiation()
             0, 4096, {}, true));
         std::vector<uint8_t> pkt;
         if (!env.dev.read_packet(pkt)) {
-            throw std::runtime_error("no SYN-ACK");
+            TEST_THROW("no SYN-ACK");
         }
         ip_hdr_info ipi;
         if (!parse_ip(pkt, ipi)) {
-            throw std::runtime_error("parse_ip failed");
+            TEST_THROW("parse_ip failed");
         }
         tcp_hdr_info ti;
         if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         int ws = -1;
         assert(!synack_wscale(pkt, &ws)); // 未协商: SYN-ACK 不带 WS
@@ -450,7 +450,7 @@ static void test_wscale_negotiation()
         const size_t sent = drain_data_segments(env, pkt, ipi, ti, 1000);
         assert(sent == 1000);
         if (env.dev.read_packet(pkt, 200)) {
-            throw std::runtime_error("over-sent beyond unscaled peer window");
+            TEST_THROW("over-sent beyond unscaled peer window");
         }
         // 未协商 WS：窗口字段上限 65535，逐段 ACK 推进（对端实际行为）
         size_t acked = sent;
@@ -461,19 +461,19 @@ static void test_wscale_negotiation()
                 static_cast<uint32_t>(acked),
                 65535, {}));
             if (!env.dev.read_packet(pkt)) {
-                throw std::runtime_error("no data segment");
+                TEST_THROW("no data segment");
             }
             if (!verify_packet(pkt)) {
-                throw std::runtime_error("verify_packet failed");
+                TEST_THROW("verify_packet failed");
             }
             if (!parse_ip(pkt, ipi)) {
-                throw std::runtime_error("parse_ip failed");
+                TEST_THROW("parse_ip failed");
             }
             if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-                throw std::runtime_error("parse_tcp failed");
+                TEST_THROW("parse_tcp failed");
             }
             if (ti.len == 0) {
-                throw std::runtime_error("unexpected control segment");
+                TEST_THROW("unexpected control segment");
             }
             acked += ti.len;
         }
@@ -508,15 +508,15 @@ static void test_wscale_negotiation()
             0, 4096, {}, true, 8));
         std::vector<uint8_t> pkt;
         if (!env.dev.read_packet(pkt)) {
-            throw std::runtime_error("no SYN-ACK");
+            TEST_THROW("no SYN-ACK");
         }
         ip_hdr_info ipi;
         if (!parse_ip(pkt, ipi)) {
-            throw std::runtime_error("parse_ip failed");
+            TEST_THROW("parse_ip failed");
         }
         tcp_hdr_info ti;
         if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         int ws = -1;
         assert(synack_wscale(pkt, &ws) && ws == 7); // 本端始终通告 7
@@ -564,15 +564,15 @@ static void test_wscale_negotiation()
             0, 4096, {}, true, 15));
         std::vector<uint8_t> pkt;
         if (!env.dev.read_packet(pkt)) {
-            throw std::runtime_error("no SYN-ACK");
+            TEST_THROW("no SYN-ACK");
         }
         ip_hdr_info ipi;
         if (!parse_ip(pkt, ipi)) {
-            throw std::runtime_error("parse_ip failed");
+            TEST_THROW("parse_ip failed");
         }
         tcp_hdr_info ti;
         if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         int ws = -1;
         assert(!synack_wscale(pkt, &ws)); // 无效 WS 按未通告处理
@@ -592,7 +592,7 @@ static void test_wscale_negotiation()
         const size_t sent = drain_data_segments(env, pkt, ipi, ti, 1000);
         assert(sent == 1000);
         if (env.dev.read_packet(pkt, 200)) {
-            throw std::runtime_error("over-sent with invalid WS");
+            TEST_THROW("over-sent with invalid WS");
         }
         size_t acked = sent;
         while (acked < 100000) {
@@ -602,19 +602,19 @@ static void test_wscale_negotiation()
                 static_cast<uint32_t>(acked),
                 65535, {}));
             if (!env.dev.read_packet(pkt)) {
-                throw std::runtime_error("no data segment");
+                TEST_THROW("no data segment");
             }
             if (!verify_packet(pkt)) {
-                throw std::runtime_error("verify_packet failed");
+                TEST_THROW("verify_packet failed");
             }
             if (!parse_ip(pkt, ipi)) {
-                throw std::runtime_error("parse_ip failed");
+                TEST_THROW("parse_ip failed");
             }
             if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-                throw std::runtime_error("parse_tcp failed");
+                TEST_THROW("parse_tcp failed");
             }
             if (ti.len == 0) {
-                throw std::runtime_error("unexpected control segment");
+                TEST_THROW("unexpected control segment");
             }
             acked += ti.len;
         }
@@ -647,18 +647,18 @@ static void test_zero_window_flow_control()
         make_tcp(CLIENT_IP, DEST_IP, 12346, DEST_PORT, 0x02, 2000, 0, 0, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     tcp_hdr_info ti;
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
 
@@ -677,7 +677,7 @@ static void test_zero_window_flow_control()
     auto wf = write_done.get_future();
     if (wf.wait_for(std::chrono::milliseconds(0)) ==
         std::future_status::ready) {
-        throw std::runtime_error("write should be blocked by zero window");
+        TEST_THROW("write should be blocked by zero window");
     }
 
     // 窗口更新 ACK -> 写入恢复
@@ -685,16 +685,16 @@ static void test_zero_window_flow_control()
         engine_iss + 1, 4096, {}));
 
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no data after window update");
+        TEST_THROW("no data after window update");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert(ti.len == 1 && ti.data[0] == 'x');
 
@@ -730,18 +730,18 @@ static void test_zero_window_persist_probe()
         make_tcp(CLIENT_IP, DEST_IP, 12355, DEST_PORT, 0x02, 4000, 0, 0, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
 
@@ -760,21 +760,21 @@ static void test_zero_window_persist_probe()
     auto wf = write_done.get_future();
     if (wf.wait_for(std::chrono::milliseconds(0)) ==
         std::future_status::ready) {
-        throw std::runtime_error("write should be blocked by zero window");
+        TEST_THROW("write should be blocked by zero window");
     }
 
     // 第一轮窗口探测（约 150ms 后）：1 字节数据，seq = iss + 1
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no first window probe");
+        TEST_THROW("no first window probe");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x10) != 0);
     assert(ti.seq == engine_iss + 1);
@@ -784,16 +784,16 @@ static void test_zero_window_persist_probe()
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12355, DEST_PORT, 0x10, 4001,
         engine_iss + 1, 0, {}));
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no second window probe");
+        TEST_THROW("no second window probe");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x10) != 0);
     assert(ti.seq == engine_iss + 1);
@@ -807,13 +807,13 @@ static void test_zero_window_persist_probe()
     // 探测字节已作为数据交付，引擎不应再发送数据段；若有也必须是后续序号
     if (env.dev.read_packet(pkt, 200)) {
         if (!verify_packet(pkt)) {
-            throw std::runtime_error("verify_packet failed");
+            TEST_THROW("verify_packet failed");
         }
         if (!parse_ip(pkt, ipi)) {
-            throw std::runtime_error("parse_ip failed");
+            TEST_THROW("parse_ip failed");
         }
         if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         assert(ti.seq == engine_iss + 2);
     }
@@ -848,18 +848,18 @@ static void test_synack_wscale_buffer_reuse()
         4096, {}, true, 3));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK A");
+        TEST_THROW("no SYN-ACK A");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     tcp_hdr_info ti;
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     int ws = -1;
     assert(synack_wscale(pkt, &ws) && ws == 7);
@@ -877,16 +877,16 @@ static void test_synack_wscale_buffer_reuse()
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12391, DEST_PORT, 0x02, 9100, 0,
         4096, {}, true));
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK B");
+        TEST_THROW("no SYN-ACK B");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert(!synack_wscale(pkt, &ws)); // 复用缓冲不得残留 WS 选项
     peer_a.close();
@@ -915,18 +915,18 @@ static void test_syn_with_data()
         65535, {hello.begin(), hello.end()}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert(ti.ack == 5001 + hello.size()); // SYN-ACK 捎带确认 TFO 数据
     const uint32_t engine_iss = ti.seq;
@@ -961,7 +961,7 @@ static void test_syn_with_data()
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     if (agf.wait_for(std::chrono::milliseconds(0)) ==
         std::future_status::ready) {
-        throw std::runtime_error("duplicate TFO data must not be delivered");
+        TEST_THROW("duplicate TFO data must not be delivered");
     }
 
     // 客户端发送新的按序数据：挂起读交付该数据后完成，避免 close 时
@@ -998,12 +998,12 @@ static void test_partial_overlap_retransmit()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse failed");
+        TEST_THROW("parse failed");
     }
     const uint32_t engine_iss = ti.seq;
     future_get(accept_done.get_future());
@@ -1027,10 +1027,10 @@ static void test_partial_overlap_retransmit()
 
     // 引擎 ACK 1006（假设该 ACK 在链路上丢失）
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no ack1");
+        TEST_THROW("no ack1");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse failed");
+        TEST_THROW("parse failed");
     }
     assert((ti.flags & 0x10) != 0 && ti.ack == 1006);
 
@@ -1051,10 +1051,10 @@ static void test_partial_overlap_retransmit()
 
     // 引擎 ACK 推进到 1011
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no ack2");
+        TEST_THROW("no ack2");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse failed");
+        TEST_THROW("parse failed");
     }
     assert((ti.flags & 0x10) != 0 && ti.ack == 1011);
 
@@ -1082,12 +1082,12 @@ static void test_duplicate_segment_reack()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse failed");
+        TEST_THROW("parse failed");
     }
     const uint32_t engine_iss = ti.seq;
     future_get(accept_done.get_future());
@@ -1111,10 +1111,10 @@ static void test_duplicate_segment_reack()
 
     // 引擎 ACK 2011
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no ack1");
+        TEST_THROW("no ack1");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse failed");
+        TEST_THROW("parse failed");
     }
     assert((ti.flags & 0x10) != 0 && ti.ack == 2011);
 
@@ -1125,10 +1125,10 @@ static void test_duplicate_segment_reack()
         engine_iss + 1, 65535, {hello.begin(), hello.end()}));
 
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no re-ack");
+        TEST_THROW("no re-ack");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse failed");
+        TEST_THROW("parse failed");
     }
     assert((ti.flags & 0x10) != 0 && (ti.flags & 0x08) == 0); // ACK 且无数据
     assert(ti.ack == 2011);
@@ -1158,12 +1158,12 @@ static void test_time_wait_reconnect()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse failed");
+        TEST_THROW("parse failed");
     }
     const uint32_t engine_iss = ti.seq;
     future_get(accept_done.get_future());
@@ -1188,11 +1188,11 @@ static void test_time_wait_reconnect()
         assert(!se && sn == 1 && sbuf[0] == sync);
         // 引擎 ACK 4002
         if (!env.dev.read_packet(pkt)) {
-            throw std::runtime_error("no sync ack");
+            TEST_THROW("no sync ack");
         }
         if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len,
                 ti)) {
-            throw std::runtime_error("parse failed");
+            TEST_THROW("parse failed");
         }
         assert((ti.flags & 0x10) != 0 && ti.ack == 4002);
     }
@@ -1201,10 +1201,10 @@ static void test_time_wait_reconnect()
     boost::system::error_code sec;
     peer.shutdown(net::ip::tcp::socket::shutdown_send, sec);
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no FIN");
+        TEST_THROW("no FIN");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse failed");
+        TEST_THROW("parse failed");
     }
     assert((ti.flags & 0x01) != 0); // FIN
     const uint32_t fin_seq = ti.seq;
@@ -1218,10 +1218,10 @@ static void test_time_wait_reconnect()
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12343, DEST_PORT, 0x11, 4002,
         fin_seq + 1, 65535, {}));
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no FIN ack");
+        TEST_THROW("no FIN ack");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse failed");
+        TEST_THROW("parse failed");
     }
     assert((ti.flags & 0x10) != 0 && ti.ack == 4003);
 
@@ -1239,10 +1239,10 @@ static void test_time_wait_reconnect()
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12343, DEST_PORT, 0x02, 8000, 0,
         65535, {}));
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK2");
+        TEST_THROW("no SYN-ACK2");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse failed");
+        TEST_THROW("parse failed");
     }
     assert((ti.flags & 0x12) == 0x12); // 新 SYN-ACK
     assert(ti.ack == 8001);            // 新连接的 irs + 1
@@ -1272,18 +1272,18 @@ static void test_rst()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12347, DEST_PORT, 0x10, 3001,
@@ -1324,18 +1324,18 @@ static void test_app_reset()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12348, DEST_PORT, 0x10, 4001,
@@ -1345,16 +1345,16 @@ static void test_app_reset()
     // 应用主动 reset()：后端连接失败等场景
     peer.reset();
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no RST");
+        TEST_THROW("no RST");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x04) != 0); // RST
     assert(!peer.is_open());
@@ -1379,18 +1379,18 @@ static void test_data_with_fin()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12349, DEST_PORT, 0x10, 5001,
@@ -1431,13 +1431,13 @@ static void test_data_with_fin()
             break;
         }
         if (!verify_packet(pkt)) {
-            throw std::runtime_error("verify_packet failed");
+            TEST_THROW("verify_packet failed");
         }
         if (!parse_ip(pkt, ipi)) {
-            throw std::runtime_error("parse_ip failed");
+            TEST_THROW("parse_ip failed");
         }
         if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         if ((ti.flags & 0x10) != 0 && ti.ack == 5001 + data.size() + 1) {
             fin_acked = true;
@@ -1445,7 +1445,7 @@ static void test_data_with_fin()
         }
     }
     if (!fin_acked) {
-        throw std::runtime_error("FIN not acked with data+1");
+        TEST_THROW("FIN not acked with data+1");
     }
 
     peer.close();
@@ -1473,18 +1473,18 @@ static void test_handshake_ack_with_fin()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
     future_get(accept_done.get_future());
@@ -1507,16 +1507,16 @@ static void test_handshake_ack_with_fin()
 
     // 引擎确认 FIN（ack = 6000 + 1 + 1）
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no FIN ACK");
+        TEST_THROW("no FIN ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x10) != 0);
     assert(ti.ack == 6002);
@@ -1545,18 +1545,18 @@ static void test_shutdown_receive_discards()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
     future_get(accept_done.get_future());
@@ -1585,13 +1585,13 @@ static void test_shutdown_receive_discards()
             break;
         }
         if (!verify_packet(pkt)) {
-            throw std::runtime_error("verify_packet failed");
+            TEST_THROW("verify_packet failed");
         }
         if (!parse_ip(pkt, ipi)) {
-            throw std::runtime_error("parse_ip failed");
+            TEST_THROW("parse_ip failed");
         }
         if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         if ((ti.flags & 0x10) != 0 &&
             ti.ack == 7001 + a.size() + b.size()) {
@@ -1600,7 +1600,7 @@ static void test_shutdown_receive_discards()
         }
     }
     if (!all_acked) {
-        throw std::runtime_error("discarded bytes not fully acked");
+        TEST_THROW("discarded bytes not fully acked");
     }
 
     peer.close();
@@ -1625,18 +1625,18 @@ static void test_write_after_shutdown_send()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12350, DEST_PORT, 0x10, 6001,
@@ -1663,16 +1663,16 @@ static void test_write_after_shutdown_send()
 
     // 设备应只收到 FIN，无数据段
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no FIN");
+        TEST_THROW("no FIN");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x01) != 0); // FIN
     assert(ti.len == 0);
@@ -1693,18 +1693,18 @@ static void test_unaccepted_connection_cleanup()
     // 不调用 async_accept，等待引擎 SYN 超时清理（发送 RST）
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt, 5000)) {
-        throw std::runtime_error("no RST after syn timeout");
+        TEST_THROW("no RST after syn timeout");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x04) != 0); // RST
 }
@@ -1731,18 +1731,18 @@ static void test_write_queue_limit()
         make_tcp(CLIENT_IP, DEST_IP, 12352, DEST_PORT, 0x02, 8000, 0, 0, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
     // 客户端 ACK（窗口 0）
@@ -1771,16 +1771,16 @@ static void test_write_queue_limit()
         engine_iss + 1, 4096, {}));
     std::vector<uint8_t> pkt2;
     if (!env.dev.read_packet(pkt2)) {
-        throw std::runtime_error("no data after window update");
+        TEST_THROW("no data after window update");
     }
     if (!verify_packet(pkt2)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi2;
     tcp_hdr_info ti2;
     if (!parse_ip(pkt2, ipi2) ||
         !parse_tcp(ipi2.payload, ipi2.payload_len, ti2)) {
-        throw std::runtime_error("parse data failed");
+        TEST_THROW("parse data failed");
     }
     assert(ti2.len == 8 &&
         std::string(reinterpret_cast<const char *>(ti2.data), ti2.len) ==
@@ -1814,18 +1814,18 @@ static void test_write_large_single_op()
         make_tcp(CLIENT_IP, DEST_IP, 12355, DEST_PORT, 0x02, 10000, 0, 0, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
     // 客户端 ACK（窗口充足）
@@ -1845,16 +1845,16 @@ static void test_write_large_single_op()
     size_t received = 0;
     for (int i = 0; i < 3; ++i) {
         if (!env.dev.read_packet(pkt)) {
-            throw std::runtime_error("no data packet");
+            TEST_THROW("no data packet");
         }
         if (!verify_packet(pkt)) {
-            throw std::runtime_error("verify_packet failed");
+            TEST_THROW("verify_packet failed");
         }
         if (!parse_ip(pkt, ipi)) {
-            throw std::runtime_error("parse_ip failed");
+            TEST_THROW("parse_ip failed");
         }
         if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         received += ti.len;
     }
@@ -1892,15 +1892,15 @@ static void test_write_completion_requires_ack()
         {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12362, DEST_PORT, 0x10, 18001,
@@ -1916,19 +1916,19 @@ static void test_write_completion_requires_ack()
 
     // 设备收到数据段，但写未完成（等待对端 ACK）
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no data packet");
+        TEST_THROW("no data packet");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse data failed");
+        TEST_THROW("parse data failed");
     }
     assert(ti.seq == engine_iss + 1 && ti.len == 1 && ti.data[0] == 'x');
     std::this_thread::sleep_for(std::chrono::milliseconds(80));
     if (wf.wait_for(std::chrono::milliseconds(0)) ==
         std::future_status::ready) {
-        throw std::runtime_error("write must not complete before ACK");
+        TEST_THROW("write must not complete before ACK");
     }
 
     // 客户端 ACK 数据：写完成
@@ -1964,15 +1964,15 @@ static void test_rto_retransmit()
         {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12363, DEST_PORT, 0x10, 19001,
@@ -1990,13 +1990,13 @@ static void test_rto_retransmit()
 
     // 首段发出
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no first data packet");
+        TEST_THROW("no first data packet");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse data failed");
+        TEST_THROW("parse data failed");
     }
     assert(ti.seq == engine_iss + 1 && ti.len == payload.size());
     assert(std::string(reinterpret_cast<const char *>(ti.data), ti.len) ==
@@ -2004,13 +2004,13 @@ static void test_rto_retransmit()
 
     // 对端不 ACK：RTO（50ms）后引擎重传相同序号与载荷
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no RTO retransmit");
+        TEST_THROW("no RTO retransmit");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse retransmit failed");
+        TEST_THROW("parse retransmit failed");
     }
     assert(ti.seq == engine_iss + 1 && ti.len == payload.size());
     assert(std::string(reinterpret_cast<const char *>(ti.data), ti.len) ==
@@ -2048,15 +2048,15 @@ static void test_fin_deferred_until_acked()
         {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12364, DEST_PORT, 0x10, 20001,
@@ -2073,13 +2073,13 @@ static void test_fin_deferred_until_acked()
         });
     auto wf = write_done.get_future();
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no data packet");
+        TEST_THROW("no data packet");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse data failed");
+        TEST_THROW("parse data failed");
     }
     assert(ti.seq == engine_iss + 1 && ti.len == payload.size());
 
@@ -2089,7 +2089,7 @@ static void test_fin_deferred_until_acked()
 
     // 数据未确认前不得发送 FIN（短超时内设备无任何输出）
     if (env.dev.read_packet(pkt, 100)) {
-        throw std::runtime_error("FIN must be deferred until data ACKed");
+        TEST_THROW("FIN must be deferred until data ACKed");
     }
 
     // 客户端 ACK 数据：写完成，随后引擎补发 FIN（seq = 数据末尾）
@@ -2100,13 +2100,13 @@ static void test_fin_deferred_until_acked()
     auto [wec, wn] = future_get(std::move(wf));
     assert(!wec && wn == payload.size());
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no FIN after data ACKed");
+        TEST_THROW("no FIN after data ACKed");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse FIN failed");
+        TEST_THROW("parse FIN failed");
     }
     assert((ti.flags & 0x01) != 0);
     assert(ti.seq ==
@@ -2136,15 +2136,15 @@ static void test_close_with_unacked_sends_rst()
         {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12365, DEST_PORT, 0x10, 21001,
@@ -2158,13 +2158,13 @@ static void test_close_with_unacked_sends_rst()
         });
     auto wf = write_done.get_future();
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no data packet");
+        TEST_THROW("no data packet");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse data failed");
+        TEST_THROW("parse data failed");
     }
     assert(ti.len == 1 && ti.data[0] == 'x');
 
@@ -2173,13 +2173,13 @@ static void test_close_with_unacked_sends_rst()
     auto [wec, wn] = future_get(std::move(wf));
     assert(wec == net::error::operation_aborted && wn == 0);
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no RST");
+        TEST_THROW("no RST");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse RST failed");
+        TEST_THROW("parse RST failed");
     }
     assert((ti.flags & 0x04) != 0); // RST
 }
@@ -2209,15 +2209,15 @@ static void test_rto_exhaustion()
         {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12366, DEST_PORT, 0x10, 22001,
@@ -2231,13 +2231,13 @@ static void test_rto_exhaustion()
         });
     auto wf = write_done.get_future();
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no data packet");
+        TEST_THROW("no data packet");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse data failed");
+        TEST_THROW("parse data failed");
     }
     assert(ti.len == 1 && ti.data[0] == 'x');
 
@@ -2248,11 +2248,11 @@ static void test_rto_exhaustion()
             break;
         }
         if (!verify_packet(pkt)) {
-            throw std::runtime_error("verify_packet failed");
+            TEST_THROW("verify_packet failed");
         }
         if (!parse_ip(pkt, ipi) ||
             !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse packet failed");
+            TEST_THROW("parse packet failed");
         }
         rst_seen = (ti.flags & 0x04) != 0;
     }
@@ -2277,7 +2277,7 @@ static void test_close_reopen()
     cfg.netmask = "255.255.255.0";
     boost::system::error_code ec;
     if (!env.engine.open(cfg, ec)) {
-        throw std::runtime_error("reopen failed: " + ec.message());
+        TEST_THROW("reopen failed: " + ec.message());
     }
 
     // 验证新引擎数据通路正常：完成一次握手（经 dev2）
@@ -2294,18 +2294,18 @@ static void test_close_reopen()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!dev2.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK after reopen");
+        TEST_THROW("no SYN-ACK after reopen");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     dev2.send(make_tcp(CLIENT_IP, DEST_IP, 12353, DEST_PORT, 0x10, 9001,
         ti.seq + 1, 65535, {}));
@@ -2332,7 +2332,7 @@ static void test_fragmented_packet_dropped()
 
     // 引擎不应回复 SYN-ACK
     if (env.dev.read_packet(pkt, 300)) {
-        throw std::runtime_error("fragmented SYN should be dropped");
+        TEST_THROW("fragmented SYN should be dropped");
     }
     assert(env.engine.stats().rx_dropped.load() >= 1);
 }
@@ -2372,14 +2372,14 @@ static void test_oversized_declared_length()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK after oversized junk");
+        TEST_THROW("no SYN-ACK after oversized junk");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     assert(ipi.proto == 6);
 }
@@ -2405,18 +2405,18 @@ static void test_reentrant_reset_in_handler()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     tcp_hdr_info ti;
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12357, DEST_PORT, 0x10, 13001,
@@ -2467,15 +2467,15 @@ static void test_reject_handshake()
 
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no RST after reject");
+        TEST_THROW("no RST after reject");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse RST failed");
+        TEST_THROW("parse RST failed");
     }
     assert((ti.flags & 0x04) != 0); // RST
 }
@@ -2500,15 +2500,15 @@ static void test_syn_retransmit_reack()
         65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     assert((ti.flags & 0x12) == 0x12);
     const uint32_t engine_iss = ti.seq;
@@ -2517,13 +2517,13 @@ static void test_syn_retransmit_reack()
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12359, DEST_PORT, 0x02, 15000, 0,
         65535, {}));
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK retransmit");
+        TEST_THROW("no SYN-ACK retransmit");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     assert((ti.flags & 0x12) == 0x12);
     assert(ti.seq == engine_iss);
@@ -2556,27 +2556,27 @@ static void test_implicit_accept_on_first_write()
     // 隐式 accept 回复 SYN-ACK，随后数据段立即发出
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK from implicit accept");
+        TEST_THROW("no SYN-ACK from implicit accept");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     assert((ti.flags & 0x12) == 0x12);
     const uint32_t engine_iss = ti.seq;
 
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no data after implicit accept");
+        TEST_THROW("no data after implicit accept");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse data failed");
+        TEST_THROW("parse data failed");
     }
     assert((ti.flags & 0x18) == 0x18); // PSH|ACK
     assert(ti.seq == engine_iss + 1);
@@ -2621,15 +2621,15 @@ static void test_implicit_accept_on_first_read()
     // 隐式 accept 回复 SYN-ACK
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK from implicit accept");
+        TEST_THROW("no SYN-ACK from implicit accept");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     assert((ti.flags & 0x12) == 0x12);
     const uint32_t engine_iss = ti.seq;
@@ -2671,20 +2671,20 @@ static void test_accepted_no_ack_cleanup()
     // 读掉 SYN-ACK，客户端不再响应
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
 
     // 等待引擎 SYN 超时清理（发送 RST）
     if (!env.dev.read_packet(pkt, 5000)) {
-        throw std::runtime_error("no RST after syn timeout");
+        TEST_THROW("no RST after syn timeout");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse RST failed");
+        TEST_THROW("parse RST failed");
     }
     assert((ti.flags & 0x04) != 0); // RST
     assert(!peer.is_open());
@@ -2713,22 +2713,22 @@ static void test_accept_idempotent()
 
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     assert((ti.flags & 0x12) == 0x12);
 
     // 重复 accept：已回复过 SYN-ACK，应忽略
     peer.accept();
     if (env.dev.read_packet(pkt, 300)) {
-        throw std::runtime_error("duplicate SYN-ACK after idempotent accept");
+        TEST_THROW("duplicate SYN-ACK after idempotent accept");
     }
 }
 
@@ -2754,15 +2754,15 @@ static void test_out_of_order_reassembly()
         1000, 0, 65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse SYN-ACK failed");
+        TEST_THROW("parse SYN-ACK failed");
     }
     const uint32_t engine_iss = ti.seq;
 
@@ -2780,7 +2780,7 @@ static void test_out_of_order_reassembly()
         1006, engine_iss + 1, 65535,
         {'w', 'o', 'r', 'l', 'd'}));
     if (env.dev.read_packet(pkt, 200)) {
-        throw std::runtime_error("out-of-order segment should be buffered "
+        TEST_THROW("out-of-order segment should be buffered "
         "without dup-ack");
     }
 
@@ -2836,7 +2836,7 @@ static void test_loopback_local_address_guard()
         env.dev.send(seg);
         std::vector<uint8_t> pkt;
         if (env.dev.read_packet(pkt, 300)) {
-            throw std::runtime_error("guard packet should be dropped");
+            TEST_THROW("guard packet should be dropped");
         }
         const auto deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(1);
@@ -2847,7 +2847,7 @@ static void test_loopback_local_address_guard()
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        throw std::runtime_error("rx_dropped not incremented");
+        TEST_THROW("rx_dropped not incremented");
     };
 
     size_t dropped = env.engine.stats().rx_dropped.load();

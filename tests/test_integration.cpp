@@ -158,15 +158,15 @@ int main()
         5000, 0, 65535, {}));
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no SYN-ACK");
+        TEST_THROW("no SYN-ACK");
     }
     ip_hdr_info ipi;
     tcp_hdr_info ti;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     const uint32_t engine_iss = ti.seq;
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x10,
@@ -182,13 +182,13 @@ int main()
     bool echo_seen = false;
     for (int i = 0; i < 4 && !echo_seen; ++i) {
         if (!env.dev.read_packet(pkt)) {
-            throw std::runtime_error("no echo packet");
+            TEST_THROW("no echo packet");
         }
         if (!parse_ip(pkt, ipi)) {
-            throw std::runtime_error("parse_ip failed");
+            TEST_THROW("parse_ip failed");
         }
         if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         assert((ti.flags & 0x10) != 0 && ti.ack == 5001 + msg.size());
         if (ti.len > 0) {
@@ -206,13 +206,13 @@ int main()
         5001 + msg.size(), engine_iss + 1 + msg.size(), 65535,
         {}));
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no fin ack");
+        TEST_THROW("no fin ack");
     }
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x10) != 0 && ti.ack == 5001 + msg.size() + 1);
 
@@ -223,10 +223,10 @@ int main()
             break;
         }
         if (!parse_ip(pkt, ipi)) {
-            throw std::runtime_error("parse_ip failed");
+            TEST_THROW("parse_ip failed");
         }
         if (!parse_tcp(ipi.payload, ipi.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         if ((ti.flags & 0x01) != 0) {
             fin_seen = true;

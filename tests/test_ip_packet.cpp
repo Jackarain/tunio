@@ -541,12 +541,12 @@ struct dev_env
     {
         int sv[2];
         if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) {
-            throw std::runtime_error("socketpair failed");
+            TEST_THROW("socketpair failed");
         }
         peer = sv[1];
         boost::system::error_code ec;
         if (!dev.assign(sv[0], 1500, false, ec)) {
-            throw std::runtime_error(
+            TEST_THROW(
                 "tun_device assign failed: " + ec.message());
         }
         thread = std::thread([this] { io.run(); });

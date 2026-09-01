@@ -55,19 +55,19 @@ static void test_tcp6_handshake_data_fin()
     // 引擎 SYN-ACK（携带 MSS 选项，IPv6 下 MSS = MTU - 60）
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no IPv6 SYN-ACK");
+        TEST_THROW("no IPv6 SYN-ACK");
     }
     if (!verify_packet6(pkt)) {
-        throw std::runtime_error("verify_packet6 failed");
+        TEST_THROW("verify_packet6 failed");
     }
     ip6_hdr_info i6;
     if (!parse_ip6(pkt, i6)) {
-        throw std::runtime_error("parse_ip6 failed");
+        TEST_THROW("parse_ip6 failed");
     }
     assert(i6.src == DEST_V6 && i6.dst == CLIENT_V6 && i6.proto == 6);
     tcp_hdr_info ti;
     if (!parse_tcp(i6.payload, i6.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x12) == 0x12); // SYN|ACK
     assert(ti.ack == 1001);
@@ -107,16 +107,16 @@ static void test_tcp6_handshake_data_fin()
 
     // 消费引擎对数据的 ACK
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no IPv6 data ack");
+        TEST_THROW("no IPv6 data ack");
     }
     if (!verify_packet6(pkt)) {
-        throw std::runtime_error("verify_packet6 failed");
+        TEST_THROW("verify_packet6 failed");
     }
     if (!parse_ip6(pkt, i6)) {
-        throw std::runtime_error("parse_ip6 failed");
+        TEST_THROW("parse_ip6 failed");
     }
     if (!parse_tcp(i6.payload, i6.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x10) != 0 && ti.ack == 1006);
 
@@ -124,16 +124,16 @@ static void test_tcp6_handshake_data_fin()
     env.dev.send(make_tcp6(CLIENT_V6, DEST_V6, CLIENT_PORT, DEST_PORT, 0x11,
         1006, engine_iss + 6, 65535, {}));
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no IPv6 FIN ack");
+        TEST_THROW("no IPv6 FIN ack");
     }
     if (!verify_packet6(pkt)) {
-        throw std::runtime_error("verify_packet6 failed");
+        TEST_THROW("verify_packet6 failed");
     }
     if (!parse_ip6(pkt, i6)) {
-        throw std::runtime_error("parse_ip6 failed");
+        TEST_THROW("parse_ip6 failed");
     }
     if (!parse_tcp(i6.payload, i6.payload_len, ti)) {
-        throw std::runtime_error("parse_tcp failed");
+        TEST_THROW("parse_tcp failed");
     }
     assert((ti.flags & 0x10) != 0 && ti.ack == 1007);
 
@@ -146,10 +146,10 @@ static void test_tcp6_handshake_data_fin()
             break;
         }
         if (!parse_ip6(pkt, i6)) {
-            throw std::runtime_error("parse_ip6 failed");
+            TEST_THROW("parse_ip6 failed");
         }
         if (!parse_tcp(i6.payload, i6.payload_len, ti)) {
-            throw std::runtime_error("parse_tcp failed");
+            TEST_THROW("parse_tcp failed");
         }
         if ((ti.flags & 0x01) != 0) {
             fin_seen = true;
@@ -209,19 +209,19 @@ static void test_udp6_roundtrip()
 
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no IPv6 UDP reply packet");
+        TEST_THROW("no IPv6 UDP reply packet");
     }
     if (!verify_packet6(pkt)) {
-        throw std::runtime_error("verify_packet6 failed");
+        TEST_THROW("verify_packet6 failed");
     }
     ip6_hdr_info i6;
     if (!parse_ip6(pkt, i6)) {
-        throw std::runtime_error("parse_ip6 failed");
+        TEST_THROW("parse_ip6 failed");
     }
     assert(i6.src == DEST_V6 && i6.dst == CLIENT_V6 && i6.proto == 17);
     udp_hdr_info ui;
     if (!parse_udp(i6.payload, i6.payload_len, ui)) {
-        throw std::runtime_error("parse_udp failed");
+        TEST_THROW("parse_udp failed");
     }
     assert(ui.sport == 53 && ui.dport == 53000);
     assert(std::string(reinterpret_cast<const char *>(ui.data), ui.n) == reply);
@@ -242,14 +242,14 @@ static void test_icmp6_echo()
 
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no ICMPv6 reply");
+        TEST_THROW("no ICMPv6 reply");
     }
     if (!verify_packet6(pkt)) {
-        throw std::runtime_error("verify_packet6 failed");
+        TEST_THROW("verify_packet6 failed");
     }
     ip6_hdr_info i6;
     if (!parse_ip6(pkt, i6)) {
-        throw std::runtime_error("parse_ip6 failed");
+        TEST_THROW("parse_ip6 failed");
     }
     assert(i6.src == local && i6.dst == CLIENT_V6 && i6.proto == 58);
 
@@ -266,7 +266,7 @@ static void test_icmp6_echo()
     env.dev.send(make_icmp6_echo(CLIENT_V6, v6("fd00::3"), 0x0001, 0x0002, {}));
     std::vector<uint8_t> ignored;
     if (env.dev.read_packet(ignored, 300)) {
-        throw std::runtime_error("unexpected reply to non-local address");
+        TEST_THROW("unexpected reply to non-local address");
     }
 }
 

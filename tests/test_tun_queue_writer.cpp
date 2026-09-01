@@ -10,6 +10,7 @@
 
 #include "tun_queue_writer.hpp"
 #include "tunio/tun_config.hpp"
+#include "test_throw.hpp"
 
 #include <boost/asio.hpp>
 
@@ -47,7 +48,7 @@ write_result wait_future(std::future<write_result> fut, int timeout_ms)
 {
     if (fut.wait_for(std::chrono::milliseconds(timeout_ms)) !=
         std::future_status::ready) {
-        throw std::runtime_error("write future timeout");
+        TEST_THROW("write future timeout");
     }
     return fut.get();
 }
@@ -57,12 +58,12 @@ void drain_one(int fd, std::vector<uint8_t> &stash)
 {
     struct pollfd pfd{fd, POLLIN, 0};
     if (::poll(&pfd, 1, 5000) <= 0) {
-        throw std::runtime_error("drain poll timeout");
+        TEST_THROW("drain poll timeout");
     }
     uint8_t buf[65536];
     const ssize_t n = ::read(fd, buf, sizeof(buf));
     if (n <= 0) {
-        throw std::runtime_error("drain read failed");
+        TEST_THROW("drain read failed");
     }
     stash.insert(stash.end(), buf, buf + n);
 }
@@ -117,7 +118,7 @@ int main()
 {
     int sv[2];
     if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) {
-        throw std::runtime_error("socketpair failed");
+        TEST_THROW("socketpair failed");
     }
     // 收缩接收缓冲：放大写满概率，覆盖瞬时写失败路径
     const int bufsz = 2048;
@@ -135,7 +136,7 @@ int main()
     auto dev = std::make_shared<tunio::tun_device>(io);
     boost::system::error_code ec;
     if (!dev->assign(sv[1], 1500, false, ec)) {
-        throw std::runtime_error("device assign failed: " + ec.message());
+        TEST_THROW("device assign failed: " + ec.message());
     }
     auto stats = std::make_shared<tunio::engine_stats>();
     auto writer = std::make_shared<tunio::detail::tun_queue_writer>(

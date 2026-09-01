@@ -30,14 +30,14 @@ int main()
 
     std::vector<uint8_t> pkt;
     if (!env.dev.read_packet(pkt)) {
-        throw std::runtime_error("no ICMP reply");
+        TEST_THROW("no ICMP reply");
     }
     if (!verify_packet(pkt)) {
-        throw std::runtime_error("verify_packet failed");
+        TEST_THROW("verify_packet failed");
     }
     ip_hdr_info ipi;
     if (!parse_ip(pkt, ipi)) {
-        throw std::runtime_error("parse_ip failed");
+        TEST_THROW("parse_ip failed");
     }
     assert(ipi.src == 0x0a000001 && ipi.dst == 0x0a000002 && ipi.proto == 1);
 
@@ -58,7 +58,7 @@ int main()
     env.dev.send(make_icmp_echo(0x0a000002, 0x0a000003, 0x0001, 0x0002, {}));
     std::vector<uint8_t> ignored;
     if (env.dev.read_packet(ignored, 300)) {
-        throw std::runtime_error("unexpected reply to non-local address");
+        TEST_THROW("unexpected reply to non-local address");
     }
     return 0;
 }

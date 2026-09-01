@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include "test_throw.hpp"
+
 #include "tunio/packet_buffer.hpp"
 #include "tunio/tun_tcp_acceptor.hpp"
 #include "tunio/tun_config.hpp"
@@ -62,7 +64,7 @@ inline std::array<uint8_t, 16> v6(const char *s)
 {
     std::array<uint8_t, 16> b{};
     if (::inet_pton(AF_INET6, s, b.data()) != 1) {
-        throw std::runtime_error(std::string("bad ipv6 address: ") + s);
+        TEST_THROW(std::string("bad ipv6 address: ") + s);
     }
     return b;
 }
@@ -523,7 +525,7 @@ public:
             // SOCK_DGRAM：一次 read 恰为一个完整报文，与真实 TUN 包语义一致，
             // 引擎无需按流拆包拼接.
             if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) {
-                throw std::runtime_error("socketpair failed");
+                TEST_THROW("socketpair failed");
             }
             fds_.push_back(sv[0]);
             inject_fds_.push_back(sv[1]);
@@ -560,7 +562,7 @@ public:
             const ssize_t n =
                 ::write(fds_[queue], pkt.data() + off, pkt.size() - off);
             if (n <= 0) {
-                throw std::runtime_error("fake_device send failed");
+                TEST_THROW("fake_device send failed");
             }
             off += static_cast<size_t>(n);
         }
@@ -678,7 +680,7 @@ struct engine_env
         cfg.tcp_rto_max_retransmits = rto_max_retransmits;
         boost::system::error_code ec;
         if (!engine.open(cfg, ec)) {
-            throw std::runtime_error("engine open failed: " + ec.message());
+            TEST_THROW("engine open failed: " + ec.message());
         }
         thread = std::thread([this] { io.run(); });
     }
@@ -699,7 +701,7 @@ inline T future_get(std::future<T> fut, int timeout_ms = 5000)
 {
     if (fut.wait_for(std::chrono::milliseconds(timeout_ms)) !=
         std::future_status::ready) {
-        throw std::runtime_error("future timeout");
+        TEST_THROW("future timeout");
     }
     return fut.get();
 }

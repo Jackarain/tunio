@@ -168,7 +168,7 @@ void test_engine_multi_queue_multithread()
     cfg.udp_idle_timeout = std::chrono::seconds(1);
     boost::system::error_code ec;
     if (!engine.open(cfg, ec)) {
-        throw std::runtime_error("engine open failed: " + ec.message());
+        TEST_THROW("engine open failed: " + ec.message());
     }
     assert(engine.queue_count() == k_queues);
 
