@@ -406,6 +406,34 @@ private:
   `detail` 命名空间的 using 声明引用，行为与 ABI 均不变；引擎自身的
   `handle_packet` 解析/丢弃策略保持不变。
 
+#### 4.2 Linux TUN 多队列（`IFF_MULTI_QUEUE`）
+
+Linux TUN 驱动支持多队列模式（`IFF_MULTI_QUEUE`，内核 ≥ 2.6.30）：对同一
+设备多次 `TUNSETIFF`（设备名相同、均携带 `IFF_MULTI_QUEUE`）可获得多个
+独立 fd，每个 fd 对应内核侧一个收发队列；内核按流哈希把入站包并行投递到
+各队列 fd，出站包写任意队列 fd 均可（内核按哈希选择实际出口队列）。
+
+- **打开**：`device_config::num_queues > 1` 时，首个 fd 的 `TUNSETIFF`
+  携带 `IFF_MULTI_QUEUE`（空设备名自动命名后回写），随后按回写名逐个
+  打开其余队列 fd；任一队列打开失败即回滚关闭全部 fd（内核随之销毁
+  设备）。`num_queues` 校验范围 `[1, 256]`（内核 `MAX_TAP_QUEUES`），
+  非法或内核不支持时 `open()` 返回 `EINVAL`，不静默降级。单队列（默认）
+  保持不带 `IFF_MULTI_QUEUE` 的旧行为，兼容老内核。
+- **实现**：`posix_tun_device_impl` 由单个 `stream_descriptor` 改为
+  `std::vector<stream_descriptor>`（每个队列一个），`async_read` /
+  `async_write` 增加队列参数（越界返回 `bad_descriptor`），`queue_count()`
+  返回队列数。注入模式增加 `assign_queues(handles, ...)` 多句柄注入
+  （每个句柄一个队列，失败不关闭注入句柄）；非 POSIX 平台恒为单队列。
+- **读侧**：`tunio_impl` 并发读槽按队列均分 —— 单队列保持原有 32 槽，
+  多队列时每队列 `max(1, 32 / num_queues)` 个槽（总槽数不变）；槽号
+  `index` 经 `index / slots_per_queue` 归属队列，各队列读互不阻塞。
+- **写侧**：`tun_queue_writer` 写泵按报文五元组（地址族 + 源/目的地址 +
+  协议 + 端口）做 FNV-1a 哈希取模选择队列 fd（`pick_tx_queue`），同流
+  稳定同队列保持流内顺序；单队列短路返回 0，零额外开销。
+- **示例**：`tun2socks --queues N`；测试 `tests/test_multi_queue.cpp`
+  覆盖写队列选择单元测试、多 socketpair 注入集成测试（含多线程 Strand
+  模式）与真实 TUN 设备环回测试（无权限环境自动跳过）。
+
 ---
 
 ### 5. TCP 协议引擎

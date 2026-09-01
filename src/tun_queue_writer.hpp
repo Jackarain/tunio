@@ -31,6 +31,61 @@ namespace detail {
 using device_write_handler =
     net::any_completion_handler<void(boost::system::error_code, size_t)>;
 
+// 写队列选择：按报文的五元组（地址族 + 源/目的地址 + 协议 + 端口）做
+// FNV-1a 哈希后取模，把同一流的报文稳定分发到同一队列 fd；多队列下
+// 各队列 fd 独立入内核发送队列，写吞吐随队列数扩展。
+// 单队列（queue_count <= 1）短路返回 0，零额外开销；非 IP 或残缺报文
+// 回退队列 0（写队列选择只影响分布，不影响正确性）.
+inline size_t pick_tx_queue(const packet_buffer &buf, size_t queue_count)
+{
+    if (queue_count <= 1) {
+        return 0;
+    }
+    const uint8_t *p = buf.data();
+    const size_t len = buf.size();
+    if (len < 20) {
+        return 0;
+    }
+    uint64_t h = 1469598103934665603ULL; // FNV offset basis
+    const auto mix = [&](const uint8_t *d, size_t n) {
+        for (size_t i = 0; i < n; ++i) {
+            h ^= d[i];
+            h *= 1099511628211ULL; // FNV prime
+        }
+    };
+    switch (p[0] >> 4) {
+    case 4: {
+        const size_t ihl = static_cast<size_t>(p[0] & 0x0f) * 4;
+        const size_t total = static_cast<size_t>((p[2] << 8) | p[3]);
+        mix(p + 12, 4); // 源地址
+        mix(p + 16, 4); // 目的地址
+        mix(p + 9, 1);  // 协议
+        const uint8_t proto = p[9];
+        // 端口参与哈希，进一步打散同一地址对下的不同流
+        if (ihl >= 20 && total >= ihl && len >= total &&
+            (proto == 6 || proto == 17) && total - ihl >= 4) {
+            mix(p + ihl, 4); // 源/目的端口（网络字节序）
+        }
+        break;
+    }
+    case 6: {
+        const size_t total = 40 + static_cast<size_t>((p[4] << 8) | p[5]);
+        mix(p + 8, 16); // 源地址
+        mix(p + 24, 16); // 目的地址
+        mix(p + 6, 1);   // 下一头协议
+        const uint8_t proto = p[6];
+        if (len >= 40 && total >= 40 && len >= total &&
+            (proto == 6 || proto == 17) && total - 40 >= 4) {
+            mix(p + 40, 4); // 源/目的端口
+        }
+        break;
+    }
+    default:
+        return 0; // 非 IP：回退队列 0
+    }
+    return static_cast<size_t>(h % queue_count);
+}
+
 // 串行化设备写队列
 //
 // 底层描述符同一时刻仅允许一个未完成的异步写操作，所有写请求统一进入
@@ -48,6 +103,7 @@ public:
         : strand_(std::move(strand))
         , dev_(std::move(dev))
         , stats_(std::move(stats))
+        , queue_count_(dev_ ? dev_->queue_count() : 1)
     {
     }
 
@@ -158,7 +214,8 @@ private:
         queue_.pop_front();
         packet_buffer &buf = current_->buf;
         auto self = shared_from_this();
-        dev_->async_write_packet(buf,
+        // 多队列下按报文五元组哈希选择队列 fd；单队列恒为 0.
+        dev_->async_write_packet(buf, pick_tx_queue(buf, queue_count_),
             net::bind_executor(strand_, [self](
                 boost::system::error_code ec, size_t n) {
                 self->on_write_done(ec, n);
@@ -212,6 +269,7 @@ private:
     net::any_io_executor strand_;
     std::shared_ptr<tun_device> dev_;
     std::shared_ptr<engine_stats> stats_;
+    size_t queue_count_ = 1; // 设备队列数（构造时从设备缓存）
     std::deque<entry> queue_;
     std::vector<packet_buffer> pool_;
     std::optional<entry> current_; // 正在写入的数据包
