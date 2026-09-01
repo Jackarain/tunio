@@ -15,7 +15,7 @@
 #include "tunio/tun_config.hpp"
 #include "tunio/tunio.hpp"
 
-#include "device_writer.hpp"
+#include "tun_queue_writer.hpp"
 #include "tcp_engine.hpp"
 #include "udp_engine.hpp"
 
@@ -134,7 +134,7 @@ private:
     size_t mtu_ = 1500;
 
     std::shared_ptr<tun_device> device_;
-    std::shared_ptr<device_writer> writer_;
+    std::shared_ptr<tun_queue_writer> writer_;
     std::shared_ptr<tcp_engine> tcp_;
     std::shared_ptr<udp_engine> udp_;
     std::shared_ptr<buffer_accountant> account_;

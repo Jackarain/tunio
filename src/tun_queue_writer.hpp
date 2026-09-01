@@ -1,5 +1,5 @@
 ﻿//
-// device_writer.hpp
+// tun_queue_writer.hpp
 // ~~~~~~~~~~~~~~~~~
 //
 // Copyright (c) 2026 Jack (jack dot wgm at gmail dot com)
@@ -39,10 +39,10 @@ using device_write_handler =
 // 生命周期: 写完成回调捕获自身的 shared_ptr 保活, 引擎重建（reopen）释放
 // 旧 writer 时, 在途写操作的迟到完成回调不会访问已释放对象; 设备与统计
 // 对象同样以 shared_ptr 共享, 避免回调晚于引擎析构时引用悬垂.
-class device_writer : public std::enable_shared_from_this<device_writer>
+class tun_queue_writer : public std::enable_shared_from_this<tun_queue_writer>
 {
 public:
-    device_writer(net::any_io_executor strand,
+    tun_queue_writer(net::any_io_executor strand,
         std::shared_ptr<tun_device> dev,
         std::shared_ptr<engine_stats> stats)
         : strand_(std::move(strand))

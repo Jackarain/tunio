@@ -1,5 +1,5 @@
 ﻿//
-// test_device_writer.cpp
+// test_tun_queue_writer.cpp
 // ~~~~~~~~~~~~~~~~~~~~~~
 //
 // Copyright (c) 2026 Jack (jack dot wgm at gmail dot com)
@@ -8,7 +8,7 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 
-#include "device_writer.hpp"
+#include "tun_queue_writer.hpp"
 #include "tunio/tun_config.hpp"
 
 #include <boost/asio.hpp>
@@ -27,8 +27,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-// 验证 device_writer 对瞬时设备写失败的处理：macOS 非阻塞数据报写满时
-// 返回 ENOBUFS（而非 EAGAIN），Asio 立即以错误完成，device_writer 应延迟
+// 验证 tun_queue_writer 对瞬时设备写失败的处理：macOS 非阻塞数据报写满时
+// 返回 ENOBUFS（而非 EAGAIN），Asio 立即以错误完成，tun_queue_writer 应延迟
 // 重试而不是上报写失败中断发送链；对端长期不排空时经有限次重试后以错误
 // 完成（不永久挂起）。Linux 同一场景走 EAGAIN + 可写通知路径，本测试的
 // 排空场景同样通过（验证全部写入最终成功）.
@@ -69,7 +69,7 @@ void drain_one(int fd, std::vector<uint8_t> &stash)
 
 // 在 Strand 上发起一次 async_write，返回完成 future
 std::future<write_result> post_write(
-    const std::shared_ptr<tunio::detail::device_writer> &writer,
+    const std::shared_ptr<tunio::detail::tun_queue_writer> &writer,
     const net::any_io_executor &strand,
     const std::vector<uint8_t> &payload)
 {
@@ -126,7 +126,7 @@ int main()
     ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &bufsz, sizeof(bufsz));
     ::setsockopt(sv[1], SOL_SOCKET, SO_SNDBUF, &bufsz, sizeof(bufsz));
     // 写端非阻塞：Linux 写满返回 EAGAIN（Asio 等待可写通知），macOS 返回
-    // ENOBUFS（走 device_writer 重试）；避免阻塞写挂住 io 线程.
+    // ENOBUFS（走 tun_queue_writer 重试）；避免阻塞写挂住 io 线程.
     const int flags = ::fcntl(sv[1], F_GETFL, 0);
     ::fcntl(sv[1], F_SETFL, flags | O_NONBLOCK);
 
@@ -138,7 +138,7 @@ int main()
         throw std::runtime_error("device assign failed: " + ec.message());
     }
     auto stats = std::make_shared<tunio::engine_stats>();
-    auto writer = std::make_shared<tunio::detail::device_writer>(
+    auto writer = std::make_shared<tunio::detail::tun_queue_writer>(
         strand, dev, stats);
     io_guard guard(io, dev, sv[0]);
 

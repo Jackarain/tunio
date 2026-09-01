@@ -139,7 +139,7 @@ bool tunio_impl::open(const tun_config &cfg, boost::system::error_code &ec)
 
     account_ = std::make_shared<buffer_accountant>();
     account_->limit = cfg.max_total_buffer;
-    writer_ = std::make_shared<device_writer>(strand_ex_, device_, stats_);
+    writer_ = std::make_shared<tun_queue_writer>(strand_ex_, device_, stats_);
     tcp_ = std::make_shared<tcp_engine>(strand_ex_, writer_, cfg_, *stats_,
         account_);
     udp_ = std::make_shared<udp_engine>(strand_ex_, writer_, cfg_, *stats_,
