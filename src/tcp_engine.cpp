@@ -315,10 +315,12 @@ void tcp_engine::handle_segment(const tcp_flow_ptr& f,
     {
         if (!handle_ack(*f, ack))
             return;
-    }
 
-    // 对端通告的窗口字段按协商 scale 放大后才是实际可用发送窗口（RFC 7323）
-    f->peer_wnd = static_cast<uint32_t>(wnd) << f->snd_wnd_scale;
+        // 对端通告的窗口字段按协商 scale 放大后才是实际可用发送窗口
+        // （RFC 7323）；SYN 段窗口字段未缩放，仅 ACK 段更新，避免 SYN
+        // 重传把未缩放窗口按已协商 scale 放大写入 peer_wnd.
+        f->peer_wnd = static_cast<uint32_t>(wnd) << f->snd_wnd_scale;
+    }
 
     if (flags & TCP_RST)
     {
@@ -568,8 +570,10 @@ void tcp_engine::flush_reads(tcp_flow& f)
         notify_window_updated(f);
     }
 
-    // 头部偏移过大时压缩连续缓冲，保持内存占用与 cache 友好
-    if (f.rx_head > 0 && (f.rx_head == f.rx_data.size() || f.rx_head >= 65536))
+    // 已消费偏移过半时压缩连续缓冲：固定 64KB 阈值在缓冲积压数 MB 时
+    // 每消费 64KB 就整段 memmove 剩余全部字节（O(n²) 退化）；消费过半
+    // 才压实摊还 O(1)/字节（整段消费完时 size == rx_head 同样满足）.
+    if (f.rx_head > 0 && f.rx_head * 2 >= f.rx_data.size())
     {
         f.rx_data.erase(f.rx_data.begin(),
             f.rx_data.begin() + static_cast<std::ptrdiff_t>(f.rx_head));
