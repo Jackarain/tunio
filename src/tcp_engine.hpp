@@ -130,6 +130,13 @@ struct tcp_flow : public std::enable_shared_from_this<tcp_flow>
     // 客户端（虚拟网内）端点：key 中的源地址与源端口
     net::ip::tcp::endpoint remote_endpoint() const noexcept;
 
+    // ---- 批量 ACK（延迟 ACK）----
+    // 缓冲路径（无读挂起时数据入队）按序数据段到达时不立即回 ACK，置
+    // pending 后每 2 段合并一次；挂起 ACK 由读完成/FIN/窗口更新等事件
+    // 补发。直投路径（读挂起、数据直接交付用户）保持逐段即时 ACK，
+    // 交互式单段请求的确认延迟不受影响.
+    bool ack_pending = false;
+
     // ---- 接收队列（已按序确认的字节流，连续缓冲 + 消费偏移）----
     std::vector<uint8_t> rx_data;
     size_t rx_head = 0;  // 已消费偏移（rx_data 头部）
@@ -313,6 +320,10 @@ private:
 
     // ---- 发送辅助 ----
     void send_ack(tcp_flow& f);
+    // 批量 ACK 入口：缓冲路径按序数据段到达时每 2 段合并发送一次 ACK.
+    void note_data_ack(tcp_flow& f);
+    // 补发挂起的 ACK：读完成等事件触发时立即发送.
+    void flush_pending_ack(tcp_flow& f);
     uint32_t current_wnd(const tcp_flow& f) const;
     void notify_window_updated(tcp_flow& f);
     // 构造并发送下一个数据分片（write_loop 发送路径）；返回 false 表示

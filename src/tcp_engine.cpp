@@ -486,10 +486,9 @@ void tcp_engine::deliver_data(tcp_flow& f, const uint8_t* data, size_t len)
     if (f.rx_shutdown)
     {
         // 应用已关闭接收侧：数据不再入队，丢弃并推进序号后正常确认，
-        // 避免无消费方时 rx_data 持续积压占用缓冲记账。
+        // 避免无消费方时 rx_data 持续积压占用缓冲记账。数据被丢弃而非
+        // 缓冲，不构成背压，逐段确认保证发送方不被无谓拖慢。
         f.rcv_nxt += static_cast<uint32_t>(len);
-        // 每段立即确认：避免 delayed ACK 40ms 兜底在低 cwnd 时把
-        // 一问一答周期拉长到 40ms，拖慢内核发送节奏。
         send_ack(f);
         return;
     }
@@ -530,6 +529,8 @@ void tcp_engine::deliver_data(tcp_flow& f, const uint8_t* data, size_t len)
         op.handler(boost::system::error_code{}, n);
         if (n < len)
             flush_reads(f);
+        // 直投路径保持逐段即时 ACK：数据已交付用户，交互式单段请求的
+        // 确认不延迟.
         send_ack(f);
         return;
     }
@@ -537,8 +538,10 @@ void tcp_engine::deliver_data(tcp_flow& f, const uint8_t* data, size_t len)
     f.rx_data.insert(f.rx_data.end(), data, data + len);
     f.rx_bytes += len;
     f.rcv_nxt += static_cast<uint32_t>(len);
-    // 每段立即确认：ACK 及时性优先，避免 40ms 兜底拖慢内核发送节奏。
-    send_ack(f);
+    // 缓冲路径批量 ACK：无读挂起时按序数据段每 2 段合并一次，挂起 ACK
+    // 由 flush_reads（读完成）或后续段/FIN/窗口更新补发，避免背压场景
+    // 下 1:1 的 ACK 风暴.
+    note_data_ack(f);
     flush_reads(f);
 }
 
@@ -568,6 +571,8 @@ void tcp_engine::flush_reads(tcp_flow& f)
         account_->release(copied);
         op.handler(boost::system::error_code{}, copied);
         notify_window_updated(f);
+        // 读完成：补发挂起的 ACK，应用稍后读取的单段数据也能及时确认.
+        flush_pending_ack(f);
     }
 
     // 已消费偏移过半时压缩连续缓冲：固定 64KB 阈值在缓冲积压数 MB 时
@@ -788,6 +793,10 @@ void tcp_engine::send_segment(tcp_flow& f,
     size_t len,
     bool with_mss)
 {
+    // 所有出段均携带 ACK（ack 字段 = 当前 rcv_nxt）：数据段捎带确认与
+    // 独立 ACK 等效，清除挂起标记，避免后续重复补发.
+    f.ack_pending = false;
+
     // 控制段（SYN/SYN+ACK/FIN/RST/ACK）直通：不参与数据背压，确保
     // 连接建立/关闭的关键段不被数据发送队列阻塞。
     writer_->async_write_and_forget(
@@ -1101,6 +1110,25 @@ void tcp_engine::signal_write(tcp_flow& f)
 void tcp_engine::send_ack(tcp_flow& f)
 {
     send_segment(f, f.snd_nxt, TCP_ACK, nullptr, 0, false);
+}
+
+// 批量 ACK：缓冲路径按序数据段到达时每 2 段合并发送一次，将背压场景的
+// ACK 包数减半；挂起 ACK 由读完成/FIN/窗口更新等事件补发.
+void tcp_engine::note_data_ack(tcp_flow& f)
+{
+    if (f.ack_pending)
+        send_ack(f); // 连续第 2 段：立即补发，覆盖前一段
+    else
+        f.ack_pending = true;
+}
+
+// 补发挂起的 ACK：读完成等事件触发时立即发送，避免稀疏单段流量的 ACK
+// 无限期等待下一段.
+void tcp_engine::flush_pending_ack(tcp_flow& f)
+{
+    if (!f.ack_pending)
+        return;
+    send_ack(f);
 }
 
 uint32_t tcp_engine::current_wnd(const tcp_flow& f) const
