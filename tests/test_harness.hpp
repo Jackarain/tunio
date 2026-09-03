@@ -659,7 +659,8 @@ struct engine_env
         std::chrono::milliseconds rto_timeout =
             std::chrono::milliseconds(200),
         int rto_max_retransmits = 8,
-        size_t queues = 1)
+        size_t queues = 1,
+        bool utun_prefix = false)
         : engine(io)
         , dev(queues)
         , guard(net::make_work_guard(io))
@@ -678,6 +679,7 @@ struct engine_env
         cfg.tcp_persist_timeout = persist_timeout;
         cfg.tcp_rto_timeout = rto_timeout;
         cfg.tcp_rto_max_retransmits = rto_max_retransmits;
+        cfg.utun_prefix = utun_prefix;
         boost::system::error_code ec;
         if (!engine.open(cfg, ec)) {
             TEST_THROW("engine open failed: " + ec.message());
