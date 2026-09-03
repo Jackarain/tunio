@@ -383,6 +383,7 @@ co_await dev.async_write_ip(out, net::use_awaitable);
 | `udp_idle_timeout` | `30s` | UDP 会话空闲超时 |
 | `tcp_time_wait_timeout` / `tcp_accept_timeout` | `10s` / `30s` | TCP 清理超时 |
 | `tcp_syn_timeout` / `tcp_close_timeout` | `30s` / `30s` | 半开/关闭流程超时 |
+| `tcp_persist_timeout` / `tcp_persist_max_probes` | `5s` / `15` | 零窗口探测初始间隔与最大次数（超限以 RST 关闭连接） |
 
 ### 生命周期与线程安全
 
