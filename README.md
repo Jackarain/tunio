@@ -97,13 +97,15 @@ ctest --test-dir build --output-on-failure
   薄封装，无编译期绑定依赖，天然跟随解释器版本。模块直接暴露
   `Engine`/`TcpSocket`/`UdpSocket`，语义与 C++ 套接字一一对应。
 
-构建并运行 Python 回显示例：
+构建并运行 Python 回显与 SOCKS5 代理示例：
 
 ```sh
 cmake -B build -DTUNIO_BUILD_PYTHON=ON
 cmake --build build -j
 sudo python3 examples/python/tun_echo.py --tun tun0 \
     --ip 10.0.0.1 --netmask 255.255.255.0
+sudo python3 examples/python/tun2socks.py --tun tun0 \
+    --ip 10.0.0.1 --netmask 255.255.255.0 --proxy 127.0.0.1:1080
 ```
 
 `libtunio_c` 共享库输出到 `bindings/python/tunio/` 包目录，源码树内可直接
@@ -569,6 +571,8 @@ for (auto &t : threads) {
 | :--- | :--- |
 | `tun_echo` | 最小示例：TCP 桥接本机 echo 服务 + UDP 回显 |
 | `tun2socks` | SOCKS5 透明代理：TCP CONNECT + UDP ASSOCIATE |
+| `examples/python/tun_echo.py` | `tun_echo` 的 Python 绑定版本（ctypes 绑定） |
+| `examples/python/tun2socks.py` | `tun2socks` 的 Python 绑定版本（纯 Python SOCKS5 客户端） |
 | `tun_packet` | 原始 IP 包中继/打印：直接使用 `tun_device` + `ip_packet`，解析并打印 TCP/UDP/ICMP 协议详情，`--echo` 回环中继 |
 | `benchmark` | 异步接口每操作堆分配与吞吐基准（基于 socketpair 注入） |
 
