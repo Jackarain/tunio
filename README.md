@@ -69,9 +69,69 @@ ctest --test-dir build --output-on-failure
 - `USE_WINTUN_DRIVER`（默认 `OFF`，仅 Windows）：使用 Wintun 驱动。
 - `TUNIO_DISABLE_LOOPBACK_GUARD`（默认 `OFF`）：关闭环路与本地地址防护
   （定义编译宏 `TUNIO_DISABLE_LOOPBACK_GUARD` 效果相同）。
+- `TUNIO_BUILD_C`（默认 `OFF`）：构建 C 绑定（`bindings/c` 的 `tunio_c`
+  C API 共享库），不依赖 Python。
+- `TUNIO_BUILD_PYTHON`（默认 `OFF`）：构建 Python 绑定（自动启用
+  `TUNIO_BUILD_C`），共享库输出到 `bindings/python/tunio/` 供直接
+  `import tunio`（见下文）。
 - `TUNIO_INSTALL`（默认 `OFF`）：生成安装/导出规则（`cmake --install`、
   `find_package(tunio)` 与 pkg-config）；tunio 多以 `add_subdirectory` 方式
   集成，需要对外安装发布时才开启。
+
+### C 与 Python 绑定
+
+仓库提供两层绑定接口：
+
+- **C 绑定**（`bindings/c/`）：`bindings/c/include/tunio/c_api.h` 只定义一套
+  句柄（`tunio_engine*`/`tunio_tcp_conn*`/`tunio_udp_session*`）与一套函数族，
+  阻塞调用与回调风格异步变体共享同一句柄，实现于 `bindings/c/src/c_api.cpp`。
+  阻塞风格 `tunio_tcp_accept/recv/send`、`tunio_udp_accept/recvfrom/sendto`
+  在调用线程阻塞至完成，引擎内部维护 `io_context` 与 io 线程在后台推进协议
+  状态机，`tunio_engine_close()` 会唤醒全部阻塞调用；同一引擎/连接/会话上
+  的 `tunio_tcp_async_*`/`tunio_udp_async_*` 变体以完成回调驱动：异步
+  accept 通过回调下发新连接/会话，读写回调内续发（单挂起读/写、零拷贝，
+  语义与 Boost.Asio 一致），回调在引擎串行执行器上串行派发，无操作级取消
+  与主动关闭事件。`tunio_strerror()` 对两族通用。整个 `libtunio_c` 便于
+  C/其他语言集成。
+- **Python 绑定**（`bindings/python/tunio/`）：基于上述 C API 的 ctypes
+  薄封装，无编译期绑定依赖，天然跟随解释器版本。模块直接暴露
+  `Engine`/`TcpSocket`/`UdpSocket`，语义与 C++ 套接字一一对应。
+
+构建并运行 Python 回显示例：
+
+```sh
+cmake -B build -DTUNIO_BUILD_PYTHON=ON
+cmake --build build -j
+sudo python3 examples/python/tun_echo.py --tun tun0 \
+    --ip 10.0.0.1 --netmask 255.255.255.0
+```
+
+`libtunio_c` 共享库输出到 `bindings/python/tunio/` 包目录，源码树内可直接
+import：
+
+```python
+import tunio
+
+engine = tunio.Engine()                     # threads 参数可开多 io 线程
+engine.open(dev_name="tun0", ipv4_addr="10.0.0.1",
+            netmask="255.255.255.0")
+
+try:
+    while True:
+        client = engine.accept_tcp()        # 阻塞等待虚拟 TCP 连接
+        try:
+            data = client.recv(4096)
+            if data:
+                client.send(data)           # 回显
+        finally:
+            client.close()
+except tunio.Closed:                        # engine.close() 后 accept 退出
+    pass
+```
+
+配置项与 `tun_config` 字段同名（`mtu`/`num_queues`/各超时项等），也支持
+`external_handle`/`external_handles` 注入外部 TUN 句柄与 `--inject-fd`
+等价用法。引擎 `close()` 后仍可再次 `open()`。
 
 ### 安装与 find_package 集成
 
