@@ -61,6 +61,9 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
+构建产物统一输出：可执行文件（示例与测试）位于 `build/bin/`，库位于
+`build/lib/`。
+
 常用选项：
 
 - `TUNIO_BUILD_TESTS`（默认 `ON`）：构建单元测试（基于 Boost.Test，
@@ -322,7 +325,7 @@ int main()
 以 root 运行并配置路由后，虚拟网内客户端即可访问本机 echo 服务：
 
 ```sh
-sudo ./tun_echo --tun tun0 --ip 10.0.0.1 --netmask 255.255.255.0
+sudo ./build/bin/tun_echo --tun tun0 --ip 10.0.0.1 --netmask 255.255.255.0
 sudo ip route add 10.0.0.0/24 dev tun0   # 或由外部路由/策略路由注入流量
 ```
 
