@@ -164,7 +164,7 @@ pkg-config --cflags --libs tunio
 
 以下是一个完整的最小示例：打开 TUN 设备，将虚拟网内的 TCP 连接桥接到本机
 回环端口的 echo 服务，并在引擎层直接回显 UDP 数据报。完整版本见
-`examples/tun_echo.cpp`。
+`examples/cpp/tun_echo.cpp`。
 
 ```cpp
 #include "tunio/tun_tcp_acceptor.hpp"
@@ -566,6 +566,9 @@ for (auto &t : threads) {
 ```
 
 ## 示例程序
+
+示例源码按语言分目录存放：C++ 示例位于 `examples/cpp/`，Python 示例位于
+`examples/python/`。
 
 | 程序 | 说明 |
 | :--- | :--- |
