@@ -570,8 +570,9 @@ for (auto &t : threads) {
 
 ## 示例程序
 
-示例源码按语言分目录存放：C++ 示例位于 `examples/cpp/`，Python 示例位于
-`examples/python/`。
+示例源码按语言分目录存放：C++ 示例位于 `examples/cpp/`，C 示例位于
+`examples/c/`（需开启 `TUNIO_BUILD_C` 或 `TUNIO_BUILD_PYTHON`），Python
+示例位于 `examples/python/`。
 
 | 程序 | 说明 |
 | :--- | :--- |
@@ -579,6 +580,7 @@ for (auto &t : threads) {
 | `tun2socks` | SOCKS5 透明代理：TCP CONNECT + UDP ASSOCIATE |
 | `examples/python/tun_echo.py` | `tun_echo` 的 Python 绑定版本（ctypes 绑定） |
 | `examples/python/tun2socks.py` | `tun2socks` 的 Python 绑定版本（纯 Python SOCKS5 客户端） |
+| `examples/c/tun2socks.c` | `tun2socks` 的 C API 版本（阻塞接口 + pthread，构建产物 `tun2socks_c`） |
 | `tun_packet` | 原始 IP 包中继/打印：直接使用 `tun_device` + `ip_packet`，解析并打印 TCP/UDP/ICMP 协议详情，`--echo` 回环中继 |
 | `benchmark` | 异步接口每操作堆分配与吞吐基准（基于 socketpair 注入） |
 
