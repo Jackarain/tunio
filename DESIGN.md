@@ -401,8 +401,8 @@ private:
 - **写路径 builder**：`begin_ipv4/begin_ipv6 -> begin_tcp/begin_udp/
   begin_icmp -> [append_payload] -> finalize()`，`finalize()` 回填长度并计算
   IP/TCP/UDP/ICMP 校验和（含伪头部），完成后访问器立即可用。
-- **复用**：`src/ip_headers.hpp` 中的报文头部结构体与校验和工具已提升至
-  公开头 `tunio/ip_packet.hpp`（`tunio` 命名空间），引擎内部经由
+- **复用**：`include/tunio/detail/ip_headers.hpp` 中的报文头部结构体与校验和
+  工具已提升至公开头 `tunio/ip_packet.hpp`（`tunio` 命名空间），引擎内部经由
   `detail` 命名空间的 using 声明引用，行为与 ABI 均不变；引擎自身的
   `handle_packet` 解析/丢弃策略保持不变。
 

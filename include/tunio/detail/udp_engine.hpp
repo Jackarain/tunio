@@ -10,9 +10,9 @@
 
 #pragma once
 
-#include "tun_queue_writer.hpp"
-#include "ip_headers.hpp"
-#include "tcp_engine.hpp"
+#include "tunio/detail/tun_queue_writer.hpp"
+#include "tunio/detail/ip_headers.hpp"
+#include "tunio/detail/tcp_engine.hpp"
 #include "tunio/tun_config.hpp"
 
 #include <boost/asio.hpp>

@@ -10,7 +10,7 @@
 
 #define BOOST_TEST_MODULE tun_queue_writer
 #include <boost/test/included/unit_test.hpp>
-#include "tun_queue_writer.hpp"
+#include "tunio/detail/tun_queue_writer.hpp"
 #include "tunio/tun_config.hpp"
 #include "test_throw.hpp"
 

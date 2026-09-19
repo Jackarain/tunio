@@ -8,9 +8,9 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 
-#include "tcp_engine.hpp"
+#include "tunio/detail/tcp_engine.hpp"
 
-#include "tun_queue_writer.hpp"
+#include "tunio/detail/tun_queue_writer.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/asio/experimental/awaitable_operators.hpp>
