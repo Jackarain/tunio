@@ -177,8 +177,9 @@ void on_direction_done(std::shared_ptr<tcp_bridge_state> state,
     std::chrono::seconds half_close_timeout)
 {
     if (--state->pending <= 0) {
-        boost::system::error_code ec;
-        state->timer.cancel(ec);
+        // Boost 1.92 移除了带 error_code 的 timer::cancel 重载，使用无参版本；
+        // cancel 的失败（定时器已到期）在收尾路径中无副作用。
+        state->timer.cancel();
         return;
     }
 

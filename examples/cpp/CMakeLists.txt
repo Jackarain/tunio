@@ -1,5 +1,4 @@
-# tun2socks 由多个翻译单元构成：proxy.cpp 是唯一包含 <boost/url/src.hpp>
-# （Boost.URL header-only 模式）的 TU，无需额外链接 boost_url。
+# tun2socks 由多个翻译单元构成：proxy.cpp 提供代理抽象与 URL 解析实现。
 add_executable(tun2socks tun2socks.cpp proxy.cpp)
 target_link_libraries(tun2socks PRIVATE tunio)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

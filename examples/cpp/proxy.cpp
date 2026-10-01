@@ -10,8 +10,10 @@
 
 // 代理 URL 解析与工厂实现。
 //
-// 本文件是示例中唯一包含 <boost/url/src.hpp> 的翻译单元：Boost.URL 以
-// header-only 方式使用，其余 TU 只需声明，避免链接独立的 boost_url 库。
+// 说明：Boost.URL 自 1.92 起废弃 <boost/url/src.hpp> 的 header-only 集成
+// 方式，要求链接独立编译的 boost_url 库；本示例为避免新增链接依赖，内置
+// 仅解析 [scheme://][user:pass@]host[:port] 所需的最小逻辑，支持 IPv6
+// 字面量与 userinfo 的 percent-decode。
 
 #include "proxy.hpp"
 
@@ -20,15 +22,62 @@
 #include "socks5_client.hpp"
 
 #include <boost/asio/experimental/awaitable_operators.hpp>
-#include <boost/url/src.hpp>
-#include <boost/url.hpp>
 
+#include <cstdint>
 #include <string>
+#include <string_view>
 #include <tuple>
 
 namespace tun2socks_example {
 
 namespace {
+
+char ascii_lower(char c) noexcept
+{
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+std::string to_lower(std::string_view text)
+{
+    std::string out(text);
+    for (char& c : out) {
+        c = ascii_lower(c);
+    }
+    return out;
+}
+
+int hex_value(char c) noexcept
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+std::string percent_decode(std::string_view text)
+{
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '%' && i + 2 < text.size()) {
+            const int hi = hex_value(text[i + 1]);
+            const int lo = hex_value(text[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(text[i]);
+    }
+    return out;
+}
 
 uint16_t default_port_for(std::string_view scheme) noexcept
 {
@@ -47,23 +96,16 @@ bool parse_proxy_url(std::string_view text, proxy_config& out, std::string& err)
         return false;
     }
 
-    // 无 scheme 时按 sock5 处理，兼容旧的 host:port 写法。
-    std::string url(text);
-    if (url.find("://") == std::string::npos) {
-        url = "socks5://" + url;
+    std::string rest(text);
+
+    // 无 scheme 时按 socks5 处理，兼容旧的 host:port 写法。
+    std::string scheme = "socks5";
+    const auto scheme_pos = rest.find("://");
+    if (scheme_pos != std::string::npos) {
+        scheme = to_lower(rest.substr(0, scheme_pos));
+        rest = rest.substr(scheme_pos + 3);
     }
 
-    auto parsed = boost::urls::parse_uri(url);
-    if (!parsed) {
-        err = "非法代理 URL: " + std::string(text);
-        return false;
-    }
-    boost::urls::url_view view = *parsed;
-
-    std::string scheme(view.scheme());
-    if (scheme.empty()) {
-        scheme = "socks5";
-    }
     if (scheme != "socks5" && scheme != "http" && scheme != "direct" &&
         scheme != "reject") {
         err = "不支持的代理协议: " + scheme;
@@ -71,38 +113,68 @@ bool parse_proxy_url(std::string_view text, proxy_config& out, std::string& err)
     }
     out.scheme = scheme;
 
-    if (view.has_userinfo()) {
-        out.user = std::string(view.user());
-        out.pass = std::string(view.password());
-    }
-
     if (scheme == "direct" || scheme == "reject") {
         return true;
     }
 
-    if (view.host().empty()) {
+    // 拆分 userinfo 与 host:port（userinfo 取最后一个 '@'）。
+    std::string host_port = rest;
+    const auto at = rest.rfind('@');
+    if (at != std::string::npos) {
+        const std::string userinfo = rest.substr(0, at);
+        host_port = rest.substr(at + 1);
+        const auto colon = userinfo.find(':');
+        if (colon == std::string::npos) {
+            out.user = percent_decode(userinfo);
+        } else {
+            out.user = percent_decode(userinfo.substr(0, colon));
+            out.pass = percent_decode(userinfo.substr(colon + 1));
+        }
+    }
+
+    std::string host;
+    std::string port_text;
+    if (!host_port.empty() && host_port.front() == '[') {
+        const auto close = host_port.find(']');
+        if (close == std::string::npos) {
+            err = "非法 IPv6 代理主机: " + host_port;
+            return false;
+        }
+        host = host_port.substr(1, close - 1);
+        const std::string tail = host_port.substr(close + 1);
+        if (!tail.empty()) {
+            if (tail.front() != ':') {
+                err = "非法代理地址: " + std::string(text);
+                return false;
+            }
+            port_text = tail.substr(1);
+        }
+    } else {
+        const auto colon = host_port.rfind(':');
+        if (colon != std::string::npos) {
+            host = host_port.substr(0, colon);
+            port_text = host_port.substr(colon + 1);
+        } else {
+            host = host_port;
+        }
+    }
+
+    if (host.empty()) {
         err = "代理 URL 缺少主机名: " + std::string(text);
         return false;
     }
-    out.host = std::string(view.host());
-    // Boost.URL 的 host() 对 IPv6 返回带方括号形式（如 "[::1]"），
-    // 解析端点需要裸地址，这里去掉方括号。
-    if (out.host.size() >= 2 && out.host.front() == '[' &&
-        out.host.back() == ']') {
-        out.host = out.host.substr(1, out.host.size() - 2);
-    }
+    out.host = percent_decode(host);
 
-    if (view.has_port()) {
-        const std::string port(view.port());
+    if (!port_text.empty()) {
         unsigned long value = 0;
         try {
-            value = std::stoul(port);
+            value = std::stoul(port_text);
         } catch (const std::exception&) {
-            err = "非法代理端口: " + port;
+            err = "非法代理端口: " + port_text;
             return false;
         }
         if (value == 0 || value > 65535) {
-            err = "代理端口越界: " + port;
+            err = "代理端口越界: " + port_text;
             return false;
         }
         out.port = static_cast<uint16_t>(value);
