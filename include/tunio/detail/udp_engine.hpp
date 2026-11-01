@@ -481,8 +481,8 @@ void udp_send_fragmented(udp_session& session,
 }
 
 // 出队一条排队数据报并交付给本次读请求；无排队数据报时返回 false，由
-// 调用方将读操作挂入 pending_reads。数据报大于用户缓冲区时按 UDP 截断
-// 丢弃并以 message_size 完成本次读。
+// 调用方将读操作挂入 pending_reads。数据报大于用户缓冲区时复制可容纳的
+// 前缀，并以实际复制字节数成功完成本次读。
 template <typename Handler>
 bool udp_pop_queued_datagram(udp_session& session,
     udp_engine& eng,
@@ -499,24 +499,16 @@ bool udp_pop_queued_datagram(udp_session& session,
     session.rx_bytes -= dg.data.size();
     eng.account().release(dg.data.size());
 
-    if (dg.data.size() > total)
-    {
-        post_completion_on(eng.strand(),
-            std::move(handler),
-            boost::system::error_code(net::error::message_size),
-            0);
-        return true;
-    }
-
     sender = dg.sender;
 
+    const size_t copied_len = std::min(dg.data.size(), total);
     size_t copied = 0;
     for (const auto& buf : buffers)
     {
-        if (copied >= dg.data.size())
+        if (copied >= copied_len)
             break;
 
-        const size_t take = std::min(buf.size(), dg.data.size() - copied);
+        const size_t take = std::min(buf.size(), copied_len - copied);
         std::memcpy(buf.data(), dg.data.data() + copied, take);
         copied += take;
     }
@@ -524,7 +516,7 @@ bool udp_pop_queued_datagram(udp_session& session,
     post_completion_on(eng.strand(),
         std::move(handler),
         boost::system::error_code{},
-        dg.data.size());
+        copied);
     return true;
 }
 
@@ -570,13 +562,6 @@ void udp_session_start_receive(udp_session_ptr session,
                 post_completion_on(strand,
                     std::move(handler),
                     boost::system::error_code(net::error::bad_descriptor), 0);
-                return;
-            }
-
-            if (total == 0)
-            {
-                post_completion_on(
-                    strand, std::move(handler), boost::system::error_code{}, 0);
                 return;
             }
 

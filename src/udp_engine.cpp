@@ -209,29 +209,22 @@ void udp_engine::deliver_datagram(const udp_session_ptr& s,
         auto op = std::move(s->pending_reads.front());
         s->pending_reads.pop_front();
 
-        if (len > op.total)
-            post_completion_on(strand_,
-                std::move(op.handler),
-                boost::system::error_code(net::error::message_size),
-                0);
-        else
+        if (op.sender)
+            *op.sender = sender;
+
+        const size_t copied_len = std::min(len, op.total);
+        size_t copied = 0;
+        for (auto& buf : op.buffers)
         {
-            if (op.sender)
-                *op.sender = sender;
+            if (copied >= copied_len)
+                break;
 
-            size_t copied = 0;
-            for (auto& buf : op.buffers)
-            {
-                if (copied >= len)
-                    break;
-
-                const size_t take = std::min(buf.size(), len - copied);
-                std::memcpy(buf.data(), data + copied, take);
-                copied += take;
-            }
-            post_completion_on(
-                strand_, std::move(op.handler), boost::system::error_code{}, len);
+            const size_t take = std::min(buf.size(), copied_len - copied);
+            std::memcpy(buf.data(), data + copied, take);
+            copied += take;
         }
+        post_completion_on(strand_,
+            std::move(op.handler), boost::system::error_code{}, copied);
         return;
     }
 

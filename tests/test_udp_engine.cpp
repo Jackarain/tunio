@@ -105,6 +105,104 @@ BOOST_AUTO_TEST_CASE(test_datagram_roundtrip)
     session.close();
 }
 
+BOOST_AUTO_TEST_CASE(test_receive_truncates_queued_datagram)
+{
+    engine_env env;
+    tun_udp_acceptor acceptor(env.engine);
+    tun_udp_socket session(env.io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(session, [&](boost::system::error_code ec) {
+        accept_done.set_value(ec);
+    });
+
+    env.dev.send(make_udp(CLIENT_IP, DEST_IP, 53210, 53,
+        std::vector<uint8_t>{1, 2, 3, 4, 5}));
+    TEST_ASSERT(!future_get(accept_done.get_future()));
+
+    char buf[3] = {};
+    net::ip::udp::endpoint sender;
+    std::promise<std::pair<boost::system::error_code, size_t>> recv_done;
+    session.async_receive_from(net::buffer(buf), sender,
+        [&](boost::system::error_code ec, size_t n) {
+            recv_done.set_value({ec, n});
+        });
+
+    auto [ec, n] = future_get(recv_done.get_future());
+    TEST_ASSERT(!ec);
+    TEST_ASSERT(n == sizeof(buf));
+    TEST_ASSERT(buf[0] == 1 && buf[1] == 2 && buf[2] == 3);
+    TEST_ASSERT(sender == net::ip::udp::endpoint(
+        net::ip::make_address_v4("8.8.8.8"), 53));
+
+    session.close();
+}
+
+BOOST_AUTO_TEST_CASE(test_receive_truncates_pending_datagram)
+{
+    engine_env env;
+    tun_udp_acceptor acceptor(env.engine);
+    tun_udp_socket session(env.io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(session, [&](boost::system::error_code ec) {
+        accept_done.set_value(ec);
+    });
+    env.dev.send(make_udp(
+        CLIENT_IP, DEST_IP, 53211, 53, std::vector<uint8_t>{0}));
+    TEST_ASSERT(!future_get(accept_done.get_future()));
+
+    // 消费会话建立时的首个数据报，确保后续读进入挂起路径。
+    char drain[1];
+    net::ip::udp::endpoint sender;
+    std::promise<std::pair<boost::system::error_code, size_t>> drain_done;
+    session.async_receive_from(net::buffer(drain), sender,
+        [&](boost::system::error_code ec, size_t n) {
+            drain_done.set_value({ec, n});
+        });
+    auto [drain_ec, drain_n] = future_get(drain_done.get_future());
+    TEST_ASSERT(!drain_ec && drain_n == 1);
+
+    char buf[2] = {};
+    std::promise<std::pair<boost::system::error_code, size_t>> recv_done;
+    session.async_receive_from(net::buffer(buf), sender,
+        [&](boost::system::error_code ec, size_t n) {
+            recv_done.set_value({ec, n});
+        });
+
+    env.dev.send(make_udp(CLIENT_IP, DEST_IP, 53211, 53,
+        std::vector<uint8_t>{9, 8, 7, 6}));
+    auto [ec, n] = future_get(recv_done.get_future());
+    TEST_ASSERT(!ec);
+    TEST_ASSERT(n == sizeof(buf));
+    TEST_ASSERT(buf[0] == 9 && buf[1] == 8);
+
+    // 零长度接收同样消费一个数据报，并成功返回 0。
+    std::promise<std::pair<boost::system::error_code, size_t>> zero_done;
+    session.async_receive_from(net::buffer(buf, 0), sender,
+        [&](boost::system::error_code zero_ec, size_t zero_n) {
+            zero_done.set_value({zero_ec, zero_n});
+        });
+    env.dev.send(make_udp(
+        CLIENT_IP, DEST_IP, 53211, 53, std::vector<uint8_t>{5, 4, 3}));
+    auto [zero_ec, zero_n] = future_get(zero_done.get_future());
+    TEST_ASSERT(!zero_ec);
+    TEST_ASSERT(zero_n == 0);
+
+    // 下一个数据报仍可正常读取，证明零长度读已消费前一个数据报。
+    std::promise<std::pair<boost::system::error_code, size_t>> next_done;
+    session.async_receive_from(net::buffer(buf, 1), sender,
+        [&](boost::system::error_code next_ec, size_t next_n) {
+            next_done.set_value({next_ec, next_n});
+        });
+    env.dev.send(make_udp(
+        CLIENT_IP, DEST_IP, 53211, 53, std::vector<uint8_t>{6}));
+    auto [next_ec, next_n] = future_get(next_done.get_future());
+    TEST_ASSERT(!next_ec && next_n == 1 && buf[0] == 6);
+
+    session.close();
+}
+
 BOOST_AUTO_TEST_CASE(test_completion_honors_socket_executor_without_session)
 {
     net::io_context io;

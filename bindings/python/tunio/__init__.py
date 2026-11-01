@@ -379,7 +379,7 @@ class UdpSocket(_SocketBase):
     _free_fn = staticmethod(tunio_udp_free)
 
     def recvfrom(self, size: int = 65535) -> tuple[bytes, tuple[str, int]]:
-        """阻塞接收一个完整数据报，返回 (数据, (远端地址, 端口))。"""
+        """阻塞接收一个数据报，返回 (截断到 size 的数据, (远端地址, 端口))。"""
         self._closed_guard("recvfrom")
         if size <= 0:
             raise ValueError("size 必须 > 0")

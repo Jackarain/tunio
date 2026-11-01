@@ -94,7 +94,7 @@ typedef void (*tunio_tcp_send_cb)(
 typedef void (*tunio_udp_session_cb)(
     tunio_engine* engine, tunio_udp_session* session, int err, void* user);
 
-// UDP 异步收包完成：err == 0 时 n 为数据报字节数，remote 为该数据报的
+// UDP 异步收包完成：err == 0 时 n 为实际复制字节数，remote 为该数据报的
 // 目标远端端点（语义与阻塞 tunio_udp_recvfrom 的输出一致）。
 typedef void (*tunio_udp_recv_cb)(tunio_engine* engine,
     tunio_udp_session* session, int err, size_t n,
@@ -198,7 +198,8 @@ void tunio_tcp_free(tunio_tcp_conn* conn);
 // ---- UDP ----
 // 阻塞等待一条新的 UDP 会话（客户端首个数据报已到达）。
 tunio_udp_session* tunio_udp_accept(tunio_engine* engine);
-// 阻塞接收一个完整数据报；remote_ip/remote_port 输出数据报的目标远端端点。
+// 阻塞接收一个数据报；缓冲区不足时复制前缀并返回实际字节数；
+// remote_ip/remote_port 输出数据报的目标远端端点。
 int tunio_udp_recvfrom(tunio_udp_session* session,
     void* buf, size_t len,
     char* remote_ip, size_t ip_size, uint16_t* remote_port);
@@ -238,7 +239,7 @@ int tunio_tcp_async_send(tunio_tcp_conn* conn, const void* data, size_t len,
 int tunio_udp_async_accept(
     tunio_engine* engine, tunio_udp_session_cb on_session, void* user);
 
-// 异步接收一个完整数据报（单挂起 recv）；remote 经回调参数输出。
+// 异步接收一个数据报（单挂起 recv）；缓冲区不足时截断；remote 经回调输出。
 int tunio_udp_async_recvfrom(tunio_udp_session* session,
     void* buf, size_t cap,
     tunio_udp_recv_cb cb, void* user);
