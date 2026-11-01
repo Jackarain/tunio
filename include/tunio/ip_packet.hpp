@@ -361,7 +361,8 @@ public:
     void append_payload(const void* data, size_t len);
 
     // 回填 IP/传输层长度与全部校验和；完成后即可通过访问器读取各字段
-    //（内部会对自身做一次解析以同步视图）。
+    //（内部会对自身做一次解析以同步视图）。IPv4 总长或 IPv6 载荷长度
+    // 超出 16 位字段上限时抛 std::length_error。
     void finalize();
 
     // 设置 IPv4 Identification 字段（仅对 IPv4 生效；须在 begin_ipv4 之后、

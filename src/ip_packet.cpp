@@ -568,6 +568,12 @@ void ip_packet::finalize()
 
     const size_t payload_len = buf_.size() - bld_.ip_hlen - bld_.transport_hlen;
     const size_t total = bld_.ip_hlen + bld_.transport_hlen + payload_len;
+    if (bld_.version == 4 && total > 0xffff)
+        throw std::length_error("ip_packet: IPv4 total length exceeds 65535");
+    if (bld_.version == 6 && total - bld_.ip_hlen > 0xffff)
+        throw std::length_error(
+            "ip_packet: IPv6 payload length exceeds 65535");
+
     uint8_t* out = buf_.data();
     const int family = bld_.version == 4 ? 4 : 6;
 

@@ -636,6 +636,49 @@ BOOST_AUTO_TEST_CASE(test_builder_capacity_guard)
     }
 }
 
+BOOST_AUTO_TEST_CASE(test_builder_rejects_oversized_packet)
+{
+    const std::vector<uint8_t> payload(65528, 0);
+    {
+        ip_packet p(70000, 0);
+        p.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+            net::ip::make_address_v4("10.0.0.2"));
+        p.begin_udp(1, 2);
+        p.append_payload(payload.data(), payload.size());
+        bool threw = false;
+        try {
+            p.finalize();
+        } catch (const std::length_error &) {
+            threw = true;
+        }
+        TEST_ASSERT(threw);
+    }
+    {
+        ip_packet p(70000, 0);
+        p.begin_ipv6(net::ip::make_address_v6("fd00::1"),
+            net::ip::make_address_v6("fd00::2"));
+        p.begin_udp(1, 2);
+        p.append_payload(payload.data(), payload.size());
+        bool threw = false;
+        try {
+            p.finalize();
+        } catch (const std::length_error &) {
+            threw = true;
+        }
+        TEST_ASSERT(threw);
+    }
+    {
+        const std::vector<uint8_t> max_payload(65507, 0);
+        ip_packet p(70000, 0);
+        p.begin_ipv4(net::ip::make_address_v4("10.0.0.1"),
+            net::ip::make_address_v4("10.0.0.2"));
+        p.begin_udp(1, 2);
+        p.append_payload(max_payload.data(), max_payload.size());
+        p.finalize();
+        TEST_ASSERT(p.valid() && p.total_length() == 65535);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(test_parse_clears_builder_state)
 {
     // 构造一个包
