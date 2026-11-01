@@ -123,10 +123,11 @@ namespace detail {
 
 // Post helper that captures ec and bytes into a closure — works with any
 // Boost.Asio version (post(executor, token) only).
-template <typename ExecutorT, typename HandlerT, typename EcT, typename BytesT>
+template <typename FallbackExecutor, typename HandlerT, typename EcT, typename BytesT>
 void async_post_with_result(
-    const ExecutorT& ex, HandlerT&& h, EcT ec, BytesT bytes)
+    const FallbackExecutor& fallback, HandlerT&& h, EcT ec, BytesT bytes)
 {
+    auto ex = net::get_associated_executor(h, fallback);
     net::post(ex,
         [h = std::forward<HandlerT>(h),
             ec = std::move(ec),
@@ -137,10 +138,11 @@ void async_post_with_result(
 }
 
 // Post helper that captures an error_code into a closure.
-template <typename ExecutorT, typename HandlerT>
+template <typename FallbackExecutor, typename HandlerT>
 void async_post_with_error(
-    const ExecutorT& ex, HandlerT&& h, boost::system::error_code ec)
+    const FallbackExecutor& fallback, HandlerT&& h, boost::system::error_code ec)
 {
+    auto ex = net::get_associated_executor(h, fallback);
     net::post(ex,
         [h = std::forward<HandlerT>(h), ec]() mutable
         {
@@ -341,12 +343,14 @@ private:
             {
                 if (timer_ec)
                 {
-                    h(timer_ec, 0);
+                    async_post_with_error(
+                        strand_, std::move(h), timer_ec);
                     return;
                 }
                 if (!is_open())
                 {
-                    h(net::error::operation_aborted, 0);
+                    async_post_with_error(
+                        strand_, std::move(h), net::error::operation_aborted);
                     return;
                 }
                 recv_poll_loop(buf, std::move(h));
@@ -382,7 +386,8 @@ private:
             {
                 if (timer_ec)
                 {
-                    h(timer_ec, 0);
+                    async_post_with_error(
+                        strand_, std::move(h), timer_ec);
                     return;
                 }
                 boost::system::error_code ec;
