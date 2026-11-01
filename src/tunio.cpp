@@ -18,9 +18,26 @@
 #include <algorithm>
 #include <cstring>
 #include <future>
+#include <utility>
 
 namespace tunio {
 namespace detail {
+
+namespace {
+
+template <typename Fn>
+void invoke_cleanup_noexcept(Fn&& fn) noexcept
+{
+    try
+    {
+        std::forward<Fn>(fn)();
+    }
+    catch (...)
+    {
+    }
+}
+
+} // namespace
 
 // ---- accept 取消（自动派发到 Strand）----
 
@@ -59,14 +76,30 @@ tunio_impl::~tunio_impl()
     // 关闭引擎以打破定时器回调（self 捕获）形成的引用环：sweep/ack/expiry
     // 定时器用 shared_from_this 自持有，未显式调用 close() 直接析构时若不
     // 在此取消，引擎及流表将无法释放，io_context 也不会退出。
-    if (tcp_)
-        tcp_->close_all();
-    if (udp_)
-        udp_->close_all();
-    if (writer_)
-        writer_->cancel_all();
-    if (device_)
-        device_->close();
+    invoke_cleanup_noexcept(
+        [this]
+        {
+            if (tcp_)
+                tcp_->close_all();
+        });
+    invoke_cleanup_noexcept(
+        [this]
+        {
+            if (udp_)
+                udp_->close_all();
+        });
+    invoke_cleanup_noexcept(
+        [this]
+        {
+            if (writer_)
+                writer_->cancel_all();
+        });
+    invoke_cleanup_noexcept(
+        [this]
+        {
+            if (device_)
+                device_->close();
+        });
 }
 
 bool tunio_impl::open(const tun_config& cfg, boost::system::error_code& ec)
@@ -82,14 +115,30 @@ bool tunio_impl::open(const tun_config& cfg, boost::system::error_code& ec)
         net::dispatch(strand_ex_,
             [this, &done]()
             {
-                if (tcp_)
-                    tcp_->close_all();
-                if (udp_)
-                    udp_->close_all();
-                if (writer_)
-                    writer_->cancel_all();
-                if (device_)
-                    device_->close();
+                invoke_cleanup_noexcept(
+                    [this]
+                    {
+                        if (tcp_)
+                            tcp_->close_all();
+                    });
+                invoke_cleanup_noexcept(
+                    [this]
+                    {
+                        if (udp_)
+                            udp_->close_all();
+                    });
+                invoke_cleanup_noexcept(
+                    [this]
+                    {
+                        if (writer_)
+                            writer_->cancel_all();
+                    });
+                invoke_cleanup_noexcept(
+                    [this]
+                    {
+                        if (device_)
+                            device_->close();
+                    });
                 done.set_value();
             });
         done.get_future().wait();
@@ -263,8 +312,12 @@ void tunio_impl::close()
                     // 忽略取消异常，设备仍须关闭。
                 }
 
-                if (self->device_)
-                    self->device_->close();
+                invoke_cleanup_noexcept(
+                    [self]
+                    {
+                        if (self->device_)
+                            self->device_->close();
+                    });
             }
         });
 }
