@@ -208,6 +208,10 @@ public:
         , send_timer_(ctx)
     {
     }
+    ~wintun_tun_device_impl()
+    {
+        close();
+    }
 
     bool open(const device_config& cfg, boost::system::error_code& ec);
     bool assign(native_handle_type handle,
