@@ -12,6 +12,7 @@
 
 #include <cstring>
 #include <stdexcept>
+#include <utility>
 
 #if defined(_WIN32)
 #include <winsock2.h>
@@ -214,6 +215,55 @@ size_t build_ip_header(uint8_t* buf,
 }
 
 // ---- ip_packet ----
+
+ip_packet::ip_packet(ip_packet&& other) noexcept
+    : buf_(std::move(other.buf_))
+{
+    take_state_from(other);
+}
+
+ip_packet& ip_packet::operator=(ip_packet&& other) noexcept
+{
+    if (this != &other)
+    {
+        buf_ = std::move(other.buf_);
+        take_state_from(other);
+    }
+    return *this;
+}
+
+void ip_packet::rebase_payload() noexcept
+{
+    if (payload_ != nullptr)
+        payload_ = buf_.data() + (total_len_ - payload_len_);
+}
+
+void ip_packet::take_state_from(ip_packet& other) noexcept
+{
+    parse_error_ = other.parse_error_;
+    version_ = other.version_;
+    protocol_ = other.protocol_;
+    std::memcpy(src_ip_, other.src_ip_, sizeof(src_ip_));
+    std::memcpy(dst_ip_, other.dst_ip_, sizeof(dst_ip_));
+    total_len_ = other.total_len_;
+    fragmented_ = other.fragmented_;
+    frag_offset_ = other.frag_offset_;
+    v4_ = other.v4_;
+    v6_ = other.v6_;
+    tcp_ = other.tcp_;
+    udp_ = other.udp_;
+    icmp_type_ = other.icmp_type_;
+    icmp_code_ = other.icmp_code_;
+    icmp_checksum_ = other.icmp_checksum_;
+    icmp_echo_id_ = other.icmp_echo_id_;
+    icmp_echo_seq_ = other.icmp_echo_seq_;
+    payload_ = other.payload_;
+    payload_len_ = other.payload_len_;
+    transport_parsed_ = other.transport_parsed_;
+    bld_ = other.bld_;
+    rebase_payload();
+    other.clear_state();
+}
 
 const char* ip_packet::error_message(parse_error e) noexcept
 {

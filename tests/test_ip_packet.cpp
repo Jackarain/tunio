@@ -155,6 +155,40 @@ BOOST_AUTO_TEST_CASE(test_parse_zero_copy)
     TEST_ASSERT(p.transport_data_size() == 3);
 }
 
+BOOST_AUTO_TEST_CASE(test_move_rebases_payload)
+{
+    const std::vector<uint8_t> data = {1, 2, 3, 4};
+    auto vec = make_tcp(0x0a000002, 0x08080808, 20000, 443, 0x12, 100, 0,
+        65535, data);
+
+    ip_packet moved;
+    {
+        ip_packet source;
+        source.parse(vec.data(), vec.size());
+        TEST_ASSERT(source.valid());
+        moved = std::move(source);
+    }
+    TEST_ASSERT(moved.valid() && moved.is_tcp());
+    TEST_ASSERT(moved.payload() == moved.buffer().data() + 20);
+    TEST_ASSERT(moved.transport_data() == moved.buffer().data() + 40);
+    TEST_ASSERT(moved.transport_data_size() == data.size());
+    TEST_ASSERT(std::memcmp(moved.transport_data(), data.data(), data.size()) ==
+        0);
+
+    ip_packet constructed;
+    {
+        ip_packet source;
+        source.parse(vec.data(), vec.size());
+        TEST_ASSERT(source.valid());
+        constructed = ip_packet(std::move(source));
+    }
+    TEST_ASSERT(constructed.valid() && constructed.is_tcp());
+    TEST_ASSERT(constructed.payload() == constructed.buffer().data() + 20);
+    TEST_ASSERT(constructed.transport_data() == constructed.buffer().data() + 40);
+    TEST_ASSERT(std::memcmp(constructed.transport_data(), data.data(),
+                    data.size()) == 0);
+}
+
 BOOST_AUTO_TEST_CASE(test_parse_malformed)
 {
     // 版本非法

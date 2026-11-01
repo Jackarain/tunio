@@ -179,8 +179,8 @@ public:
     // ip_packet 自持 packet_buffer（内含 unique_ptr 存储），仅可移动
     ip_packet(const ip_packet&) = delete;
     ip_packet& operator=(const ip_packet&) = delete;
-    ip_packet(ip_packet&&) = default;
-    ip_packet& operator=(ip_packet&&) = default;
+    ip_packet(ip_packet&& other) noexcept;
+    ip_packet& operator=(ip_packet&& other) noexcept;
 
     // 复位缓冲与解析状态，可复用对象进行下一次读取/构造
     void reset() noexcept;
@@ -383,6 +383,8 @@ public:
 
 private:
     void clear_state() noexcept;
+    void take_state_from(ip_packet& other) noexcept;
+    void rebase_payload() noexcept;
     void copy_and_parse(const uint8_t* data, size_t len);
     void builder_begin(uint8_t version);
     void reserve_transport();
