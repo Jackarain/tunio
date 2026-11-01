@@ -329,6 +329,29 @@ BOOST_AUTO_TEST_CASE(test_parse_buffer_too_small)
     TEST_ASSERT(p.error() == ip_packet::parse_error::buffer_too_small);
 }
 
+BOOST_AUTO_TEST_CASE(test_parse_buffer_too_small_clears_previous_state)
+{
+    auto vec = make_udp(0x0a000002, 0x08080808, 30000, 53, {1, 2, 3});
+    ip_packet p;
+    p.parse(vec.data(), vec.size());
+    TEST_ASSERT(p.valid() && p.is_udp());
+
+    std::vector<uint8_t> oversized(
+        p.buffer().capacity() - p.buffer().headroom() + 1, 0);
+    p.parse(oversized.data(), oversized.size());
+    TEST_ASSERT(p.error() == ip_packet::parse_error::buffer_too_small);
+    TEST_ASSERT(p.version() == 0 && p.ip_protocol() == 0);
+    TEST_ASSERT(p.payload() == nullptr && p.transport_data() == nullptr);
+    TEST_ASSERT(p.payload_size() == 0 && p.transport_data_size() == 0);
+
+    p.parse(vec.data(), vec.size());
+    TEST_ASSERT(p.valid() && p.is_udp());
+    packet_buffer undersized(64, 16);
+    p.parse(undersized, 64);
+    TEST_ASSERT(p.error() == ip_packet::parse_error::buffer_too_small);
+    TEST_ASSERT(p.version() == 0 && p.payload() == nullptr);
+}
+
 // ---- 字段构造（builder）测试 ----
 
 BOOST_AUTO_TEST_CASE(test_build_ipv4_tcp)

@@ -321,6 +321,8 @@ void ip_packet::reset() noexcept
 void ip_packet::copy_and_parse(const uint8_t* data, size_t len)
 {
     buf_.reset();
+    clear_state();
+    bld_ = builder_state{};
     if (len > buf_.writable_size())
     {
         parse_error_ = parse_error::buffer_too_small;
@@ -331,8 +333,6 @@ void ip_packet::copy_and_parse(const uint8_t* data, size_t len)
     std::memmove(buf_.data(), data, len);
     buf_.commit(len);
 
-    // 解析与构造状态互斥：解析后残留的 builder 状态不再可用于 finalize
-    bld_ = builder_state{};
     do_parse(buf_.data(), len);
 }
 
@@ -343,6 +343,7 @@ void ip_packet::parse(const packet_buffer& src, size_t len)
     // 已位于 data() 处。
     if (len > src.capacity() - src.headroom())
     {
+        reset();
         parse_error_ = parse_error::buffer_too_small;
         return;
     }
