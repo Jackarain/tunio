@@ -837,8 +837,20 @@ void wintun_tun_device_impl::close()
     // 先取消轮询定时器：挂起的读/写将以 operation_aborted 完成，而非
     // 误导性的"成功读 0 字节"；同时杜绝 close 后陈旧回调携带旧 &buf
     // 在新 ring / 已释放缓冲上继续轮询。
-    recv_timer_.cancel();
-    send_timer_.cancel();
+    try
+    {
+        recv_timer_.cancel();
+    }
+    catch (...)
+    {
+    }
+    try
+    {
+        send_timer_.cancel();
+    }
+    catch (...)
+    {
+    }
 
     // 先关闭设备句柄（触发驱动 IRP_MJ_CLOSE 释放对 ring 的引用），再解除
     // ring 映射并关闭事件，与官方 WintunEndSession 的清理顺序一致，避免

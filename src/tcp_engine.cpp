@@ -1352,7 +1352,15 @@ void tcp_engine::close_flow(tcp_flow& f, const boost::system::error_code& err)
 
     // 关闭后不再补发延迟确认。
     if (f.ack_timer)
-        f.ack_timer->cancel();
+    {
+        try
+        {
+            f.ack_timer->cancel();
+        }
+        catch (...)
+        {
+        }
+    }
 
     if (f.pending_accept)
     {

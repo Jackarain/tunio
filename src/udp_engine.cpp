@@ -282,7 +282,13 @@ void udp_engine::arm_expiry_timer()
 
     // 取消旧等待并安排新等待；被取消的旧回调通过代次号丢弃
     timer_waiting_ = false;
-    expiry_timer_.cancel();
+    try
+    {
+        expiry_timer_.cancel();
+    }
+    catch (...)
+    {
+    }
     ++wait_gen_;
     const uint64_t gen = wait_gen_;
     armed_target_ = target;
