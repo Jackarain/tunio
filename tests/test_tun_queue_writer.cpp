@@ -16,6 +16,7 @@
 
 #include <boost/asio.hpp>
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -420,4 +421,54 @@ BOOST_AUTO_TEST_CASE(tun_queue_writer_cancel_uses_associated_executor)
     target_io.run();
     TEST_ASSERT(called);
     TEST_ASSERT(result == net::error::operation_aborted);
+}
+
+BOOST_AUTO_TEST_CASE(tun_queue_writer_success_uses_associated_executor)
+{
+    backpressure_env env;
+    net::io_context target_io;
+    auto target_strand = net::make_strand(target_io);
+    auto target_guard = net::make_work_guard(target_io);
+    std::atomic<bool> called{false};
+    bool on_target = false;
+    boost::system::error_code result;
+    size_t result_n = 0;
+
+    std::promise<void> initiated;
+    auto initiated_fut = initiated.get_future();
+    auto writer = env.writer;
+    net::post(env.strand,
+        [writer, target_strand, &initiated, &called, &on_target, &result,
+            &result_n]() mutable {
+            tunio::packet_buffer buf(k_payload + 64, 64);
+            std::memset(buf.writable_data(), 0x5d, k_payload);
+            buf.resize(k_payload);
+            writer->async_write(std::move(buf),
+                net::bind_executor(target_strand,
+                    [&called, &on_target, &result, &result_n, target_strand](
+                        boost::system::error_code ec, size_t n) {
+                        result = ec;
+                        result_n = n;
+                        on_target = target_strand.running_in_this_thread();
+                        called.store(true, std::memory_order_release);
+                    }));
+            initiated.set_value();
+        });
+    wait_future_value(std::move(initiated_fut), 5000);
+
+    std::vector<uint8_t> stash;
+    drain_one(env.peer, stash);
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(3);
+    while (!called.load(std::memory_order_acquire) &&
+        std::chrono::steady_clock::now() < deadline) {
+        target_io.run_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    TEST_ASSERT(called.load(std::memory_order_acquire));
+    TEST_ASSERT(on_target);
+    TEST_ASSERT(!result);
+    TEST_ASSERT(result_n == k_payload);
+    target_guard.reset();
 }

@@ -335,17 +335,34 @@ private:
 
         if (st.current->handler)
         {
-            // 已取消：挂起的写以 operation_aborted 完成
             if (cancelled_)
-                st.current->handler(
-                    make_error_code(net::error::operation_aborted), 0);
+            {
+                // 已取消：挂起的写以 operation_aborted 完成
+                complete_write(std::move(st.current->handler),
+                    make_error_code(net::error::operation_aborted),
+                    0);
+            }
             else
-                st.current->handler(ec, n);
+                complete_write(std::move(st.current->handler), ec, n);
         }
 
         recycle(std::move(st.current->buf));
         st.current.reset();
         pump(q);
+    }
+
+    // 在完成处理器的关联执行器上完成写入；未关联时回退到写队列 Strand.
+    template <typename Handler>
+    void complete_write(Handler handler,
+        boost::system::error_code ec,
+        size_t n)
+    {
+        auto ex = net::get_associated_executor(handler, strand_);
+        net::dispatch(std::move(ex),
+            [h = std::move(handler), ec, n]() mutable
+            {
+                std::move(h)(ec, n);
+            });
     }
 
     // 设备写瞬时失败（可重试）判定：非阻塞写满返回 ENOBUFS/EAGAIN，与
