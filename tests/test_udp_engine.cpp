@@ -145,6 +145,42 @@ BOOST_AUTO_TEST_CASE(test_completion_honors_socket_executor_without_session)
     TEST_ASSERT(receive_ec == net::error::bad_descriptor);
 }
 
+BOOST_AUTO_TEST_CASE(test_immediate_completion_is_not_inline)
+{
+    net::io_context io;
+    auto strand = net::make_strand(io);
+    tun_udp_socket session(strand);
+    bool send_called = false;
+    bool receive_called = false;
+    char buf[1];
+    net::ip::udp::endpoint sender;
+
+    net::dispatch(strand,
+        [&]
+        {
+            session.async_send_to(net::ip::udp::endpoint(
+                                      net::ip::make_address_v4("8.8.8.8"), 53),
+                net::buffer("x", 1),
+                [&](boost::system::error_code, size_t)
+                {
+                    send_called = true;
+                });
+            TEST_ASSERT(!send_called);
+
+            session.async_receive_from(net::buffer(buf),
+                sender,
+                [&](boost::system::error_code, size_t)
+                {
+                    receive_called = true;
+                });
+            TEST_ASSERT(!receive_called);
+        });
+
+    io.run();
+    TEST_ASSERT(send_called);
+    TEST_ASSERT(receive_called);
+}
+
 BOOST_AUTO_TEST_CASE(test_accept_completion_honors_associated_executor)
 {
     engine_env env;

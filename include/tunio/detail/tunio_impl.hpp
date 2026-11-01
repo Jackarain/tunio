@@ -15,6 +15,7 @@
 #include "tunio/tun_config.hpp"
 #include "tunio/tunio.hpp"
 
+#include "tunio/detail/completion.hpp"
 #include "tunio/detail/tun_queue_writer.hpp"
 #include "tunio/detail/tcp_engine.hpp"
 #include "tunio/detail/udp_engine.hpp"
@@ -73,12 +74,14 @@ public:
     template <typename Handler> void async_accept_tcp(Handler handler)
     {
         net::dispatch(strand_ex_,
-            [tcp = tcp_, h = std::move(handler)]() mutable
+            [tcp = tcp_, h = std::move(handler), ex = strand_ex_]() mutable
             {
                 if (tcp)
                     tcp->async_accept(std::move(h));
                 else
-                    h(boost::system::error_code(net::error::bad_descriptor),
+                    post_completion_on(ex,
+                        std::move(h),
+                        boost::system::error_code(net::error::bad_descriptor),
                         nullptr);
             });
     }
@@ -86,12 +89,14 @@ public:
     template <typename Handler> void async_accept_udp(Handler handler)
     {
         net::dispatch(strand_ex_,
-            [udp = udp_, h = std::move(handler)]() mutable
+            [udp = udp_, h = std::move(handler), ex = strand_ex_]() mutable
             {
                 if (udp)
                     udp->async_accept(std::move(h));
                 else
-                    h(boost::system::error_code(net::error::bad_descriptor),
+                    post_completion_on(ex,
+                        std::move(h),
+                        boost::system::error_code(net::error::bad_descriptor),
                         nullptr);
             });
     }

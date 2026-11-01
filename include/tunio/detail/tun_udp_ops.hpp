@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "tunio/detail/completion.hpp"
 #include "tunio/tun_udp_socket.hpp"
 #include "tunio/detail/udp_engine.hpp"
 
@@ -40,7 +41,7 @@ void tun_udp_socket::do_receive_from(MutableBufferSequence&& buffers,
     auto session = session_;
     if (!session)
     {
-        detail::dispatch_completion_on(ex_,
+        detail::post_completion_on(ex_,
             std::move(handler),
             boost::system::error_code(net::error::bad_descriptor),
             0);
@@ -70,7 +71,7 @@ void tun_udp_socket::do_send_to(const net::ip::udp::endpoint& remote,
     auto session = session_;
     if (!session)
     {
-        detail::dispatch_completion_on(ex_,
+        detail::post_completion_on(ex_,
             std::move(handler),
             boost::system::error_code(net::error::bad_descriptor),
             0);

@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "tunio/detail/completion.hpp"
 #include "tunio/packet_buffer.hpp"
 #include "tunio/tun_config.hpp"
 
@@ -73,13 +74,10 @@ public:
     template <typename Handler>
     void async_read(packet_buffer&, Handler&& handler)
     {
-        auto h = std::forward<Handler>(handler);
-        auto ex = net::get_associated_executor(h, ex_);
-        net::dispatch(std::move(ex),
-            [h = std::move(h)]() mutable
-            {
-                std::move(h)(net::error::bad_descriptor, 0);
-            });
+        post_completion_on(ex_,
+            std::forward<Handler>(handler),
+            net::error::bad_descriptor,
+            0);
     }
 
     template <typename Handler>
@@ -91,13 +89,10 @@ public:
     template <typename Handler>
     void async_write(packet_buffer&, Handler&& handler)
     {
-        auto h = std::forward<Handler>(handler);
-        auto ex = net::get_associated_executor(h, ex_);
-        net::dispatch(std::move(ex),
-            [h = std::move(h)]() mutable
-            {
-                std::move(h)(net::error::bad_descriptor, 0);
-            });
+        post_completion_on(ex_,
+            std::forward<Handler>(handler),
+            net::error::bad_descriptor,
+            0);
     }
 
     template <typename Handler>

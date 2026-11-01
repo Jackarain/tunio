@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "tunio/detail/completion.hpp"
 #include "tunio/tun_udp_acceptor.hpp"
 #include "tunio/detail/tunio_impl.hpp"
 
@@ -19,27 +20,23 @@ template <typename Handler>
 void tun_udp_acceptor::do_accept(tun_udp_socket& peer, Handler handler)
 {
     auto ex = peer.get_executor();
-    auto handler_ex = net::get_associated_executor(handler, ex);
     engine_.impl_->async_accept_udp(
-        [ex, handler_ex, &peer, handler = std::move(handler)](
+        [ex, &peer, handler = std::move(handler)](
             boost::system::error_code ec, detail::udp_session_ptr s) mutable
         {
             // 在调用方执行器（ex）上赋值 session_，与用户线程对 peer 的
             // 读写处于同一执行上下文，避免跨 Strand 写共享状态。
             net::dispatch(ex,
                 [&peer,
-                    handler_ex,
+                    ex,
                     handler = std::move(handler),
                     ec,
                     s = std::move(s)]() mutable
                 {
                     if (!ec && s)
                         peer.session_ = std::move(s);
-                    net::dispatch(handler_ex,
-                        [handler = std::move(handler), ec]() mutable
-                        {
-                            handler(ec);
-                        });
+                    detail::post_completion_on(
+                        ex, std::move(handler), ec);
                 });
         });
 }

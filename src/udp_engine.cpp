@@ -141,8 +141,8 @@ void udp_engine::on_packet(
     auto it = sessions_.find(key);
     if (it != sessions_.end())
     {
-        // 强引用：deliver_datagram 内联调用用户完成回调时，回调可能关闭并
-        // 擦除会话（remove_session），强引用保证回调返回后 s 仍有效。
+        // 强引用：完成回调可能与会话关闭交错排队，强引用保证收尾期间
+        // 会话对象仍然有效。
         udp_session_ptr s = it->second;
         if (!s->closed)
         {
@@ -174,7 +174,7 @@ void udp_engine::on_packet(
     {
         auto h = std::move(pending_accepts_.front());
         pending_accepts_.pop_front();
-        dispatch_completion_on(
+        post_completion_on(
             strand_, std::move(h), boost::system::error_code{}, s);
     }
     else
@@ -197,7 +197,7 @@ void udp_engine::deliver_datagram(const udp_session_ptr& s,
         s->pending_reads.pop_front();
 
         if (len > op.total)
-            dispatch_completion_on(strand_,
+            post_completion_on(strand_,
                 std::move(op.handler),
                 boost::system::error_code(net::error::message_size),
                 0);
@@ -216,7 +216,7 @@ void udp_engine::deliver_datagram(const udp_session_ptr& s,
                 std::memcpy(buf.data(), data + copied, take);
                 copied += take;
             }
-            dispatch_completion_on(
+            post_completion_on(
                 strand_, std::move(op.handler), boost::system::error_code{}, len);
         }
         return;
@@ -369,7 +369,7 @@ void udp_engine::remove_session(udp_session_ptr s)
 
     for (auto& op : s->pending_reads)
     {
-        dispatch_completion_on(strand_,
+        post_completion_on(strand_,
             std::move(op.handler),
             boost::system::error_code(net::error::operation_aborted),
             0);
@@ -392,7 +392,7 @@ void udp_engine::cancel_accepts()
     {
         auto h = std::move(pending_accepts_.front());
         pending_accepts_.pop_front();
-        dispatch_completion_on(strand_,
+        post_completion_on(strand_,
             std::move(h),
             boost::system::error_code(net::error::operation_aborted),
             nullptr);

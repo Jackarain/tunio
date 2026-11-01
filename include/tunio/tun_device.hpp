@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "tunio/detail/completion.hpp"
 #include "tunio/ip_packet.hpp"
 #include "tunio/packet_buffer.hpp"
 #include "tunio/tun_config.hpp"
@@ -182,13 +183,10 @@ public:
                 if (impl_.read_size_hint() != 0 &&
                     pkt.buffer().writable_size() < impl_.read_size_hint())
                 {
-                    // 用 dispatch 在 handler 的关联执行器上完成（post 在
-                    // Asio 1.38+ 的默认 inline_executor 上无法编译）.
-                    net::dispatch(ex,
-                        [h = std::move(handler)]() mutable
-                        {
-                            h(make_error_code(net::error::message_size), 0);
-                        });
+                    detail::post_completion_on(ex,
+                        std::move(handler),
+                        make_error_code(net::error::message_size),
+                        0);
                     return;
                 }
                 impl_.async_read(pkt.buffer(),

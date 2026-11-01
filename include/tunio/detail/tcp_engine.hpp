@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "tunio/detail/completion.hpp"
 #include "tunio/detail/ip_headers.hpp"
 #include "tunio/packet_buffer.hpp"
 #include "tunio/tun_config.hpp"
@@ -28,7 +29,6 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -43,32 +43,6 @@ using const_buffer_sequence =
     boost::container::small_vector<net::const_buffer, 1>;
 
 namespace detail {
-
-// 在完成处理器的关联执行器上调用。自定义异步操作直接调用 handler 不会
-// 经过 bind_executor 的目标执行器，必须显式派发，才能保证完成回调与其
-// 关联执行器契约一致。未关联执行器时使用调用方指定的回退执行器。
-template <typename Handler, typename... Args>
-void dispatch_completion(Handler handler, Args... args)
-{
-    auto ex = net::get_associated_executor(handler);
-    net::dispatch(std::move(ex),
-        [h = std::move(handler), args = std::tuple(std::move(args)...)]() mutable
-        {
-            std::apply(std::move(h), std::move(args));
-        });
-}
-
-template <typename FallbackExecutor, typename Handler, typename... Args>
-void dispatch_completion_on(
-    const FallbackExecutor& fallback, Handler handler, Args... args)
-{
-    auto ex = net::get_associated_executor(handler, fallback);
-    net::dispatch(std::move(ex),
-        [h = std::move(handler), args = std::tuple(std::move(args)...)]() mutable
-        {
-            std::apply(std::move(h), std::move(args));
-        });
-}
 
 class tun_queue_writer;
 
@@ -396,7 +370,7 @@ void tcp_flow_start_read(tcp_flow_ptr flow,
 {
     if (!flow)
     {
-        dispatch_completion(std::move(handler),
+        post_completion(std::move(handler),
             boost::system::error_code(net::error::bad_descriptor),
             0);
         return;
@@ -405,7 +379,7 @@ void tcp_flow_start_read(tcp_flow_ptr flow,
     auto eng = flow->eng.lock();
     if (!eng)
     {
-        dispatch_completion(std::move(handler),
+        post_completion(std::move(handler),
             boost::system::error_code(net::error::bad_descriptor),
             0);
         return;
@@ -425,7 +399,7 @@ void tcp_flow_start_read(tcp_flow_ptr flow,
             if (flow.state == tcp_state::CLOSED || flow.app_closed ||
                 flow.rx_shutdown)
             {
-                dispatch_completion_on(strand,
+                post_completion_on(strand,
                     std::move(handler),
                     boost::system::error_code(net::error::bad_descriptor), 0);
                 return;
@@ -433,7 +407,7 @@ void tcp_flow_start_read(tcp_flow_ptr flow,
 
             if (flow.rst)
             {
-                dispatch_completion_on(strand,
+                post_completion_on(strand,
                     std::move(handler),
                     boost::system::error_code(net::error::connection_reset), 0);
                 return;
@@ -445,7 +419,7 @@ void tcp_flow_start_read(tcp_flow_ptr flow,
 
             if (total == 0)
             {
-                dispatch_completion_on(
+                post_completion_on(
                     strand, std::move(handler), boost::system::error_code{}, 0);
                 return;
             }
@@ -453,7 +427,7 @@ void tcp_flow_start_read(tcp_flow_ptr flow,
             if (flow.active_read)
             {
                 // 单读模型：上一读操作尚未完成，拒绝重叠读以施加背压
-                dispatch_completion_on(strand,
+                post_completion_on(strand,
                     std::move(handler),
                     boost::system::error_code(net::error::no_buffer_space), 0);
                 return;
@@ -473,7 +447,7 @@ void tcp_flow_start_write(tcp_flow_ptr flow,
 {
     if (!flow)
     {
-        dispatch_completion(std::move(handler),
+        post_completion(std::move(handler),
             boost::system::error_code(net::error::bad_descriptor),
             0);
         return;
@@ -482,7 +456,7 @@ void tcp_flow_start_write(tcp_flow_ptr flow,
     auto eng = flow->eng.lock();
     if (!eng)
     {
-        dispatch_completion(std::move(handler),
+        post_completion(std::move(handler),
             boost::system::error_code(net::error::bad_descriptor),
             0);
         return;
@@ -502,7 +476,7 @@ void tcp_flow_start_write(tcp_flow_ptr flow,
             if (flow.state == tcp_state::CLOSED || flow.app_closed ||
                 flow.fin_sent)
             {
-                dispatch_completion_on(strand,
+                post_completion_on(strand,
                     std::move(handler),
                     boost::system::error_code(net::error::bad_descriptor), 0);
                 return;
@@ -510,7 +484,7 @@ void tcp_flow_start_write(tcp_flow_ptr flow,
 
             if (flow.rst)
             {
-                dispatch_completion_on(strand,
+                post_completion_on(strand,
                     std::move(handler),
                     boost::system::error_code(net::error::connection_reset), 0);
                 return;
@@ -528,7 +502,7 @@ void tcp_flow_start_write(tcp_flow_ptr flow,
 
             if (total == 0)
             {
-                dispatch_completion_on(
+                post_completion_on(
                     strand, std::move(handler), boost::system::error_code{}, 0);
                 return;
             }
@@ -536,7 +510,7 @@ void tcp_flow_start_write(tcp_flow_ptr flow,
             if (flow.active_write)
             {
                 // 单写模型：上一写操作尚未完成，拒绝重叠写以施加背压
-                dispatch_completion_on(strand,
+                post_completion_on(strand,
                     std::move(handler),
                     boost::system::error_code(net::error::no_buffer_space), 0);
                 return;
@@ -566,7 +540,7 @@ template <typename Handler> void tcp_engine::async_accept(Handler handler)
             continue;
 
         f->accepted = true;
-        dispatch_completion_on(strand_,
+        post_completion_on(strand_,
             std::move(handler),
             boost::system::error_code{},
             std::move(f));

@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "tunio/detail/completion.hpp"
 #include "tunio/packet_buffer.hpp"
 #include "tunio/tun_config.hpp"
 
@@ -95,14 +96,10 @@ public:
     {
         if (queue >= descs_.size())
         {
-            auto h = std::forward<Handler>(handler);
-            auto ex = net::get_associated_executor(h, ctx_.get_executor());
-            net::dispatch(std::move(ex),
-                [h = std::move(h)]() mutable
-                {
-                    std::move(h)(
-                        make_error_code(net::error::bad_descriptor), 0);
-                });
+            post_completion_on(ctx_.get_executor(),
+                std::forward<Handler>(handler),
+                make_error_code(net::error::bad_descriptor),
+                0);
             return;
         }
         auto& desc = descs_[queue];
@@ -147,14 +144,10 @@ public:
     {
         if (queue >= descs_.size())
         {
-            auto h = std::forward<Handler>(handler);
-            auto ex = net::get_associated_executor(h, ctx_.get_executor());
-            net::dispatch(std::move(ex),
-                [h = std::move(h)]() mutable
-                {
-                    std::move(h)(
-                        make_error_code(net::error::bad_descriptor), 0);
-                });
+            post_completion_on(ctx_.get_executor(),
+                std::forward<Handler>(handler),
+                make_error_code(net::error::bad_descriptor),
+                0);
             return;
         }
         auto& desc = descs_[queue];
@@ -165,14 +158,10 @@ public:
             // headroom 不足 4 字节时写入会越过堆分配起始地址（下溢），拒绝。
             if (buf.headroom() < 4)
             {
-                auto h = std::forward<Handler>(handler);
-                auto ex = net::get_associated_executor(h, ctx_.get_executor());
-                net::dispatch(std::move(ex),
-                    [h = std::move(h)]() mutable
-                    {
-                        std::move(h)(
-                            make_error_code(net::error::invalid_argument), 0);
-                    });
+                post_completion_on(ctx_.get_executor(),
+                    std::forward<Handler>(handler),
+                    make_error_code(net::error::invalid_argument),
+                    0);
                 return;
             }
             uint8_t* prefix = buf.data() - 4;

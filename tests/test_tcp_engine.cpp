@@ -2572,11 +2572,11 @@ BOOST_AUTO_TEST_CASE(test_oversized_declared_length)
 
 BOOST_AUTO_TEST_CASE(test_reentrant_reset_in_handler)
 {
-    // 读完成回调在引擎 Strand 上内联执行时，回调内 reset() 并销毁流：
-    // 引擎在回调返回后仍须安全使用流（on_packet 强引用保活），否则 UAF。
+    // 读完成回调异步执行时，回调内 reset() 并销毁流：引擎仍须安全保活
+    // 流，且 reset() 之后不得再发送数据段或额外 ACK。
     engine_env env;
     tun_tcp_acceptor acceptor(env.engine);
-    // 使用引擎 Strand 作为执行器：完成回调在 Strand 上内联执行
+    // 使用引擎 Strand 作为执行器：完成回调在 Strand 上执行
     auto stream = std::make_shared<tun_tcp_socket>(env.engine.get_executor());
 
     std::promise<boost::system::error_code> accept_done;
@@ -2621,24 +2621,35 @@ BOOST_AUTO_TEST_CASE(test_reentrant_reset_in_handler)
         });
     stream.reset(); // 外部不再持有
 
-    // 客户端发数据：触发 deliver_data 直接路径内联调用读回调
+    // 客户端发数据：触发 deliver_data 直接路径并异步完成读回调
     env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12357, DEST_PORT, 0x18, 13001,
         engine_iss + 1, 65535,
         std::vector<uint8_t>{'h', 'i'}));
     future_get(read_done.get_future());
     // 引擎不得崩溃：on_packet 的强引用保证回调返回后 f 仍有效
     //
-    // reset() 已发出 RST 并置 CLOSED：回调返回后的收尾不得再为该流出段
-    // （修复前会补发一个 RST 之后的纯 ACK）.
-    std::vector<uint8_t> rst;
-    TEST_ASSERT(env.dev.read_packet(rst));
-    ip_hdr_info rip;
-    tcp_hdr_info rtcp;
-    TEST_ASSERT(parse_ip(rst, rip));
-    TEST_ASSERT(parse_tcp(rip.payload, rip.payload_len, rtcp));
-    TEST_ASSERT((rtcp.flags & 0x04) != 0); // RST
-    std::vector<uint8_t> extra;
-    TEST_ASSERT(!env.dev.read_packet(extra, 300));
+    // reset() 已发出 RST 并置 CLOSED。异步完成前可能已有正常 ACK，但
+    // RST 之后不得再为该流出段。
+    std::vector<std::vector<uint8_t>> out;
+    for (;;)
+    {
+        std::vector<uint8_t> pkt_out;
+        if (!env.dev.read_packet(pkt_out, 300) || out.size() >= 8)
+            break;
+        out.push_back(std::move(pkt_out));
+    }
+    TEST_ASSERT(out.size() >= 2);
+    for (size_t i = 0; i < out.size(); ++i)
+    {
+        ip_hdr_info ipi_out;
+        tcp_hdr_info tcp_out;
+        TEST_ASSERT(parse_ip(out[i], ipi_out));
+        TEST_ASSERT(parse_tcp(ipi_out.payload, ipi_out.payload_len, tcp_out));
+        if (i + 1 == out.size())
+            TEST_ASSERT((tcp_out.flags & 0x04) != 0);
+        else
+            TEST_ASSERT((tcp_out.flags & 0x14) == 0x10); // RST 前只能是纯 ACK
+    }
 }
 
 BOOST_AUTO_TEST_CASE(test_completion_honors_socket_executor_without_flow)
@@ -2676,6 +2687,38 @@ BOOST_AUTO_TEST_CASE(test_completion_honors_socket_executor_without_flow)
     TEST_ASSERT(write_on_strand);
     TEST_ASSERT(read_ec == net::error::bad_descriptor);
     TEST_ASSERT(write_ec == net::error::bad_descriptor);
+}
+
+BOOST_AUTO_TEST_CASE(test_immediate_completion_is_not_inline)
+{
+    net::io_context io;
+    auto strand = net::make_strand(io);
+    tun_tcp_socket socket(strand);
+    bool read_called = false;
+    bool write_called = false;
+    char buf[1];
+
+    net::dispatch(strand,
+        [&]
+        {
+            socket.async_read_some(net::buffer(buf),
+                [&](boost::system::error_code, size_t)
+                {
+                    read_called = true;
+                });
+            TEST_ASSERT(!read_called);
+
+            socket.async_write_some(net::buffer("x", 1),
+                [&](boost::system::error_code, size_t)
+                {
+                    write_called = true;
+                });
+            TEST_ASSERT(!write_called);
+        });
+
+    io.run();
+    TEST_ASSERT(read_called);
+    TEST_ASSERT(write_called);
 }
 
 BOOST_AUTO_TEST_CASE(test_accept_completion_honors_associated_executor)
@@ -2721,8 +2764,7 @@ BOOST_AUTO_TEST_CASE(test_accept_completion_honors_associated_executor)
 BOOST_AUTO_TEST_CASE(test_reentrant_reset_in_ooo_delivery)
 {
     // 乱序交付路径：读回调内续发下一个读，缺口段补齐后 flush_ooo 把缓存的
-    // 乱序段直投给新读，该回调内 reset()。回调返回后引擎须停止出段（修复前
-    // deliver_data 与 flush_ooo 两处收尾会各补发一个 RST 之后的纯 ACK）.
+    // 乱序段直投给新读，该回调异步执行 reset()。RST 之后引擎须停止出段。
     engine_env env;
     tun_tcp_acceptor acceptor(env.engine);
     auto stream = std::make_shared<tun_tcp_socket>(env.engine.get_executor());
@@ -2782,26 +2824,28 @@ BOOST_AUTO_TEST_CASE(test_reentrant_reset_in_ooo_delivery)
     future_get(second_done.get_future());
     TEST_ASSERT(second_data == "xy");
 
-    // 期望仅有两个出段：补齐段的即时 ACK，随后 reset() 的 RST
+    // 异步 reset 前可能发送补齐段的 ACK；最后一个出段必须是 RST，
+    // 其后不得再有纯 ACK。
     std::vector<std::vector<uint8_t>> out;
     for (;;) {
         std::vector<uint8_t> p;
-        if (!env.dev.read_packet(p, 300) || out.size() >= 3) {
+        if (!env.dev.read_packet(p, 300) || out.size() >= 8) {
             break;
         }
-        out.push_back(p);
+        out.push_back(std::move(p));
     }
-    TEST_ASSERT(out.size() == 2);
-    ip_hdr_info ack_ipi;
-    tcp_hdr_info ack_ti;
-    TEST_ASSERT(parse_ip(out[0], ack_ipi));
-    TEST_ASSERT(parse_tcp(ack_ipi.payload, ack_ipi.payload_len, ack_ti));
-    TEST_ASSERT((ack_ti.flags & 0x14) == 0x10); // 纯 ACK
-    ip_hdr_info rst_ipi;
-    tcp_hdr_info rst_ti;
-    TEST_ASSERT(parse_ip(out[1], rst_ipi));
-    TEST_ASSERT(parse_tcp(rst_ipi.payload, rst_ipi.payload_len, rst_ti));
-    TEST_ASSERT((rst_ti.flags & 0x04) != 0); // RST
+    TEST_ASSERT(out.size() >= 2);
+    for (size_t i = 0; i < out.size(); ++i)
+    {
+        ip_hdr_info ipi_out;
+        tcp_hdr_info tcp_out;
+        TEST_ASSERT(parse_ip(out[i], ipi_out));
+        TEST_ASSERT(parse_tcp(ipi_out.payload, ipi_out.payload_len, tcp_out));
+        if (i + 1 == out.size())
+            TEST_ASSERT((tcp_out.flags & 0x04) != 0);
+        else
+            TEST_ASSERT((tcp_out.flags & 0x14) == 0x10);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(test_reject_handshake)

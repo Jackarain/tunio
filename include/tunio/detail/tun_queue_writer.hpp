@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "tunio/detail/completion.hpp"
 #include "tunio/packet_buffer.hpp"
 #include "tunio/tun_device.hpp"
 #include "tunio/tun_config.hpp"
@@ -164,10 +165,9 @@ public:
                     const auto err = make_error_code(cancelled_
                             ? net::error::operation_aborted
                             : net::error::no_buffer_space);
-                    // 用 dispatch 在 handler 的关联执行器上完成：新版 Asio
-                    // （1.38+）的默认关联执行器为 inline_executor，无法满足
-                    // post 的 blocking.never 约束（编译失败），dispatch 无此
-                    // 限制，且与引擎其余完成回调派发方式保持一致。
+                    // 先 post 到设备执行器再 dispatch 到关联执行器：既保证
+                    // 不在发起函数内完成，也尊重 bind_executor；后一步在已
+                    // 出栈的任务中 dispatch，因此兼容默认 inline_executor.
                     complete_write(std::move(handler), err, 0);
                     return;
                 }
@@ -355,12 +355,7 @@ private:
         boost::system::error_code ec,
         size_t n)
     {
-        auto ex = net::get_associated_executor(handler, strand_);
-        net::dispatch(std::move(ex),
-            [h = std::move(handler), ec, n]() mutable
-            {
-                std::move(h)(ec, n);
-            });
+        post_completion_on(strand_, std::move(handler), ec, n);
     }
 
     // 设备写瞬时失败（可重试）判定：非阻塞写满返回 ENOBUFS/EAGAIN，与

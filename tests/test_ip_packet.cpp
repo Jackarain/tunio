@@ -932,6 +932,10 @@ BOOST_AUTO_TEST_CASE(test_unsupported_device_completion_uses_associated_executor
             }));
 
     TEST_ASSERT(completed == 0);
+    // 完成回调先从设备执行器出栈，再切到处理器关联执行器；两段都必须
+    // 被驱动，且切换前不得调用用户处理器。
+    io.run();
+    TEST_ASSERT(completed == 0);
     target_io.run();
     TEST_ASSERT(completed == 2);
     TEST_ASSERT(read_on_target);

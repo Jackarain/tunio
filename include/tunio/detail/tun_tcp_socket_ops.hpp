@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "tunio/detail/completion.hpp"
 #include "tunio/detail/tcp_engine.hpp"
 #include "tunio/tun_tcp_socket.hpp"
 
@@ -39,7 +40,7 @@ void tun_tcp_socket::do_read_some(
     auto flow = flow_;
     if (!flow)
     {
-        detail::dispatch_completion_on(ex_,
+        detail::post_completion_on(ex_,
             std::move(handler),
             boost::system::error_code(net::error::bad_descriptor),
             0);
@@ -68,7 +69,7 @@ void tun_tcp_socket::do_write_some(
     auto flow = flow_;
     if (!flow)
     {
-        detail::dispatch_completion_on(ex_,
+        detail::post_completion_on(ex_,
             std::move(handler),
             boost::system::error_code(net::error::bad_descriptor),
             0);
