@@ -274,16 +274,19 @@ public:
     }
 
 private:
-    int recv_one(std::string_view buf);
-    int send_try(std::string_view buf);
+    int recv_one(std::string_view buf, boost::system::error_code& ec);
+    int send_try(std::string_view buf, boost::system::error_code& ec);
     void cleanup_rings();
     void setup_mtu(int mtu);
 
     template <typename Handler>
     void recv_poll_loop(packet_buffer& buf, Handler&& handler)
     {
-        int n = recv_one({reinterpret_cast<const char*>(buf.writable_data()),
-            buf.writable_size()});
+        boost::system::error_code ec;
+        int n = recv_one(
+            {reinterpret_cast<const char*>(buf.writable_data()),
+                buf.writable_size()},
+            ec);
 
         if (n > 0)
         {
@@ -301,11 +304,7 @@ private:
 
         if (n < 0)
         {
-            DWORD err = GetLastError();
-            async_post_with_error(strand_,
-                std::forward<Handler>(handler),
-                boost::system::error_code(
-                    static_cast<int>(err), boost::system::system_category()));
+            async_post_with_error(strand_, std::forward<Handler>(handler), ec);
             return;
         }
 
@@ -315,26 +314,30 @@ private:
             [this, &buf, h = std::forward<Handler>(handler)](
                 boost::system::error_code timer_ec) mutable
             {
-                if (!timer_ec && is_open())
-                    recv_poll_loop(buf, std::move(h));
-                else
-                    h(timer_ec ? timer_ec : boost::system::error_code{}, 0);
+                if (timer_ec)
+                {
+                    h(timer_ec, 0);
+                    return;
+                }
+                if (!is_open())
+                {
+                    h(net::error::operation_aborted, 0);
+                    return;
+                }
+                recv_poll_loop(buf, std::move(h));
             });
     }
 
     template <typename Handler>
     void send_try_and_maybe_retry(packet_buffer& buf, Handler&& handler)
     {
-        int n =
-            send_try({reinterpret_cast<const char*>(buf.data()), buf.size()});
+        boost::system::error_code ec;
+        int n = send_try(
+            {reinterpret_cast<const char*>(buf.data()), buf.size()}, ec);
 
         if (n < 0)
         {
-            DWORD err = GetLastError();
-            async_post_with_error(strand_,
-                std::forward<Handler>(handler),
-                boost::system::error_code(
-                    static_cast<int>(err), boost::system::system_category()));
+            async_post_with_error(strand_, std::forward<Handler>(handler), ec);
             return;
         }
 
@@ -357,15 +360,13 @@ private:
                     h(timer_ec, 0);
                     return;
                 }
+                boost::system::error_code ec;
                 int n2 = send_try(
-                    {reinterpret_cast<const char*>(buf.data()), buf.size()});
+                    {reinterpret_cast<const char*>(buf.data()), buf.size()},
+                    ec);
                 if (n2 < 0)
                 {
-                    DWORD err = GetLastError();
-                    async_post_with_error(strand_,
-                        std::move(h),
-                        boost::system::error_code(static_cast<int>(err),
-                            boost::system::system_category()));
+                    async_post_with_error(strand_, std::move(h), ec);
                     return;
                 }
                 if (n2 == 0)

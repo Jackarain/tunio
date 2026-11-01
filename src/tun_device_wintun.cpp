@@ -389,16 +389,29 @@ inline ULONG wintun_ring_packet_align(ULONG size)
     return (size + (WINTUN_PACKET_ALIGN - 1)) & ~(WINTUN_PACKET_ALIGN - 1);
 }
 
-int wintun_tun_device_impl::recv_one(std::string_view buf)
+int wintun_tun_device_impl::recv_one(
+    std::string_view buf, boost::system::error_code& ec)
 {
-    if (!opened_ || !recv_ring_)
+    ec = {};
+    if (!opened_)
+    {
+        ec = net::error::operation_aborted;
         return -1;
+    }
+    if (!recv_ring_)
+    {
+        ec = net::error::bad_descriptor;
+        return -1;
+    }
 
     ULONG head = recv_ring_->head;
     ULONG tail = recv_ring_->tail;
 
     if (head >= WINTUN_RING_CAPACITY || tail >= WINTUN_RING_CAPACITY)
+    {
+        ec = net::error::invalid_argument;
         return -1;
+    }
     if (head == tail)
         return 0;
 
@@ -407,18 +420,35 @@ int wintun_tun_device_impl::recv_one(std::string_view buf)
     std::atomic_thread_fence(std::memory_order_acquire);
     ULONG content_len = wintun_ring_wrap(tail - head);
     if (content_len < sizeof(struct TUN_PACKET_HEADER))
+    {
+        ec = net::error::invalid_argument;
         return -1;
+    }
 
     auto* pkt = reinterpret_cast<struct TUN_PACKET*>(&recv_ring_->data[head]);
     if (pkt->size > WINTUN_MAX_IP_PACKET_SIZE)
+    {
+        ec = net::error::message_size;
         return -1;
+    }
 
     ULONG aligned =
         wintun_ring_packet_align(sizeof(struct TUN_PACKET_HEADER) + pkt->size);
     if (aligned > content_len)
+    {
+        ec = net::error::invalid_argument;
         return -1;
-    if (static_cast<ULONG>(buf.size()) < pkt->size)
+    }
+    if (head + aligned > sizeof(recv_ring_->data))
+    {
+        ec = net::error::invalid_argument;
         return -1;
+    }
+    if (buf.size() < pkt->size)
+    {
+        ec = net::error::message_size;
+        return -1;
+    }
 
     memcpy(const_cast<char*>(buf.data()), pkt->data, pkt->size);
     head = wintun_ring_wrap(head + aligned);
@@ -430,22 +460,45 @@ int wintun_tun_device_impl::recv_one(std::string_view buf)
     return static_cast<int>(pkt->size);
 }
 
-int wintun_tun_device_impl::send_try(std::string_view buf)
+int wintun_tun_device_impl::send_try(
+    std::string_view buf, boost::system::error_code& ec)
 {
-    if (!opened_ || !send_ring_)
+    ec = {};
+    if (!opened_)
+    {
+        ec = net::error::operation_aborted;
         return -1;
+    }
+    if (!send_ring_)
+    {
+        ec = net::error::bad_descriptor;
+        return -1;
+    }
+    if (buf.size() > WINTUN_MAX_IP_PACKET_SIZE)
+    {
+        ec = net::error::message_size;
+        return -1;
+    }
 
     ULONG head = send_ring_->head;
     ULONG tail = send_ring_->tail;
 
     if (head >= WINTUN_RING_CAPACITY || tail >= WINTUN_RING_CAPACITY)
+    {
+        ec = net::error::invalid_argument;
         return -1;
+    }
 
     // acquire 屏障：读取 head（驱动的消费进度）后、计算可用空间前，
     // 确保驱动释放的区域对本线程可见。
     std::atomic_thread_fence(std::memory_order_acquire);
     ULONG aligned = wintun_ring_packet_align(
         sizeof(struct TUN_PACKET_HEADER) + static_cast<ULONG>(buf.size()));
+    if (tail + aligned > sizeof(send_ring_->data))
+    {
+        ec = net::error::invalid_argument;
+        return -1;
+    }
     ULONG avail = wintun_ring_wrap(head - tail - WINTUN_PACKET_ALIGN);
     if (aligned > avail)
         return 0;
