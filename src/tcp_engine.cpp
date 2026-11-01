@@ -608,7 +608,27 @@ void tcp_engine::flush_ooo(tcp_flow& f)
 
     for (;;)
     {
-        auto it = f.ooo_cache.find(f.rcv_nxt);
+        // 精确命中优先；若没有，选择覆盖 rcv_nxt 的重叠段并只交付其尾部。
+        // 仅按精确 seq 查找会在 [seq, end) 与缺失区间交叉时永久遗留后缀。
+        auto it = f.ooo_cache.end();
+        for (auto candidate = f.ooo_cache.begin();
+            candidate != f.ooo_cache.end();
+            ++candidate)
+        {
+            const uint32_t seq = candidate->first;
+            if (seq == f.rcv_nxt)
+            {
+                it = candidate;
+                break;
+            }
+            const uint32_t end =
+                seq + static_cast<uint32_t>(candidate->second.data.size());
+            if (seq_gt(f.rcv_nxt, seq) && seq_gt(end, f.rcv_nxt))
+            {
+                it = candidate;
+                break;
+            }
+        }
         if (it == f.ooo_cache.end())
             break;
 
@@ -624,12 +644,19 @@ void tcp_engine::flush_ooo(tcp_flow& f)
         account_->release(len);
         notify_window_updated(f);
 
-        if (len > 0)
-            deliver_data(f, seg.data.data(), len);
+        const size_t skip = seg_seq == f.rcv_nxt
+            ? 0
+            : static_cast<size_t>(f.rcv_nxt - seg_seq);
+        if (skip < len)
+            deliver_data(f, seg.data.data() + skip, len - skip);
 
         // FIN 序号 = 段首 seq + 数据长度（FIN 消耗一个序列号）
-        if (seg.fin)
-            handle_fin(f, seg_seq + static_cast<uint32_t>(len));
+        const uint32_t seg_end = seg_seq + static_cast<uint32_t>(len);
+        if (seg.fin && seg_end == f.rcv_nxt)
+            handle_fin(f, seg_end);
+
+        if (f.state == tcp_state::CLOSED)
+            return;
 
         delivered = true;
     }

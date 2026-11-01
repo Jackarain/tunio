@@ -3102,6 +3102,73 @@ BOOST_AUTO_TEST_CASE(test_out_of_order_reassembly)
     peer.close();
 }
 
+BOOST_AUTO_TEST_CASE(test_overlapping_out_of_order_reassembly)
+{
+    engine_env env;
+    auto &io = env.io;
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        if (!ec) {
+            peer.accept();
+        }
+        accept_done.set_value(ec);
+    });
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x02,
+        1000, 0, 65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        TEST_THROW("no SYN-ACK");
+    }
+    if (!verify_packet(pkt)) {
+        TEST_THROW("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        TEST_THROW("parse SYN-ACK failed");
+    }
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x10,
+        1001, ti.seq + 1, 65535, {}));
+    future_get(accept_done.get_future());
+
+    // A=[1006,1016)，B=[1011,1021)：B 与 A 及缺失区间重叠。补发缺失段后，
+    // 已交付 A 时必须继续交付 B 中尚未覆盖的尾部 [1016,1021)。
+    const std::string a = "FGHIJKLMNO";
+    const std::string b = "KLMNOPQRST";
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x18,
+        1006, 1001, 65535, std::vector<uint8_t>(a.begin(), a.end())));
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x18,
+        1011, 1001, 65535, std::vector<uint8_t>(b.begin(), b.end())));
+
+    std::promise<std::pair<boost::system::error_code, size_t>> first_done;
+    std::array<char, 64> buf;
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec,
+        size_t n) {
+        first_done.set_value({ec, n});
+    });
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x18,
+        1001, 1001, 65535, {'A', 'B', 'C', 'D', 'E'}));
+    auto [first_ec, first_n] = future_get(first_done.get_future());
+    TEST_ASSERT(!first_ec && first_n == 5);
+    TEST_ASSERT(std::string(buf.data(), first_n) == "ABCDE");
+
+    std::promise<std::pair<boost::system::error_code, size_t>> second_done;
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec,
+        size_t n) {
+        second_done.set_value({ec, n});
+    });
+    auto [second_ec, second_n] = future_get(second_done.get_future());
+    TEST_ASSERT(!second_ec);
+    TEST_ASSERT(second_n == 15);
+    TEST_ASSERT(std::string(buf.data(), second_n) == "FGHIJKLMNOPQRST");
+
+    peer.close();
+}
+
 BOOST_AUTO_TEST_CASE(test_loopback_local_address_guard)
 {
     // 环路与本地地址防护：源为本机虚拟 IP 或源/目标为保留地址的入包
