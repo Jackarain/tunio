@@ -23,21 +23,7 @@ namespace {
 
 boost::system::error_code win_last_error()
 {
-    DWORD err = GetLastError();
-
-    char buf[512] = {0};
-    DWORD n = FormatMessageA(
-        FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        nullptr,
-        err,
-        0,
-        buf,
-        sizeof(buf),
-        nullptr);
-    while (n > 0 &&
-        (buf[n - 1] == '\r' || buf[n - 1] == '\n' || buf[n - 1] == ' '))
-        buf[--n] = 0;
-
+    const DWORD err = GetLastError();
     return boost::system::error_code(
         static_cast<int>(err), boost::system::system_category());
 }
@@ -549,24 +535,24 @@ void wintun_tun_device_impl::cleanup_rings()
     if (send_evt_)
     {
         CloseHandle(send_evt_);
-        send_evt_ = INVALID_HANDLE_VALUE;
+        send_evt_ = nullptr;
     }
     if (recv_evt_)
     {
         CloseHandle(recv_evt_);
-        recv_evt_ = INVALID_HANDLE_VALUE;
+        recv_evt_ = nullptr;
     }
 
     // 关闭环形缓冲映射句柄
     if (send_ring_fh_)
     {
         CloseHandle(send_ring_fh_);
-        send_ring_fh_ = INVALID_HANDLE_VALUE;
+        send_ring_fh_ = nullptr;
     }
     if (recv_ring_fh_)
     {
         CloseHandle(recv_ring_fh_);
-        recv_ring_fh_ = INVALID_HANDLE_VALUE;
+        recv_ring_fh_ = nullptr;
     }
 }
 
@@ -639,18 +625,18 @@ bool wintun_tun_device_impl::open(
 
     if (!wintun_handle_)
     {
-        cleanup_rings();
         ec = win_last_error();
+        cleanup_rings();
         return false;
     }
 
     dev_handle_ = open_wintun_device(wname);
     if (dev_handle_ == INVALID_HANDLE_VALUE)
     {
+        ec = win_last_error();
         cleanup_rings();
         g_api->close_adapter(wintun_handle_);
         wintun_handle_ = nullptr;
-        ec = win_last_error();
         return false;
     }
 
@@ -668,12 +654,12 @@ bool wintun_tun_device_impl::open(
         nullptr);
     if (!send_ring_fh_ || !recv_ring_fh_)
     {
+        ec = win_last_error();
         cleanup_rings();
         CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
         g_api->close_adapter(wintun_handle_);
         wintun_handle_ = nullptr;
-        ec = win_last_error();
         return false;
     }
 
@@ -683,12 +669,12 @@ bool wintun_tun_device_impl::open(
         recv_ring_fh_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(struct tun_ring)));
     if (!send_ring_ || !recv_ring_)
     {
+        ec = win_last_error();
         cleanup_rings();
         CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
         g_api->close_adapter(wintun_handle_);
         wintun_handle_ = nullptr;
-        ec = win_last_error();
         return false;
     }
 
@@ -696,24 +682,24 @@ bool wintun_tun_device_impl::open(
     recv_evt_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!send_evt_ || !recv_evt_)
     {
+        ec = win_last_error();
         cleanup_rings();
         CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
         g_api->close_adapter(wintun_handle_);
         wintun_handle_ = nullptr;
-        ec = win_last_error();
         return false;
     }
 
     if (!register_rings_ioct(
             dev_handle_, send_ring_, recv_ring_, send_evt_, recv_evt_))
     {
+        ec = win_last_error();
         cleanup_rings();
         CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
         g_api->close_adapter(wintun_handle_);
         wintun_handle_ = nullptr;
-        ec = win_last_error();
         return false;
     }
 
@@ -757,10 +743,10 @@ bool wintun_tun_device_impl::assign(
     if (!send_ring_fh_ || !recv_ring_fh_)
     {
         // 可能仅一个 mapping 创建成功：清理已创建的句柄，避免泄漏
+        ec = win_last_error();
         cleanup_rings();
         CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
-        ec = win_last_error();
         return false;
     }
 
@@ -770,10 +756,10 @@ bool wintun_tun_device_impl::assign(
         recv_ring_fh_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(struct tun_ring)));
     if (!send_ring_ || !recv_ring_)
     {
+        ec = win_last_error();
         cleanup_rings();
         CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
-        ec = win_last_error();
         return false;
     }
 
@@ -781,10 +767,10 @@ bool wintun_tun_device_impl::assign(
     recv_evt_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!send_evt_ || !recv_evt_)
     {
+        ec = win_last_error();
         cleanup_rings();
         CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
-        ec = win_last_error();
         return false;
     }
 
@@ -808,10 +794,10 @@ bool wintun_tun_device_impl::assign(
                 nullptr))
         {
             // 注入句柄非 Wintun 或驱动拒绝注册：失败而非静默置 opened_
+            ec = win_last_error();
             cleanup_rings();
             CloseHandle(dev_handle_);
             dev_handle_ = INVALID_HANDLE_VALUE;
-            ec = win_last_error();
             return false;
         }
     }

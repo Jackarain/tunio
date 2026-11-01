@@ -389,10 +389,10 @@ private:
     WINTUN_ADAPTER_HANDLE wintun_handle_{nullptr};
     HANDLE dev_handle_{INVALID_HANDLE_VALUE};
 
-    HANDLE send_ring_fh_{INVALID_HANDLE_VALUE};
-    HANDLE recv_ring_fh_{INVALID_HANDLE_VALUE};
-    HANDLE send_evt_{INVALID_HANDLE_VALUE};
-    HANDLE recv_evt_{INVALID_HANDLE_VALUE};
+    HANDLE send_ring_fh_{nullptr};
+    HANDLE recv_ring_fh_{nullptr};
+    HANDLE send_evt_{nullptr};
+    HANDLE recv_evt_{nullptr};
     struct tun_ring* send_ring_{nullptr};
     struct tun_ring* recv_ring_{nullptr};
 
