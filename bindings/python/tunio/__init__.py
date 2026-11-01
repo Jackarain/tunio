@@ -334,7 +334,7 @@ class TcpSocket(_SocketBase):
         return buf.raw[:rc]
 
     def send(self, data: bytes | bytearray | memoryview | str) -> int:
-        """阻塞发送；成功返回写入字节数。传入 str 时按 UTF-8 编码。"""
+        """阻塞发送；全部数据被对端 ACK 后返回写入字节数。传入 str 时按 UTF-8 编码。"""
         self._closed_guard("send")
         if isinstance(data, str):
             data = data.encode("utf-8")
@@ -347,7 +347,7 @@ class TcpSocket(_SocketBase):
         return rc
 
     def close(self) -> None:
-        """优雅关闭（发送 FIN，完成四次挥手）。"""
+        """关闭连接：取消挂起读写；有未确认数据时发送 RST，否则发送 FIN。"""
         if self._handle:
             tunio_tcp_close(self._handle)
 
