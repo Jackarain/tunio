@@ -558,11 +558,11 @@ void wintun_tun_device_impl::cleanup_rings()
 
 void wintun_tun_device_impl::setup_mtu(int mtu)
 {
-    if (!g_api || !wintun_handle_)
+    if (!api_ || !wintun_handle_)
         return;
 
     NET_LUID luid;
-    g_api->get_adapter_luid(wintun_handle_, &luid);
+    api_->get_adapter_luid(wintun_handle_, &luid);
 
     NET_IFINDEX index = 0;
     if (ConvertInterfaceLuidToIndex(&luid, &index) != NO_ERROR)
@@ -592,13 +592,10 @@ bool wintun_tun_device_impl::open(
     close();
 
     std::string adapter_name = cfg.name.empty() ? "tunio" : cfg.name;
-    g_api = wintun_api::load();
+    api_ = wintun_api::instance(ec);
 
-    if (!g_api)
-    {
-        ec = win_last_error();
+    if (!api_)
         return false;
-    }
 
     std::wstring wname = wide_from_narrow(adapter_name.c_str());
     if (wname.empty())
@@ -615,10 +612,10 @@ bool wintun_tun_device_impl::open(
     for (int n = 0; n < 5; ++n)
     {
         wintun_handle_ =
-            g_api->create_adapter(wname.c_str(), L"Wintun", &adapter_guid);
+            api_->create_adapter(wname.c_str(), L"Wintun", &adapter_guid);
         if (wintun_handle_)
             break;
-        wintun_handle_ = g_api->open_adapter(wname.c_str());
+        wintun_handle_ = api_->open_adapter(wname.c_str());
         if (wintun_handle_)
             break;
     }
@@ -635,7 +632,7 @@ bool wintun_tun_device_impl::open(
     {
         ec = win_last_error();
         cleanup_rings();
-        g_api->close_adapter(wintun_handle_);
+        api_->close_adapter(wintun_handle_);
         wintun_handle_ = nullptr;
         return false;
     }
@@ -658,7 +655,7 @@ bool wintun_tun_device_impl::open(
         cleanup_rings();
         CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
-        g_api->close_adapter(wintun_handle_);
+        api_->close_adapter(wintun_handle_);
         wintun_handle_ = nullptr;
         return false;
     }
@@ -673,7 +670,7 @@ bool wintun_tun_device_impl::open(
         cleanup_rings();
         CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
-        g_api->close_adapter(wintun_handle_);
+        api_->close_adapter(wintun_handle_);
         wintun_handle_ = nullptr;
         return false;
     }
@@ -686,7 +683,7 @@ bool wintun_tun_device_impl::open(
         cleanup_rings();
         CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
-        g_api->close_adapter(wintun_handle_);
+        api_->close_adapter(wintun_handle_);
         wintun_handle_ = nullptr;
         return false;
     }
@@ -698,7 +695,7 @@ bool wintun_tun_device_impl::open(
         cleanup_rings();
         CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
-        g_api->close_adapter(wintun_handle_);
+        api_->close_adapter(wintun_handle_);
         wintun_handle_ = nullptr;
         return false;
     }
@@ -847,7 +844,7 @@ void wintun_tun_device_impl::close()
 
     if (wintun_handle_)
     {
-        g_api->close_adapter(wintun_handle_);
+        api_->close_adapter(wintun_handle_);
         wintun_handle_ = nullptr;
     }
 }

@@ -164,12 +164,15 @@ struct wintun_api
             FreeLibrary(module);
     }
 
-    static std::unique_ptr<wintun_api> load()
+    static std::unique_ptr<wintun_api> load(DWORD& err)
     {
         auto api = std::make_unique<wintun_api>();
         api->module = LoadLibraryW(L"wintun.dll");
         if (!api->module)
+        {
+            err = GetLastError();
             return nullptr;
+        }
 
 #define BIND_WINTUN_FN(symbol, member)                                                    \
     do                                                                                    \
@@ -181,8 +184,7 @@ struct wintun_api
         }                                                                                 \
         else                                                                              \
         {                                                                                 \
-            /* 保留 api->module：unique_ptr 析构时仍会 FreeLibrary，           \
-             * 避免 LoadLibrary 成功而 GetProcAddress 失败时 DLL 泄漏 */ \
+            err = GetLastError();                                                         \
             api->member = nullptr;                                                        \
             return nullptr;                                                               \
         }                                                                                 \
@@ -195,7 +197,25 @@ struct wintun_api
 
 #undef BIND_WINTUN_FN
 
+        err = ERROR_SUCCESS;
         return api;
+    }
+
+    static wintun_api* instance(boost::system::error_code& ec)
+    {
+        static std::once_flag once;
+        static std::unique_ptr<wintun_api> api;
+        static DWORD load_error = ERROR_SUCCESS;
+        std::call_once(once,
+            []
+            {
+                api = load(load_error);
+            });
+        ec.clear();
+        if (!api)
+            ec.assign(static_cast<int>(load_error),
+                boost::system::system_category());
+        return api.get();
     }
 };
 
@@ -388,9 +408,7 @@ private:
 
     net::strand<net::io_context::executor_type> strand_;
 
-    static inline std::once_flag init_flag_;
-    static inline std::unique_ptr<wintun_api> g_api{nullptr};
-
+    wintun_api* api_{nullptr};
     WINTUN_ADAPTER_HANDLE wintun_handle_{nullptr};
     HANDLE dev_handle_{INVALID_HANDLE_VALUE};
 
