@@ -2677,6 +2677,46 @@ BOOST_AUTO_TEST_CASE(test_completion_honors_socket_executor_without_flow)
     TEST_ASSERT(write_ec == net::error::bad_descriptor);
 }
 
+BOOST_AUTO_TEST_CASE(test_accept_completion_honors_associated_executor)
+{
+    engine_env env;
+    tun_tcp_acceptor acceptor(env.engine);
+    auto peer_strand = net::make_strand(env.io);
+    tun_tcp_socket peer(peer_strand);
+
+    net::io_context target_io;
+    auto target_strand = net::make_strand(target_io);
+    auto target_guard = net::make_work_guard(target_io);
+    std::atomic<bool> called{false};
+    bool on_target = false;
+    boost::system::error_code result;
+
+    acceptor.async_accept(peer,
+        net::bind_executor(target_strand,
+            [&](boost::system::error_code ec) {
+                result = ec;
+                on_target = target_strand.running_in_this_thread();
+                called.store(true, std::memory_order_release);
+            }));
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, 12370, DEST_PORT, 0x02, 18000, 0,
+        65535, {}));
+
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(3);
+    while (!called.load(std::memory_order_acquire) &&
+        std::chrono::steady_clock::now() < deadline) {
+        target_io.run_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    TEST_ASSERT(called.load(std::memory_order_acquire));
+    TEST_ASSERT(on_target);
+    TEST_ASSERT(!result);
+    TEST_ASSERT(peer.is_open());
+    target_guard.reset();
+    peer.reset();
+}
+
 BOOST_AUTO_TEST_CASE(test_reentrant_reset_in_ooo_delivery)
 {
     // 乱序交付路径：读回调内续发下一个读，缺口段补齐后 flush_ooo 把缓存的

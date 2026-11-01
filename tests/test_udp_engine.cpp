@@ -144,6 +144,46 @@ BOOST_AUTO_TEST_CASE(test_completion_honors_socket_executor_without_session)
     TEST_ASSERT(receive_ec == net::error::bad_descriptor);
 }
 
+BOOST_AUTO_TEST_CASE(test_accept_completion_honors_associated_executor)
+{
+    engine_env env;
+    tun_udp_acceptor acceptor(env.engine);
+    auto peer_strand = net::make_strand(env.io);
+    tun_udp_socket session(peer_strand);
+
+    net::io_context target_io;
+    auto target_strand = net::make_strand(target_io);
+    auto target_guard = net::make_work_guard(target_io);
+    std::atomic<bool> called{false};
+    bool on_target = false;
+    boost::system::error_code result;
+
+    acceptor.async_accept(session,
+        net::bind_executor(target_strand,
+            [&](boost::system::error_code ec) {
+                result = ec;
+                on_target = target_strand.running_in_this_thread();
+                called.store(true, std::memory_order_release);
+            }));
+    env.dev.send(make_udp(
+        CLIENT_IP, DEST_IP, 53200, 53, std::vector<uint8_t>{1, 2, 3}));
+
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(3);
+    while (!called.load(std::memory_order_acquire) &&
+        std::chrono::steady_clock::now() < deadline) {
+        target_io.run_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    TEST_ASSERT(called.load(std::memory_order_acquire));
+    TEST_ASSERT(on_target);
+    TEST_ASSERT(!result);
+    TEST_ASSERT(session.is_open());
+    target_guard.reset();
+    session.close();
+}
+
 BOOST_AUTO_TEST_CASE(test_multiple_remotes)
 {
     engine_env env;

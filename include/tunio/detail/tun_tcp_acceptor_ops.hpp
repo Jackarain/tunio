@@ -19,8 +19,9 @@ template <typename Handler>
 void tun_tcp_acceptor::do_accept(tun_tcp_socket& peer, Handler handler)
 {
     auto ex = peer.get_executor();
+    auto handler_ex = net::get_associated_executor(handler, ex);
     engine_.impl_->async_accept_tcp(
-        [ex, &peer, handler = std::move(handler)](
+        [ex, handler_ex, &peer, handler = std::move(handler)](
             boost::system::error_code ec, detail::tcp_flow_ptr f) mutable
         {
             // 在调用方执行器（ex）上赋值 flow_，与用户线程对 peer 的
@@ -28,13 +29,18 @@ void tun_tcp_acceptor::do_accept(tun_tcp_socket& peer, Handler handler)
             //（多线程模式下构成数据竞争）.
             net::dispatch(ex,
                 [&peer,
+                    handler_ex,
                     handler = std::move(handler),
                     ec,
                     f = std::move(f)]() mutable
                 {
                     if (!ec && f)
                         peer.flow_ = std::move(f);
-                    handler(ec);
+                    net::dispatch(handler_ex,
+                        [handler = std::move(handler), ec]() mutable
+                        {
+                            handler(ec);
+                        });
                 });
         });
 }
