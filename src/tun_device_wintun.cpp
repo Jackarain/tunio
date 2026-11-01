@@ -745,7 +745,6 @@ bool wintun_tun_device_impl::assign(
         // 可能仅一个 mapping 创建成功：清理已创建的句柄，避免泄漏
         ec = win_last_error();
         cleanup_rings();
-        CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
         return false;
     }
@@ -758,7 +757,6 @@ bool wintun_tun_device_impl::assign(
     {
         ec = win_last_error();
         cleanup_rings();
-        CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
         return false;
     }
@@ -769,7 +767,6 @@ bool wintun_tun_device_impl::assign(
     {
         ec = win_last_error();
         cleanup_rings();
-        CloseHandle(dev_handle_);
         dev_handle_ = INVALID_HANDLE_VALUE;
         return false;
     }
@@ -796,7 +793,6 @@ bool wintun_tun_device_impl::assign(
             // 注入句柄非 Wintun 或驱动拒绝注册：失败而非静默置 opened_
             ec = win_last_error();
             cleanup_rings();
-            CloseHandle(dev_handle_);
             dev_handle_ = INVALID_HANDLE_VALUE;
             return false;
         }

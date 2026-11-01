@@ -214,6 +214,7 @@ public:
     }
 
     bool open(const device_config& cfg, boost::system::error_code& ec);
+    // 失败时不关闭注入句柄（所有权始终归调用方）.
     bool assign(native_handle_type handle,
         size_t mtu,
         bool,
