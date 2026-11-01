@@ -382,7 +382,8 @@ void udp_write_ipv4_fragments(tun_queue_writer& writer,
 }
 
 // 单报文发送（载荷不超 MTU，热路径）：构造 IP + UDP 报文并异步写入设备。
-// tun_queue_writer 保证完成回调在引擎 Strand 上触发，无需再派发。
+// tun_queue_writer 在引擎 Strand 上完成写操作，随后再按完成处理器的关联
+// 执行器派发用户回调。
 template <typename Handler>
 void udp_send_single(udp_session& session,
     udp_engine& eng,
@@ -423,7 +424,7 @@ void udp_send_single(udp_session& session,
             const boost::system::error_code& ec, size_t) mutable
         {
             // 设备写失败时透传错误码，避免向调用方误报成功
-            std::move(h)(ec, ec ? 0 : sent);
+            dispatch_completion(std::move(h), ec, ec ? 0 : sent);
         });
 }
 
@@ -458,7 +459,7 @@ void udp_send_fragmented(udp_session& session,
         [h = std::move(handler), total](boost::system::error_code ec) mutable
         {
             // 成功时报告完整数据报长度；失败时长度为 0（与单包路径一致）
-            std::move(h)(ec, ec ? 0 : total);
+            dispatch_completion(std::move(h), ec, ec ? 0 : total);
         });
 }
 
@@ -483,7 +484,10 @@ bool udp_pop_queued_datagram(udp_session& session,
 
     if (dg.data.size() > total)
     {
-        handler(boost::system::error_code(net::error::message_size), 0);
+        dispatch_completion_on(eng.strand(),
+            std::move(handler),
+            boost::system::error_code(net::error::message_size),
+            0);
         return true;
     }
 
@@ -500,7 +504,10 @@ bool udp_pop_queued_datagram(udp_session& session,
         copied += take;
     }
 
-    handler(boost::system::error_code{}, dg.data.size());
+    dispatch_completion_on(eng.strand(),
+        std::move(handler),
+        boost::system::error_code{},
+        dg.data.size());
     return true;
 }
 
@@ -514,14 +521,18 @@ void udp_session_start_receive(udp_session_ptr session,
 {
     if (!session)
     {
-        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        dispatch_completion(std::move(handler),
+            boost::system::error_code(net::error::bad_descriptor),
+            0);
         return;
     }
 
     auto eng = session->eng.lock();
     if (!eng)
     {
-        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        dispatch_completion(std::move(handler),
+            boost::system::error_code(net::error::bad_descriptor),
+            0);
         return;
     }
 
@@ -532,20 +543,23 @@ void udp_session_start_receive(udp_session_ptr session,
             buffers = std::move(buffers),
             total,
             &sender,
-            handler = std::move(handler)]() mutable
+            handler = std::move(handler),
+            strand]() mutable
         {
             auto& session = *s;
 
             if (session.closed)
             {
-                handler(
+                dispatch_completion_on(strand,
+                    std::move(handler),
                     boost::system::error_code(net::error::bad_descriptor), 0);
                 return;
             }
 
             if (total == 0)
             {
-                handler(boost::system::error_code{}, 0);
+                dispatch_completion_on(
+                    strand, std::move(handler), boost::system::error_code{}, 0);
                 return;
             }
 
@@ -569,14 +583,18 @@ void udp_session_start_send(udp_session_ptr session,
 {
     if (!session)
     {
-        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        dispatch_completion(std::move(handler),
+            boost::system::error_code(net::error::bad_descriptor),
+            0);
         return;
     }
 
     auto eng = session->eng.lock();
     if (!eng)
     {
-        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        dispatch_completion(std::move(handler),
+            boost::system::error_code(net::error::bad_descriptor),
+            0);
         return;
     }
 
@@ -587,13 +605,15 @@ void udp_session_start_send(udp_session_ptr session,
             remote,
             buffers = std::move(buffers),
             total,
-            handler = std::move(handler)]() mutable
+            handler = std::move(handler),
+            strand]() mutable
         {
             auto& session = *s;
 
             if (session.closed)
             {
-                handler(
+                dispatch_completion_on(strand,
+                    std::move(handler),
                     boost::system::error_code(net::error::bad_descriptor), 0);
                 return;
             }
@@ -603,7 +623,9 @@ void udp_session_start_send(udp_session_ptr session,
             const int family = session.key.family;
             if (family != udp_endpoint_to_addr_bytes(remote, src_addr))
             {
-                handler(boost::system::error_code(
+                dispatch_completion_on(strand,
+                    std::move(handler),
+                    boost::system::error_code(
                             net::error::address_family_not_supported),
                     0);
                 return;
@@ -616,7 +638,10 @@ void udp_session_start_send(udp_session_ptr session,
             // 否则长度字段截断损坏。
             if (sizeof(udp_header) + total > 65535)
             {
-                handler(boost::system::error_code(net::error::message_size), 0);
+                dispatch_completion_on(strand,
+                    std::move(handler),
+                    boost::system::error_code(net::error::message_size),
+                    0);
                 return;
             }
 
@@ -630,7 +655,8 @@ void udp_session_start_send(udp_session_ptr session,
             if (oversized && family != 4)
             {
                 // IPv6 无扩展头分片支持：拒绝超出 MTU 的报文
-                handler(
+                dispatch_completion_on(strand,
+                    std::move(handler),
                     boost::system::error_code(net::error::message_size), 0);
                 return;
             }
@@ -674,7 +700,10 @@ template <typename Handler> void udp_engine::async_accept(Handler handler)
         if (s->closed)
             continue;
 
-        handler(boost::system::error_code{}, std::move(s));
+        dispatch_completion_on(strand_,
+            std::move(handler),
+            boost::system::error_code{},
+            std::move(s));
         return;
     }
 

@@ -40,7 +40,10 @@ void tun_udp_socket::do_receive_from(MutableBufferSequence&& buffers,
     auto session = session_;
     if (!session)
     {
-        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        detail::dispatch_completion_on(ex_,
+            std::move(handler),
+            boost::system::error_code(net::error::bad_descriptor),
+            0);
         return;
     }
     detail::udp_session_start_receive(
@@ -67,7 +70,10 @@ void tun_udp_socket::do_send_to(const net::ip::udp::endpoint& remote,
     auto session = session_;
     if (!session)
     {
-        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        detail::dispatch_completion_on(ex_,
+            std::move(handler),
+            boost::system::error_code(net::error::bad_descriptor),
+            0);
         return;
     }
     detail::udp_session_start_send(

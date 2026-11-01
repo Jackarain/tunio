@@ -2640,6 +2640,43 @@ BOOST_AUTO_TEST_CASE(test_reentrant_reset_in_handler)
     TEST_ASSERT(!env.dev.read_packet(extra, 300));
 }
 
+BOOST_AUTO_TEST_CASE(test_completion_honors_socket_executor_without_flow)
+{
+    net::io_context io;
+    auto strand = net::make_strand(io);
+    tun_tcp_socket socket(strand);
+
+    int completed = 0;
+    bool read_on_strand = false;
+    bool write_on_strand = false;
+    boost::system::error_code read_ec;
+    boost::system::error_code write_ec;
+    char buf[1];
+
+    socket.async_read_some(net::buffer(buf),
+        [&](boost::system::error_code ec, size_t)
+        {
+            ++completed;
+            read_ec = ec;
+            read_on_strand = strand.running_in_this_thread();
+        });
+    socket.async_write_some(net::buffer("x", 1),
+        [&](boost::system::error_code ec, size_t)
+        {
+            ++completed;
+            write_ec = ec;
+            write_on_strand = strand.running_in_this_thread();
+        });
+
+    TEST_ASSERT(completed == 0);
+    io.run();
+    TEST_ASSERT(completed == 2);
+    TEST_ASSERT(read_on_strand);
+    TEST_ASSERT(write_on_strand);
+    TEST_ASSERT(read_ec == net::error::bad_descriptor);
+    TEST_ASSERT(write_ec == net::error::bad_descriptor);
+}
+
 BOOST_AUTO_TEST_CASE(test_reentrant_reset_in_ooo_delivery)
 {
     // 乱序交付路径：读回调内续发下一个读，缺口段补齐后 flush_ooo 把缓存的

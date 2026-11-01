@@ -544,7 +544,8 @@ void tcp_engine::deliver_data(tcp_flow& f, const uint8_t* data, size_t len)
             f.rx_data.insert(f.rx_data.end(), data + n, data + len);
             f.rx_bytes += len - n;
         }
-        op.handler(boost::system::error_code{}, n);
+        dispatch_completion_on(
+            strand_, std::move(op.handler), boost::system::error_code{}, n);
         // 回调内可重入 close()/reset()：关闭路径已发 FIN/RST 并清理流，
         // 不再交付残留数据或补发 ACK.
         if (f.state == tcp_state::CLOSED)
@@ -591,7 +592,10 @@ void tcp_engine::flush_reads(tcp_flow& f)
         f.rx_head += copied;
         f.rx_bytes -= copied;
         account_->release(copied);
-        op.handler(boost::system::error_code{}, copied);
+        dispatch_completion_on(strand_,
+            std::move(op.handler),
+            boost::system::error_code{},
+            copied);
         notify_window_updated(f);
         // 读完成：补发挂起的 ACK，应用稍后读取的单段数据也能及时确认.
         flush_pending_ack(f);
@@ -613,7 +617,8 @@ void tcp_engine::flush_reads(tcp_flow& f)
     {
         auto op = std::move(*f.active_read);
         f.active_read.reset();
-        op.handler(net::error::eof, 0);
+        dispatch_completion_on(
+            strand_, std::move(op.handler), net::error::eof, 0);
     }
 }
 
@@ -974,7 +979,8 @@ net::awaitable<void> tcp_engine::write_loop(tcp_flow_ptr f)
                 auto h = std::move(flow.active_write->handler);
                 const size_t done = flow.active_write->total;
                 flow.active_write.reset();
-                h(boost::system::error_code{}, done);
+                dispatch_completion_on(
+                    strand_, std::move(h), boost::system::error_code{}, done);
                 co_return;
             }
             if (flow.state != tcp_state::ESTABLISHED &&
@@ -1113,7 +1119,7 @@ net::awaitable<void> tcp_engine::write_loop(tcp_flow_ptr f)
                             : net::error::bad_descriptor;
         auto h = std::move(flow.active_write->handler);
         flow.active_write.reset();
-        h(err, 0);
+        dispatch_completion_on(strand_, std::move(h), err, 0);
     }
     co_return;
 }
@@ -1378,14 +1384,14 @@ void tcp_engine::close_flow(tcp_flow& f, const boost::system::error_code& err)
     {
         auto op = std::move(*f.active_read);
         f.active_read.reset();
-        op.handler(err, 0);
+        dispatch_completion_on(strand_, std::move(op.handler), err, 0);
     }
 
     if (f.active_write)
     {
         auto h = std::move(f.active_write->handler);
         f.active_write.reset();
-        h(err, 0);
+        dispatch_completion_on(strand_, std::move(h), err, 0);
     }
 
     // 关闭信号通道：唤醒挂起等待窗口的发送协程，协程恢复后
@@ -1423,7 +1429,10 @@ void tcp_engine::notify_accept(tcp_flow& f)
         auto h = std::move(pending_accepts_.front());
         pending_accepts_.pop_front();
         f.accepted = true;
-        h(boost::system::error_code{}, f.shared_from_this());
+        dispatch_completion_on(strand_,
+            std::move(h),
+            boost::system::error_code{},
+            f.shared_from_this());
     }
     else
     {
@@ -1438,7 +1447,10 @@ void tcp_engine::cancel_accepts()
     {
         auto h = std::move(pending_accepts_.front());
         pending_accepts_.pop_front();
-        h(boost::system::error_code(net::error::operation_aborted), nullptr);
+        dispatch_completion_on(strand_,
+            std::move(h),
+            boost::system::error_code(net::error::operation_aborted),
+            nullptr);
     }
 }
 
@@ -1513,7 +1525,8 @@ void tcp_flow_shutdown_receive(tcp_flow_ptr flow)
             {
                 auto op = std::move(*f.active_read);
                 f.active_read.reset();
-                op.handler(
+                dispatch_completion_on(eng->strand(),
+                    std::move(op.handler),
                     boost::system::error_code(net::error::operation_aborted),
                     0);
             }
@@ -1558,7 +1571,8 @@ void tcp_flow_close(tcp_flow_ptr flow)
             {
                 auto op = std::move(*f.active_read);
                 f.active_read.reset();
-                op.handler(
+                dispatch_completion_on(eng->strand(),
+                    std::move(op.handler),
                     boost::system::error_code(net::error::operation_aborted),
                     0);
             }
@@ -1567,7 +1581,10 @@ void tcp_flow_close(tcp_flow_ptr flow)
             {
                 auto h = std::move(f.active_write->handler);
                 f.active_write.reset();
-                h(boost::system::error_code(net::error::operation_aborted), 0);
+                dispatch_completion_on(eng->strand(),
+                    std::move(h),
+                    boost::system::error_code(net::error::operation_aborted),
+                    0);
             }
 
             if (f.write_ch)

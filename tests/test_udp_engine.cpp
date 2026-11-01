@@ -103,6 +103,47 @@ BOOST_AUTO_TEST_CASE(test_datagram_roundtrip)
     session.close();
 }
 
+BOOST_AUTO_TEST_CASE(test_completion_honors_socket_executor_without_session)
+{
+    net::io_context io;
+    auto strand = net::make_strand(io);
+    tun_udp_socket session(strand);
+
+    int completed = 0;
+    bool send_on_strand = false;
+    bool receive_on_strand = false;
+    boost::system::error_code send_ec;
+    boost::system::error_code receive_ec;
+    char buf[1];
+    net::ip::udp::endpoint sender;
+
+    session.async_send_to(net::ip::udp::endpoint(
+                              net::ip::make_address_v4("8.8.8.8"), 53),
+        net::buffer("x", 1),
+        [&](boost::system::error_code ec, size_t)
+        {
+            ++completed;
+            send_ec = ec;
+            send_on_strand = strand.running_in_this_thread();
+        });
+    session.async_receive_from(net::buffer(buf),
+        sender,
+        [&](boost::system::error_code ec, size_t)
+        {
+            ++completed;
+            receive_ec = ec;
+            receive_on_strand = strand.running_in_this_thread();
+        });
+
+    TEST_ASSERT(completed == 0);
+    io.run();
+    TEST_ASSERT(completed == 2);
+    TEST_ASSERT(send_on_strand);
+    TEST_ASSERT(receive_on_strand);
+    TEST_ASSERT(send_ec == net::error::bad_descriptor);
+    TEST_ASSERT(receive_ec == net::error::bad_descriptor);
+}
+
 BOOST_AUTO_TEST_CASE(test_multiple_remotes)
 {
     engine_env env;

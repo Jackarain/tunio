@@ -39,7 +39,10 @@ void tun_tcp_socket::do_read_some(
     auto flow = flow_;
     if (!flow)
     {
-        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        detail::dispatch_completion_on(ex_,
+            std::move(handler),
+            boost::system::error_code(net::error::bad_descriptor),
+            0);
         return;
     }
     detail::tcp_flow_start_read(
@@ -65,7 +68,10 @@ void tun_tcp_socket::do_write_some(
     auto flow = flow_;
     if (!flow)
     {
-        handler(boost::system::error_code(net::error::bad_descriptor), 0);
+        detail::dispatch_completion_on(ex_,
+            std::move(handler),
+            boost::system::error_code(net::error::bad_descriptor),
+            0);
         return;
     }
     detail::tcp_flow_start_write(

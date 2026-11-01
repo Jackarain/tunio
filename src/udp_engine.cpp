@@ -174,7 +174,8 @@ void udp_engine::on_packet(
     {
         auto h = std::move(pending_accepts_.front());
         pending_accepts_.pop_front();
-        h(boost::system::error_code{}, s);
+        dispatch_completion_on(
+            strand_, std::move(h), boost::system::error_code{}, s);
     }
     else
         pending_new_sessions_.push_back(s);
@@ -196,7 +197,10 @@ void udp_engine::deliver_datagram(const udp_session_ptr& s,
         s->pending_reads.pop_front();
 
         if (len > op.total)
-            op.handler(boost::system::error_code(net::error::message_size), 0);
+            dispatch_completion_on(strand_,
+                std::move(op.handler),
+                boost::system::error_code(net::error::message_size),
+                0);
         else
         {
             if (op.sender)
@@ -212,7 +216,8 @@ void udp_engine::deliver_datagram(const udp_session_ptr& s,
                 std::memcpy(buf.data(), data + copied, take);
                 copied += take;
             }
-            op.handler(boost::system::error_code{}, len);
+            dispatch_completion_on(
+                strand_, std::move(op.handler), boost::system::error_code{}, len);
         }
         return;
     }
@@ -364,7 +369,10 @@ void udp_engine::remove_session(udp_session_ptr s)
 
     for (auto& op : s->pending_reads)
     {
-        op.handler(boost::system::error_code(net::error::operation_aborted), 0);
+        dispatch_completion_on(strand_,
+            std::move(op.handler),
+            boost::system::error_code(net::error::operation_aborted),
+            0);
     }
     s->pending_reads.clear();
 
@@ -384,7 +392,10 @@ void udp_engine::cancel_accepts()
     {
         auto h = std::move(pending_accepts_.front());
         pending_accepts_.pop_front();
-        h(boost::system::error_code(net::error::operation_aborted), nullptr);
+        dispatch_completion_on(strand_,
+            std::move(h),
+            boost::system::error_code(net::error::operation_aborted),
+            nullptr);
     }
 }
 
