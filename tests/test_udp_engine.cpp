@@ -13,6 +13,7 @@
 #include "test_harness.hpp"
 #include "tunio/detail/udp_engine.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -371,6 +372,83 @@ BOOST_AUTO_TEST_CASE(test_session_timeout)
     auto [tec, tn] = future_get(timeout_read.get_future(), 5000);
     TEST_ASSERT(tec == net::error::operation_aborted);
     TEST_ASSERT(!session.is_open());
+}
+
+namespace {
+
+struct udp_engine_fixture
+{
+    net::io_context io;
+    std::shared_ptr<engine_stats> stats = std::make_shared<engine_stats>();
+    std::shared_ptr<tunio::tun_device> dev;
+    std::shared_ptr<tunio::detail::tun_queue_writer> writer;
+    std::shared_ptr<tunio::detail::buffer_accountant> account;
+    tun_config cfg;
+    std::shared_ptr<tunio::detail::udp_engine> engine;
+
+    explicit udp_engine_fixture(std::chrono::seconds timeout)
+    {
+        cfg.udp_idle_timeout = timeout;
+        cfg.max_total_buffer = 8 * 1024 * 1024;
+        dev = std::make_shared<tunio::tun_device>(io);
+        writer = std::make_shared<tunio::detail::tun_queue_writer>(
+            io.get_executor(), dev, stats);
+        account = std::make_shared<tunio::detail::buffer_accountant>();
+        account->limit = cfg.max_total_buffer;
+        engine = std::make_shared<tunio::detail::udp_engine>(
+            io.get_executor(), writer, cfg, *stats, account);
+    }
+
+    ~udp_engine_fixture()
+    {
+        engine->close_all();
+    }
+};
+
+void feed_udp(tunio::detail::udp_engine& engine, uint16_t sport)
+{
+    const auto pkt = make_udp(CLIENT_IP, DEST_IP, sport, 53, {1});
+    tunio::detail::ip_packet_info ipi;
+    ipi.family = 4;
+    ipi.protocol = tunio::detail::IPPROTO_UDP_V;
+    const auto src = net::ip::address_v4(CLIENT_IP).to_bytes();
+    const auto dst = net::ip::address_v4(DEST_IP).to_bytes();
+    std::copy(src.begin(), src.end(), ipi.src_ip);
+    std::copy(dst.begin(), dst.end(), ipi.dst_ip);
+    engine.on_packet(ipi, pkt.data() + 20, pkt.size() - 20);
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(test_expired_pending_session_released)
+{
+    udp_engine_fixture f(std::chrono::seconds(1));
+    feed_udp(*f.engine, 53110);
+    TEST_ASSERT(f.engine->session_count() == 1);
+    TEST_ASSERT(f.engine->pending_session_count() == 1);
+
+    f.io.run_for(std::chrono::milliseconds(1500));
+
+    TEST_ASSERT(f.engine->session_count() == 0);
+    TEST_ASSERT(f.engine->pending_session_count() == 0);
+}
+
+BOOST_AUTO_TEST_CASE(test_pending_session_limit)
+{
+    udp_engine_fixture f(std::chrono::seconds(30));
+    constexpr size_t extra = 32;
+    for (size_t i = 0;
+        i < tunio::detail::udp_engine::max_pending_new_sessions + extra;
+        ++i)
+    {
+        feed_udp(*f.engine, static_cast<uint16_t>(20000 + i));
+    }
+
+    TEST_ASSERT(f.engine->session_count() ==
+        tunio::detail::udp_engine::max_pending_new_sessions);
+    TEST_ASSERT(f.engine->pending_session_count() ==
+        tunio::detail::udp_engine::max_pending_new_sessions);
+    TEST_ASSERT(f.stats->rx_dropped.load(std::memory_order_relaxed) == extra);
 }
 
 BOOST_AUTO_TEST_CASE(test_session_recreated_after_expiry)

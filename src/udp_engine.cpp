@@ -158,6 +158,15 @@ void udp_engine::on_packet(
         return;
     }
 
+    // 无等待者时新会话必须进入待领取队列；队列达到独立上限后直接丢弃，
+    // 避免应用长期不调用 async_accept 时无界积累不可达会话。
+    if (pending_accepts_.empty() &&
+        pending_new_sessions_.size() >= max_pending_new_sessions)
+    {
+        stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
     // 新建会话并通知上层
     auto s = std::make_shared<udp_session>();
     s->key = key;
@@ -178,7 +187,11 @@ void udp_engine::on_packet(
             strand_, std::move(h), boost::system::error_code{}, s);
     }
     else
+    {
+        s->pending_accept = true;
         pending_new_sessions_.push_back(s);
+        s->pending_it = std::prev(pending_new_sessions_.end());
+    }
 }
 
 void udp_engine::deliver_datagram(const udp_session_ptr& s,
@@ -366,6 +379,12 @@ void udp_engine::remove_session(udp_session_ptr s)
     s->closed = true;
     sessions_.erase(s->key);
     stats_.udp_sessions.fetch_sub(1, std::memory_order_relaxed);
+
+    if (s->pending_accept)
+    {
+        pending_new_sessions_.erase(s->pending_it);
+        s->pending_accept = false;
+    }
 
     for (auto& op : s->pending_reads)
     {
