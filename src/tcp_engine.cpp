@@ -375,7 +375,16 @@ void tcp_engine::handle_segment(const tcp_flow_ptr& f,
     {
         // FIN 序号 = seq + data_len（FIN 消耗一个序列号，可与数据同段）
         const uint32_t fin_seq = seq + static_cast<uint32_t>(data_len);
-        handle_fin(*f, fin_seq);
+        if (data_len == 0 && seq_gt(fin_seq, f->rcv_nxt))
+        {
+            // 无数据的乱序 FIN 也必须入缓存，否则缺失段补齐后无法交付 EOF。
+            if (ooo_append(*f, fin_seq, nullptr, 0, true))
+                stats_.rx_ooo.fetch_add(1, std::memory_order_relaxed);
+            else
+                send_ack(*f);
+        }
+        else
+            handle_fin(*f, fin_seq);
     }
 
     signal_write(*f);

@@ -3169,6 +3169,68 @@ BOOST_AUTO_TEST_CASE(test_overlapping_out_of_order_reassembly)
     peer.close();
 }
 
+BOOST_AUTO_TEST_CASE(test_out_of_order_fin_without_data)
+{
+    engine_env env;
+    auto &io = env.io;
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(io.get_executor());
+
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        if (!ec) {
+            peer.accept();
+        }
+        accept_done.set_value(ec);
+    });
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x02,
+        1000, 0, 65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt)) {
+        TEST_THROW("no SYN-ACK");
+    }
+    if (!verify_packet(pkt)) {
+        TEST_THROW("verify_packet failed");
+    }
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    if (!parse_ip(pkt, ipi) || !parse_tcp(ipi.payload, ipi.payload_len, ti)) {
+        TEST_THROW("parse SYN-ACK failed");
+    }
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x10,
+        1001, ti.seq + 1, 65535, {}));
+    future_get(accept_done.get_future());
+
+    // FIN-only 段先于缺失数据到达（FIN seq=1006）。
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x11,
+        1006, 1001, 65535, {}));
+
+    std::promise<std::pair<boost::system::error_code, size_t>> read_done;
+    std::array<char, 32> buf;
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec,
+        size_t n) {
+        read_done.set_value({ec, n});
+    });
+
+    // 补齐缺口后应先交付数据，下一次读取必须立即得到 EOF。
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, CLIENT_PORT, DEST_PORT, 0x18,
+        1001, 1001, 65535, {'h', 'e', 'l', 'l', 'o'}));
+    auto [rec, rn] = future_get(read_done.get_future());
+    TEST_ASSERT(!rec && rn == 5);
+    TEST_ASSERT(std::string(buf.data(), rn) == "hello");
+
+    std::promise<std::pair<boost::system::error_code, size_t>> eof_done;
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec,
+        size_t n) {
+        eof_done.set_value({ec, n});
+    });
+    auto [eec, en] = future_get(eof_done.get_future());
+    TEST_ASSERT(eec == net::error::eof && en == 0);
+
+    peer.close();
+}
+
 BOOST_AUTO_TEST_CASE(test_loopback_local_address_guard)
 {
     // 环路与本地地址防护：源为本机虚拟 IP 或源/目标为保留地址的入包
