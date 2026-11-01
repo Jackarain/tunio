@@ -271,3 +271,34 @@ BOOST_AUTO_TEST_CASE(device_read_error_closes_engine)
 
     ::close(fds[0]);
 }
+
+BOOST_AUTO_TEST_CASE(open_failure_after_device_assign_closes_device)
+{
+    net::io_context io;
+    int fds[2];
+    if (::pipe(fds) != 0) {
+        TEST_THROW("pipe failed");
+    }
+
+    tunio::tunio engine(io);
+    tun_config cfg;
+    cfg.external_handle = fds[1];
+    // MTU 0 会让读槽构造在设备已接管后抛出 invalid_argument，用于验证
+    // 半初始化状态必须完整回滚，而不是把已接管的设备留到析构阶段。
+    cfg.external_mtu = 0;
+    boost::system::error_code ec;
+
+    bool threw = false;
+    try {
+        engine.open(cfg, ec);
+    } catch (const std::invalid_argument &) {
+        threw = true;
+    }
+
+    TEST_ASSERT(threw);
+    TEST_ASSERT(!engine.is_open());
+    TEST_ASSERT(::fcntl(fds[1], F_GETFD) == -1);
+    TEST_ASSERT(errno == EBADF);
+
+    ::close(fds[0]);
+}

@@ -189,71 +189,124 @@ bool tunio_impl::open(const tun_config& cfg, boost::system::error_code& ec)
         have_ip6_ = true;
     }
 
-    // 设备初始化：优先多句柄注入（Linux TUN 多队列），其次单句柄注入，
-    // 最后自主打开。
-    if (!cfg.external_handles.empty())
+    try
     {
-        if (!device_->assign_queues(
-                cfg.external_handles, cfg.external_mtu, cfg.utun_prefix, ec))
+        // 设备初始化：优先多句柄注入（Linux TUN 多队列），其次单句柄注入，
+        // 最后自主打开。
+        if (!cfg.external_handles.empty())
         {
-            return false;
+            if (!device_->assign_queues(
+                    cfg.external_handles, cfg.external_mtu, cfg.utun_prefix, ec))
+            {
+                reset_open_state();
+                return false;
+            }
         }
-    }
-    else if (cfg.external_handle != invalid_native_handle)
-    {
-        if (!device_->assign(
-                cfg.external_handle, cfg.external_mtu, cfg.utun_prefix, ec))
+        else if (cfg.external_handle != invalid_native_handle)
         {
-            return false;
+            if (!device_->assign(
+                    cfg.external_handle, cfg.external_mtu, cfg.utun_prefix, ec))
+            {
+                reset_open_state();
+                return false;
+            }
         }
-    }
-    else
-    {
-        device_config dc;
-        dc.name = cfg.dev_name;
-        dc.ipv4 = cfg.ipv4_addr;
-        dc.netmask = cfg.netmask;
-        dc.ipv6 = cfg.ipv6_addr;
-        dc.ipv6_prefix_len = cfg.ipv6_prefix_len;
-        dc.mtu = cfg.mtu;
-        dc.num_queues = cfg.num_queues;
-        if (!device_->open(dc, ec))
-            return false;
-    }
+        else
+        {
+            device_config dc;
+            dc.name = cfg.dev_name;
+            dc.ipv4 = cfg.ipv4_addr;
+            dc.netmask = cfg.netmask;
+            dc.ipv6 = cfg.ipv6_addr;
+            dc.ipv6_prefix_len = cfg.ipv6_prefix_len;
+            dc.mtu = cfg.mtu;
+            dc.num_queues = cfg.num_queues;
+            if (!device_->open(dc, ec))
+            {
+                reset_open_state();
+                return false;
+            }
+        }
 
-    mtu_ = device_->mtu();
-    // 并发读槽按队列数分配：每队列均分 k_read_slots（至少 1 个），单队列
-    // 保持原有 32 槽行为；旧代际残留的 in-flight 标记一律清空，确保重建后
-    // start_read() 能为全部槽重新发起读取（旧设备迟到回调由代际检查拦截）.
-    num_queues_ = std::clamp(device_->queue_count(), size_t{1}, k_max_queues);
-    slots_per_queue_ = std::max<size_t>(1, k_read_slots / num_queues_);
+        mtu_ = device_->mtu();
+        // 并发读槽按队列数分配：每队列均分 k_read_slots（至少 1 个），单队列
+        // 保持原有 32 槽行为；旧代际残留的 in-flight 标记一律清空，确保重建后
+        // start_read() 能为全部槽重新发起读取（旧设备迟到回调由代际检查拦截）.
+        num_queues_ = std::clamp(device_->queue_count(), size_t{1}, k_max_queues);
+        slots_per_queue_ = std::max<size_t>(1, k_read_slots / num_queues_);
+        read_bufs_.clear();
+        read_bufs_.reserve(num_queues_ * slots_per_queue_);
+        // 读槽容量须容纳单次读取返回的全部字节：utun 注入路径每帧含 4 字节
+        // 家族前缀（read_size_hint = mtu + 4），读槽 headroom 为 64、容量取
+        // hint + 64，reset 后 writable_size 恰为 hint，避免满 MTU 帧读入时被
+        // 截断后按残缺报文丢弃.
+        const size_t read_capacity = device_->read_size_hint() + 64;
+        for (size_t i = 0; i < num_queues_ * slots_per_queue_; ++i)
+        {
+            read_bufs_.emplace_back(read_capacity, 64);
+        }
+        read_inflight_.assign(num_queues_ * slots_per_queue_, false);
+
+        account_ = std::make_shared<buffer_accountant>();
+        account_->limit = cfg.max_total_buffer;
+        writer_ = std::make_shared<tun_queue_writer>(strand_ex_, device_, stats_);
+        tcp_ = std::make_shared<tcp_engine>(
+            strand_ex_, writer_, cfg_, *stats_, account_);
+        udp_ = std::make_shared<udp_engine>(
+            strand_ex_, writer_, cfg_, *stats_, account_);
+        tcp_->start_sweep();
+
+        epoch_.store(epoch_.load(std::memory_order_relaxed) + 1,
+            std::memory_order_release);
+        open_.store(true, std::memory_order_release);
+        start_read();
+        return true;
+    }
+    catch (...)
+    {
+        reset_open_state();
+        throw;
+    }
+}
+
+void tunio_impl::reset_open_state() noexcept
+{
+    open_.store(false, std::memory_order_release);
+
+    invoke_cleanup_noexcept(
+        [this]
+        {
+            if (tcp_)
+                tcp_->close_all();
+        });
+    invoke_cleanup_noexcept(
+        [this]
+        {
+            if (udp_)
+                udp_->close_all();
+        });
+    invoke_cleanup_noexcept(
+        [this]
+        {
+            if (writer_)
+                writer_->cancel_all();
+        });
+    invoke_cleanup_noexcept(
+        [this]
+        {
+            if (device_)
+                device_->close();
+        });
+
+    tcp_.reset();
+    udp_.reset();
+    writer_.reset();
+    account_.reset();
     read_bufs_.clear();
-    read_bufs_.reserve(num_queues_ * slots_per_queue_);
-    // 读槽容量须容纳单次读取返回的全部字节：utun 注入路径每帧含 4 字节
-    // 家族前缀（read_size_hint = mtu + 4），读槽 headroom 为 64、容量取
-    // hint + 64，reset 后 writable_size 恰为 hint，避免满 MTU 帧读入时被
-    // 截断后按残缺报文丢弃.
-    const size_t read_capacity = device_->read_size_hint() + 64;
-    for (size_t i = 0; i < num_queues_ * slots_per_queue_; ++i)
-    {
-        read_bufs_.emplace_back(read_capacity, 64);
-    }
-    read_inflight_.assign(num_queues_ * slots_per_queue_, false);
-
-    account_ = std::make_shared<buffer_accountant>();
-    account_->limit = cfg.max_total_buffer;
-    writer_ = std::make_shared<tun_queue_writer>(strand_ex_, device_, stats_);
-    tcp_ = std::make_shared<tcp_engine>(
-        strand_ex_, writer_, cfg_, *stats_, account_);
-    udp_ = std::make_shared<udp_engine>(
-        strand_ex_, writer_, cfg_, *stats_, account_);
-    tcp_->start_sweep();
-
-    epoch_.store(
-        epoch_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
-    open_.store(true, std::memory_order_release);
-    start_read();
-    return true;
+    read_inflight_.clear();
+    mtu_ = 1500;
+    num_queues_ = 1;
+    slots_per_queue_ = k_read_slots;
 }
 
 // ---- 打开与关闭 ----

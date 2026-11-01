@@ -101,6 +101,10 @@ public:
     void cancel_udp_accepts();
 
 private:
+    // open() 在设备接管后初始化失败时恢复为空闲状态：关闭设备、取消写队列
+    // 与引擎，并释放半初始化的共享状态。
+    void reset_open_state() noexcept;
+
     void start_read();
     void start_read_slot(size_t index);
     void on_read(const boost::system::error_code& ec,
