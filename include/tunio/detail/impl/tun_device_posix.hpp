@@ -95,8 +95,14 @@ public:
     {
         if (queue >= descs_.size())
         {
-            std::forward<Handler>(handler)(
-                make_error_code(net::error::bad_descriptor), 0);
+            auto h = std::forward<Handler>(handler);
+            auto ex = net::get_associated_executor(h, ctx_.get_executor());
+            net::dispatch(std::move(ex),
+                [h = std::move(h)]() mutable
+                {
+                    std::move(h)(
+                        make_error_code(net::error::bad_descriptor), 0);
+                });
             return;
         }
         auto& desc = descs_[queue];
@@ -138,8 +144,14 @@ public:
     {
         if (queue >= descs_.size())
         {
-            std::forward<Handler>(handler)(
-                make_error_code(net::error::bad_descriptor), 0);
+            auto h = std::forward<Handler>(handler);
+            auto ex = net::get_associated_executor(h, ctx_.get_executor());
+            net::dispatch(std::move(ex),
+                [h = std::move(h)]() mutable
+                {
+                    std::move(h)(
+                        make_error_code(net::error::bad_descriptor), 0);
+                });
             return;
         }
         auto& desc = descs_[queue];

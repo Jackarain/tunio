@@ -413,6 +413,7 @@ BOOST_AUTO_TEST_CASE(test_fragmented_write_failure_reported)
             called = true;
             result = ec;
         });
+    io.run();
 
     TEST_ASSERT(called);
     TEST_ASSERT(result == net::error::bad_descriptor);

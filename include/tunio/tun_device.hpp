@@ -119,7 +119,10 @@ public:
             void(boost::system::error_code, size_t)>(
             [this, &buf, queue](auto handler)
             {
-                impl_.async_read(buf, queue, std::move(handler));
+                auto ex = net::get_associated_executor(handler, ex_);
+                impl_.async_read(buf,
+                    queue,
+                    net::bind_executor(std::move(ex), std::move(handler)));
             },
             token);
     }
@@ -140,7 +143,10 @@ public:
             void(boost::system::error_code, size_t)>(
             [this, &buf, queue](auto handler)
             {
-                impl_.async_write(buf, queue, std::move(handler));
+                auto ex = net::get_associated_executor(handler, ex_);
+                impl_.async_write(buf,
+                    queue,
+                    net::bind_executor(std::move(ex), std::move(handler)));
             },
             token);
     }
@@ -168,6 +174,7 @@ public:
             void(boost::system::error_code, size_t)>(
             [this, &pkt, queue](auto handler)
             {
+                auto ex = net::get_associated_executor(handler, ex_);
                 pkt.buffer().reset();
                 // 容量不足容纳一个完整报文（utun 读含 4 字节前缀）时立即以
                 // message_size 完成，避免截断读入后解析报出令人困惑的
@@ -177,8 +184,7 @@ public:
                 {
                     // 用 dispatch 在 handler 的关联执行器上完成（post 在
                     // Asio 1.38+ 的默认 inline_executor 上无法编译）.
-                    auto executor = net::get_associated_executor(handler);
-                    net::dispatch(executor,
+                    net::dispatch(ex,
                         [h = std::move(handler)]() mutable
                         {
                             h(make_error_code(net::error::message_size), 0);
@@ -187,13 +193,15 @@ public:
                 }
                 impl_.async_read(pkt.buffer(),
                     queue,
-                    [h = std::move(handler), &pkt](
-                        const boost::system::error_code& ec, size_t n) mutable
-                    {
-                        if (!ec)
-                            pkt.parse(pkt.buffer(), n);
-                        std::move(h)(ec, n);
-                    });
+                    net::bind_executor(std::move(ex),
+                        [h = std::move(handler), &pkt](
+                            const boost::system::error_code& ec,
+                            size_t n) mutable
+                        {
+                            if (!ec)
+                                pkt.parse(pkt.buffer(), n);
+                            std::move(h)(ec, n);
+                        }));
             },
             token);
     }
@@ -217,12 +225,16 @@ public:
             void(boost::system::error_code, size_t)>(
             [this, &pkt, queue](auto handler)
             {
-                impl_.async_write(pkt.buffer(), queue, std::move(handler));
+                auto ex = net::get_associated_executor(handler, ex_);
+                impl_.async_write(pkt.buffer(),
+                    queue,
+                    net::bind_executor(std::move(ex), std::move(handler)));
             },
             token);
     }
 
 private:
+    net::any_io_executor ex_;
     detail::tun_device_impl impl_;
 };
 

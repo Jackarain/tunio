@@ -17,6 +17,7 @@
 #include "tunio/tun_device.hpp"
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -788,6 +789,42 @@ BOOST_AUTO_TEST_CASE(test_device_read_ip)
     TEST_ASSERT(pkt.destination_address() == net::ip::make_address("8.8.8.8"));
     TEST_ASSERT(pkt.transport_data_size() == 4);
     TEST_ASSERT(std::memcmp(pkt.transport_data(), vec.data() + 40, 4) == 0);
+}
+
+BOOST_AUTO_TEST_CASE(test_device_read_completion_uses_associated_executor)
+{
+    dev_env env;
+    ip_packet pkt;
+    net::io_context target_io;
+    auto target_strand = net::make_strand(target_io);
+    auto target_guard = net::make_work_guard(target_io);
+    std::atomic<bool> called{false};
+    bool on_target = false;
+    boost::system::error_code result;
+
+    auto vec = make_tcp(0x0a000002, 0x08080808, 20000, 443, 0x12, 100, 0,
+        65535, {1, 2, 3, 4});
+    env.dev.async_read_ip(pkt,
+        net::bind_executor(target_strand,
+            [&](boost::system::error_code ec, size_t) {
+                result = ec;
+                on_target = target_strand.running_in_this_thread();
+                called.store(true, std::memory_order_release);
+            }));
+    (void)::write(env.peer, vec.data(), vec.size());
+
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(3);
+    while (!called.load(std::memory_order_acquire) &&
+        std::chrono::steady_clock::now() < deadline) {
+        target_io.run_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    TEST_ASSERT(called.load(std::memory_order_acquire));
+    TEST_ASSERT(on_target);
+    TEST_ASSERT(!result);
+    target_guard.reset();
 }
 
 BOOST_AUTO_TEST_CASE(test_device_write_ip)
