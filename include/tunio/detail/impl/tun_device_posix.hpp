@@ -110,22 +110,25 @@ public:
         {
             // macOS utun 每次读取携带 4 字节家族前缀（大端 AF_INET/AF_INET6）：
             // 读入后跳过前缀，引擎仍按"完整 IP 报文"解析。
+            auto h = std::forward<Handler>(handler);
+            auto ex = net::get_associated_executor(h, ctx_.get_executor());
             desc.async_read_some(
                 net::buffer(buf.writable_data(), buf.writable_size()),
-                [h = std::forward<Handler>(handler), &buf](
-                    const boost::system::error_code& ec, size_t n) mutable
-                {
-                    size_t pkt_n = n;
-                    if (!ec && n > 4)
+                net::bind_executor(std::move(ex),
+                    [h = std::move(h), &buf](
+                        const boost::system::error_code& ec, size_t n) mutable
                     {
-                        // 从实际读入位置（writable_data）剥离前缀，兼容
-                        // 调用方未 reset 时 data() != 读入位置的场景。
-                        uint8_t* base = buf.writable_data();
-                        std::memmove(base, base + 4, n - 4);
-                        pkt_n = n - 4;
-                    }
-                    std::move(h)(ec, pkt_n);
-                });
+                        size_t pkt_n = n;
+                        if (!ec && n > 4)
+                        {
+                            // 从实际读入位置（writable_data）剥离前缀，兼容
+                            // 调用方未 reset 时 data() != 读入位置的场景。
+                            uint8_t* base = buf.writable_data();
+                            std::memmove(base, base + 4, n - 4);
+                            pkt_n = n - 4;
+                        }
+                        std::move(h)(ec, pkt_n);
+                    }));
         }
         else
             desc.async_read_some(

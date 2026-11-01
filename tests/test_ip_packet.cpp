@@ -717,7 +717,7 @@ struct dev_env
     std::thread thread;
     net::executor_work_guard<net::io_context::executor_type> guard;
 
-    dev_env()
+    explicit dev_env(bool utun_prefix = false)
         : dev(io)
         , guard(net::make_work_guard(io))
     {
@@ -727,7 +727,7 @@ struct dev_env
         }
         peer = sv[1];
         boost::system::error_code ec;
-        if (!dev.assign(sv[0], 1500, false, ec)) {
+        if (!dev.assign(sv[0], 1500, utun_prefix, ec)) {
             TEST_THROW(
                 "tun_device assign failed: " + ec.message());
         }
@@ -824,6 +824,44 @@ BOOST_AUTO_TEST_CASE(test_device_read_completion_uses_associated_executor)
     TEST_ASSERT(called.load(std::memory_order_acquire));
     TEST_ASSERT(on_target);
     TEST_ASSERT(!result);
+    target_guard.reset();
+}
+
+BOOST_AUTO_TEST_CASE(test_device_utun_read_uses_associated_executor)
+{
+    dev_env env(true);
+    ip_packet pkt;
+    net::io_context target_io;
+    auto target_strand = net::make_strand(target_io);
+    auto target_guard = net::make_work_guard(target_io);
+    std::atomic<bool> called{false};
+    bool on_target = false;
+    boost::system::error_code result;
+
+    auto packet = make_udp(0x0a000002, 0x08080808, 30000, 53, {1, 2, 3});
+    std::vector<uint8_t> frame{0, 0, 0, 2};
+    frame.insert(frame.end(), packet.begin(), packet.end());
+    env.dev.async_read_ip(pkt,
+        net::bind_executor(target_strand,
+            [&](boost::system::error_code ec, size_t) {
+                result = ec;
+                on_target = target_strand.running_in_this_thread();
+                called.store(true, std::memory_order_release);
+            }));
+    (void)::write(env.peer, frame.data(), frame.size());
+
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(3);
+    while (!called.load(std::memory_order_acquire) &&
+        std::chrono::steady_clock::now() < deadline) {
+        target_io.run_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    TEST_ASSERT(called.load(std::memory_order_acquire));
+    TEST_ASSERT(on_target);
+    TEST_ASSERT(!result);
+    TEST_ASSERT(pkt.valid() && pkt.is_udp());
     target_guard.reset();
 }
 
