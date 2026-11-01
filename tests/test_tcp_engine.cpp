@@ -2761,6 +2761,22 @@ BOOST_AUTO_TEST_CASE(test_accept_completion_honors_associated_executor)
     peer.reset();
 }
 
+BOOST_AUTO_TEST_CASE(test_accept_after_close_completes)
+{
+    engine_env env;
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(env.io.get_executor());
+    std::promise<boost::system::error_code> done;
+
+    env.engine.close();
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        done.set_value(ec);
+    });
+
+    TEST_ASSERT(future_get(done.get_future(), 1000) ==
+        net::error::bad_descriptor);
+}
+
 BOOST_AUTO_TEST_CASE(test_reentrant_reset_in_ooo_delivery)
 {
     // 乱序交付路径：读回调内续发下一个读，缺口段补齐后 flush_ooo 把缓存的

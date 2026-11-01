@@ -73,31 +73,49 @@ public:
     // ---- accept 入口（自动派发到 Strand）----
     template <typename Handler> void async_accept_tcp(Handler handler)
     {
-        net::dispatch(strand_ex_,
-            [tcp = tcp_, h = std::move(handler), ex = strand_ex_]() mutable
+        auto ex = strand_ex_;
+        const uint64_t epoch = epoch_.load(std::memory_order_acquire);
+        net::dispatch(ex,
+            [self = shared_from_this(),
+                epoch,
+                ex,
+                h = std::move(handler)]() mutable
             {
-                if (tcp)
-                    tcp->async_accept(std::move(h));
-                else
+                if (!self->open_.load(std::memory_order_acquire) ||
+                    epoch != self->epoch_.load(std::memory_order_acquire) ||
+                    !self->tcp_)
+                {
                     post_completion_on(ex,
                         std::move(h),
                         boost::system::error_code(net::error::bad_descriptor),
                         nullptr);
+                    return;
+                }
+                self->tcp_->async_accept(std::move(h));
             });
     }
 
     template <typename Handler> void async_accept_udp(Handler handler)
     {
-        net::dispatch(strand_ex_,
-            [udp = udp_, h = std::move(handler), ex = strand_ex_]() mutable
+        auto ex = strand_ex_;
+        const uint64_t epoch = epoch_.load(std::memory_order_acquire);
+        net::dispatch(ex,
+            [self = shared_from_this(),
+                epoch,
+                ex,
+                h = std::move(handler)]() mutable
             {
-                if (udp)
-                    udp->async_accept(std::move(h));
-                else
+                if (!self->open_.load(std::memory_order_acquire) ||
+                    epoch != self->epoch_.load(std::memory_order_acquire) ||
+                    !self->udp_)
+                {
                     post_completion_on(ex,
                         std::move(h),
                         boost::system::error_code(net::error::bad_descriptor),
                         nullptr);
+                    return;
+                }
+                self->udp_->async_accept(std::move(h));
             });
     }
 

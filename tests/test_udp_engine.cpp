@@ -221,6 +221,22 @@ BOOST_AUTO_TEST_CASE(test_accept_completion_honors_associated_executor)
     session.close();
 }
 
+BOOST_AUTO_TEST_CASE(test_accept_after_close_completes)
+{
+    engine_env env;
+    tun_udp_acceptor acceptor(env.engine);
+    tun_udp_socket session(env.io.get_executor());
+    std::promise<boost::system::error_code> done;
+
+    env.engine.close();
+    acceptor.async_accept(session, [&](boost::system::error_code ec) {
+        done.set_value(ec);
+    });
+
+    TEST_ASSERT(future_get(done.get_future(), 1000) ==
+        net::error::bad_descriptor);
+}
+
 BOOST_AUTO_TEST_CASE(test_multiple_remotes)
 {
     engine_env env;
