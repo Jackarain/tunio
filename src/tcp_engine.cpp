@@ -121,7 +121,13 @@ tcp_engine::tcp_engine(net::any_io_executor strand,
 
 tcp_engine::~tcp_engine()
 {
-    sweep_timer_.cancel();
+    try
+    {
+        sweep_timer_.cancel();
+    }
+    catch (...)
+    {
+    }
 }
 
 // ---- 会话清扫定时器 ----
@@ -1430,7 +1436,13 @@ void tcp_engine::cancel_accepts()
 
 void tcp_engine::close_all()
 {
-    sweep_timer_.cancel();
+    try
+    {
+        sweep_timer_.cancel();
+    }
+    catch (...)
+    {
+    }
 
     std::vector<tcp_flow_ptr> all;
     all.reserve(flows_.size());

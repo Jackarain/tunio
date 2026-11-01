@@ -87,7 +87,13 @@ udp_engine::udp_engine(net::any_io_executor strand,
 
 udp_engine::~udp_engine()
 {
-    expiry_timer_.cancel();
+    try
+    {
+        expiry_timer_.cancel();
+    }
+    catch (...)
+    {
+    }
 }
 
 // ---- 收包与数据交付 ----
@@ -378,7 +384,13 @@ void udp_engine::cancel_accepts()
 
 void udp_engine::close_all()
 {
-    expiry_timer_.cancel();
+    try
+    {
+        expiry_timer_.cancel();
+    }
+    catch (...)
+    {
+    }
     timer_waiting_ = false;
 
     std::vector<udp_session_ptr> all;
