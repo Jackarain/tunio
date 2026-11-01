@@ -34,6 +34,56 @@ const auto CLIENT_V6 = v6("fd00::2");
 const auto DEST_V6 = v6("2001:4860:4860::8888");
 constexpr uint16_t CLIENT_PORT = 12345;
 constexpr uint16_t DEST_PORT = 80;
+
+void establish_tcp(engine_env& env,
+    tun_tcp_acceptor& acceptor,
+    tun_tcp_socket& peer,
+    uint16_t client_port,
+    uint32_t client_seq)
+{
+    std::promise<boost::system::error_code> accept_done;
+    acceptor.async_accept(peer, [&](boost::system::error_code ec) {
+        if (!ec)
+            peer.accept();
+        accept_done.set_value(ec);
+    });
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, client_port, DEST_PORT, 0x02,
+        client_seq, 0, 65535, {}));
+    std::vector<uint8_t> pkt;
+    if (!env.dev.read_packet(pkt))
+        TEST_THROW("no SYN-ACK");
+    ip_hdr_info ipi;
+    tcp_hdr_info ti;
+    if (!parse_ip(pkt, ipi) ||
+        !parse_tcp(ipi.payload, ipi.payload_len, ti))
+        TEST_THROW("parse SYN-ACK failed");
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, client_port, DEST_PORT, 0x10,
+        client_seq + 1, ti.seq + 1, 65535, {}));
+    TEST_ASSERT(!future_get(accept_done.get_future()));
+}
+
+uint16_t last_ack_window(engine_env& env)
+{
+    uint16_t window = 0;
+    size_t acks = 0;
+    for (;;)
+    {
+        std::vector<uint8_t> pkt;
+        if (!env.dev.read_packet(pkt, 300))
+            break;
+        ip_hdr_info ipi;
+        tcp_hdr_info ti;
+        TEST_ASSERT(parse_ip(pkt, ipi));
+        TEST_ASSERT(parse_tcp(ipi.payload, ipi.payload_len, ti));
+        TEST_ASSERT((ti.flags & 0x10) != 0);
+        window = ti.win;
+        ++acks;
+    }
+    TEST_ASSERT(acks > 0);
+    return window;
+}
 } // namespace
 
 BOOST_AUTO_TEST_CASE(test_handshake_data_fin)
@@ -3304,6 +3354,170 @@ BOOST_AUTO_TEST_CASE(test_overlapping_out_of_order_reassembly)
     TEST_ASSERT(second_n == 15);
     TEST_ASSERT(std::string(buf.data(), second_n) == "FGHIJKLMNOPQRST");
 
+    peer.close();
+}
+
+BOOST_AUTO_TEST_CASE(test_ooo_contained_segment_not_accounted)
+{
+    engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+        std::chrono::seconds(30), 4096);
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(env.io.get_executor());
+    constexpr uint16_t port = 12380;
+    constexpr uint32_t base = 1001;
+    establish_tcp(env, acceptor, peer, port, 1000);
+
+    const std::string out_of_order = "FGHIJKLMNOPQRST";
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 5, base, 65535,
+        std::vector<uint8_t>(out_of_order.begin(), out_of_order.end())));
+    // 完全包含于前一段的重复数据不得再次记账。
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 10, base, 65535, {'K', 'L', 'M', 'N', 'O'}));
+
+    std::promise<size_t> first_n;
+    std::promise<std::string> second_data;
+    std::array<char, 64> buf;
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec,
+        size_t n) {
+        TEST_ASSERT(!ec);
+        first_n.set_value(n);
+        peer.async_read_some(net::buffer(buf),
+            [&](boost::system::error_code ec2, size_t n2) {
+            TEST_ASSERT(!ec2);
+            second_data.set_value(std::string(buf.data(), n2));
+        });
+    });
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18, base,
+        base, 65535, {'A', 'B', 'C', 'D', 'E'}));
+
+    TEST_ASSERT(future_get(first_n.get_future()) == 5);
+    TEST_ASSERT(future_get(second_data.get_future()) == out_of_order);
+    TEST_ASSERT(last_ack_window(env) == 4096 - out_of_order.size());
+    peer.close();
+}
+
+BOOST_AUTO_TEST_CASE(test_ooo_same_start_longer_replaces)
+{
+    engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+        std::chrono::seconds(30), 4096);
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(env.io.get_executor());
+    constexpr uint16_t port = 12381;
+    constexpr uint32_t base = 1001;
+    establish_tcp(env, acceptor, peer, port, 1000);
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 5, base, 65535, {'F', 'G', 'H', 'I', 'J'}));
+    const std::string longer = "FGHIJKLMNO";
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 5, base, 65535,
+        std::vector<uint8_t>(longer.begin(), longer.end())));
+
+    std::promise<size_t> first_n;
+    std::promise<std::string> second_data;
+    std::array<char, 64> buf;
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec,
+        size_t n) {
+        TEST_ASSERT(!ec);
+        first_n.set_value(n);
+        peer.async_read_some(net::buffer(buf),
+            [&](boost::system::error_code ec2, size_t n2) {
+            TEST_ASSERT(!ec2);
+            second_data.set_value(std::string(buf.data(), n2));
+        });
+    });
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18, base,
+        base, 65535, {'A', 'B', 'C', 'D', 'E'}));
+
+    TEST_ASSERT(future_get(first_n.get_future()) == 5);
+    TEST_ASSERT(future_get(second_data.get_future()) == longer);
+    TEST_ASSERT(last_ack_window(env) == 4096 - longer.size());
+    peer.close();
+}
+
+BOOST_AUTO_TEST_CASE(test_ooo_multiple_overlaps_are_merged)
+{
+    engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+        std::chrono::seconds(30), 4096);
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(env.io.get_executor());
+    constexpr uint16_t port = 12382;
+    constexpr uint32_t base = 1001;
+    establish_tcp(env, acceptor, peer, port, 1000);
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 5, base, 65535, {'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N',
+            'O'}));
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 10, base, 65535, {'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
+            'T'}));
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 15, base, 65535, {'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
+            'Y'}));
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 7, base, 65535, {'H', 'I', 'J', 'K', 'L', 'M'}));
+
+    const std::string expected = "FGHIJKLMNOPQRSTUVWXY";
+    std::promise<size_t> first_n;
+    std::promise<std::string> second_data;
+    std::array<char, 64> buf;
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec,
+        size_t n) {
+        TEST_ASSERT(!ec);
+        first_n.set_value(n);
+        peer.async_read_some(net::buffer(buf),
+            [&](boost::system::error_code ec2, size_t n2) {
+            TEST_ASSERT(!ec2);
+            second_data.set_value(std::string(buf.data(), n2));
+        });
+    });
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18, base,
+        base, 65535, {'A', 'B', 'C', 'D', 'E'}));
+
+    TEST_ASSERT(future_get(first_n.get_future()) == 5);
+    TEST_ASSERT(future_get(second_data.get_future()) == expected);
+    TEST_ASSERT(last_ack_window(env) == 4096 - expected.size());
+    peer.close();
+}
+
+BOOST_AUTO_TEST_CASE(test_ooo_sequence_wrap_reassembly)
+{
+    engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+        std::chrono::seconds(30), 4096);
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(env.io.get_executor());
+    constexpr uint16_t port = 12383;
+    constexpr uint32_t client_seq = 0xfffffff0;
+    constexpr uint32_t base = client_seq + 1;
+    establish_tcp(env, acceptor, peer, port, client_seq);
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 10, base, 65535, {'K', 'L', 'M', 'N', 'O'}));
+    const std::string crossing = "IJKLMNOPQR";
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 8, base, 65535,
+        std::vector<uint8_t>(crossing.begin(), crossing.end())));
+
+    std::promise<size_t> first_n;
+    std::promise<std::string> second_data;
+    std::array<char, 64> buf;
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec,
+        size_t n) {
+        TEST_ASSERT(!ec);
+        first_n.set_value(n);
+        peer.async_read_some(net::buffer(buf),
+            [&](boost::system::error_code ec2, size_t n2) {
+            TEST_ASSERT(!ec2);
+            second_data.set_value(std::string(buf.data(), n2));
+        });
+    });
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18, base,
+        base, 65535, {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'}));
+
+    TEST_ASSERT(future_get(first_n.get_future()) == 8);
+    TEST_ASSERT(future_get(second_data.get_future()) == crossing);
+    TEST_ASSERT(last_ack_window(env) == 4096 - crossing.size());
     peer.close();
 }
 

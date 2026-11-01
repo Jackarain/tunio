@@ -623,6 +623,32 @@ void tcp_engine::flush_reads(tcp_flow& f)
 
 void tcp_engine::flush_ooo(tcp_flow& f)
 {
+    // 清理已被 rcv_nxt 完整越过的缓存段。旧实现仅在段与 rcv_nxt 相交时
+    // 取出，完全落在其后的重复/裁剪残段会永久占用窗口和缓冲记账。
+    bool pruned = false;
+    for (auto it = f.ooo_cache.begin(); it != f.ooo_cache.end();)
+    {
+        const size_t len = it->second.data.size();
+        const uint32_t end = it->first + static_cast<uint32_t>(len);
+        if (!seq_ge(f.rcv_nxt, end))
+        {
+            ++it;
+            continue;
+        }
+        if (it->second.fin && end == f.rcv_nxt)
+            handle_fin(f, end);
+        if (f.state == tcp_state::CLOSED)
+            return;
+        if (len > 0)
+        {
+            f.ooo_bytes -= len;
+            account_->release(len);
+        }
+        it = f.ooo_cache.erase(it);
+        pruned = true;
+    }
+    f.ooo_count = f.ooo_cache.size();
+
     bool delivered = false;
 
     for (;;)
@@ -685,27 +711,190 @@ void tcp_engine::flush_ooo(tcp_flow& f)
     // 重入关闭连接时不再补发.
     if (delivered && f.state != tcp_state::CLOSED)
         send_ack(f);
+    else if (pruned && f.state != tcp_state::CLOSED)
+        notify_window_updated(f);
 }
 
 bool tcp_engine::ooo_append(
     tcp_flow& f, uint32_t seq, const uint8_t* data, size_t len, bool fin)
 {
-    if (f.ooo_cache.find(seq) != f.ooo_cache.end())
-        return false; // 重复乱序段：忽略
-    if (f.ooo_count >= cfg_.tcp_ooo_max_segments ||
-        f.rx_bytes + f.ooo_bytes + len > cfg_.max_rx_queue_per_flow ||
-        !account_->reserve(len))
+    // 以本次段首为原点计算相对偏移，序列号回绕时仍可做普通区间比较。
+    const auto offset = [seq](uint32_t v) -> int64_t
+    {
+        return static_cast<int32_t>(v - seq);
+    };
+
+    if (len == 0)
+    {
+        if (!fin)
+            return false;
+        for (auto it = f.ooo_cache.begin(); it != f.ooo_cache.end(); ++it)
+        {
+            const int64_t start = offset(it->first);
+            const int64_t end =
+                start + static_cast<int64_t>(it->second.data.size());
+            if (end == 0)
+            {
+                if (it->second.fin)
+                    return false;
+                it->second.fin = true;
+                return true;
+            }
+            if (start <= 0 && end > 0)
+                return false; // FIN 落在数据中间或数据之前，忽略非法段
+        }
+        if (f.ooo_cache.size() >= cfg_.tcp_ooo_max_segments)
+        {
+            stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        f.ooo_cache.emplace(seq, tcp_flow::ooo_segment{{}, true});
+        f.ooo_count = f.ooo_cache.size();
+        return true;
+    }
+
+    size_t overlap = 0;
+    bool fin_covered = false;
+    for (const auto& [old_seq, old_seg] : f.ooo_cache)
+    {
+        const int64_t start = offset(old_seq);
+        const int64_t end = start + static_cast<int64_t>(old_seg.data.size());
+        const int64_t lo = std::max<int64_t>(start, 0);
+        const int64_t hi = std::min<int64_t>(end, static_cast<int64_t>(len));
+        if (lo < hi)
+            overlap += static_cast<size_t>(hi - lo);
+        if (old_seg.fin && end == static_cast<int64_t>(len))
+            fin_covered = true;
+    }
+
+    const size_t net_add = len - overlap;
+    if (net_add == 0 && (!fin || fin_covered))
+        return false; // 完全重复：保留先到数据并触发 re-ACK
+
+    if (f.ooo_cache.size() >= cfg_.tcp_ooo_max_segments ||
+        f.rx_bytes + f.ooo_bytes + net_add > cfg_.max_rx_queue_per_flow ||
+        !account_->reserve(net_add))
     {
         // 缓存超限：丢弃并依赖对端重传（调用方随后发 Dup-ACK）
         stats_.rx_dropped.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    tcp_flow::ooo_segment seg;
-    seg.data.assign(data, data + len);
-    seg.fin = fin;
-    f.ooo_cache.emplace(seq, std::move(seg));
-    f.ooo_bytes += len;
-    ++f.ooo_count;
+
+    tcp_flow::ooo_segment incoming;
+    incoming.data.assign(data, data + len);
+    incoming.fin = fin || fin_covered;
+
+    // 裁剪与新段重叠的旧数据：保留左侧和右侧未覆盖部分，完全包含的旧段
+    // 删除。这样重复/覆盖段不再各自占用缓存与通告窗口。
+    for (auto it = f.ooo_cache.begin(); it != f.ooo_cache.end();)
+    {
+        const int64_t start = offset(it->first);
+        const int64_t old_len = static_cast<int64_t>(it->second.data.size());
+        const int64_t end = start + old_len;
+        const int64_t lo = std::max<int64_t>(start, 0);
+        const int64_t hi = std::min<int64_t>(end, static_cast<int64_t>(len));
+        const bool data_overlap = lo < hi;
+        const bool fin_inside = old_len == 0 && it->second.fin &&
+            start >= 0 && start < static_cast<int64_t>(len);
+        if (!data_overlap && !fin_inside)
+        {
+            ++it;
+            continue;
+        }
+
+        if (start < 0 && end > static_cast<int64_t>(len))
+        {
+            // 旧段横跨新段两侧：拆成左前缀和右后缀。
+            const size_t left_len = static_cast<size_t>(-start);
+            const size_t right_skip = static_cast<size_t>(
+                static_cast<int64_t>(len) - start);
+            std::vector<uint8_t> right_data(
+                it->second.data.begin() + right_skip, it->second.data.end());
+            const bool right_fin = it->second.fin;
+            it->second.data.resize(left_len);
+            it->second.fin = false;
+            const uint32_t right_seq = seq + static_cast<uint32_t>(len);
+            f.ooo_cache.emplace(right_seq,
+                tcp_flow::ooo_segment{std::move(right_data), right_fin});
+            ++it;
+        }
+        else if (start < 0)
+        {
+            // 只与旧段右侧重叠：保留左侧前缀。
+            it->second.data.resize(static_cast<size_t>(-start));
+            it->second.fin = false;
+            ++it;
+        }
+        else if (end > static_cast<int64_t>(len))
+        {
+            // 只与旧段左侧重叠：裁掉前缀并移动段首到新段尾。
+            const size_t skip = static_cast<size_t>(
+                static_cast<int64_t>(len) - start);
+            auto node = f.ooo_cache.extract(it++);
+            node.key() = seq + static_cast<uint32_t>(len);
+            node.mapped().data.erase(node.mapped().data.begin(),
+                node.mapped().data.begin() + static_cast<std::ptrdiff_t>(skip));
+            f.ooo_cache.insert(std::move(node));
+        }
+        else
+        {
+            // 旧段完全包含于新段（含同起点短重传）。
+            it = f.ooo_cache.erase(it);
+        }
+    }
+
+    auto cur = f.ooo_cache.emplace(seq, std::move(incoming)).first;
+    f.ooo_bytes += net_add;
+
+    // 与相邻区间合并，避免连续重传形成大量首尾相接的小段。
+    for (;;)
+    {
+        bool merged = false;
+        for (auto it = f.ooo_cache.begin(); it != f.ooo_cache.end(); ++it)
+        {
+            if (it == cur || it->second.fin)
+                continue;
+            const uint32_t end = it->first +
+                static_cast<uint32_t>(it->second.data.size());
+            if (end != cur->first)
+                continue;
+            it->second.data.insert(it->second.data.end(),
+                cur->second.data.begin(), cur->second.data.end());
+            it->second.fin = cur->second.fin;
+            f.ooo_cache.erase(cur);
+            cur = it;
+            merged = true;
+            break;
+        }
+        if (merged)
+            continue;
+
+        const uint32_t cur_end =
+            cur->first + static_cast<uint32_t>(cur->second.data.size());
+        for (auto it = f.ooo_cache.begin(); it != f.ooo_cache.end(); ++it)
+        {
+            if (it == cur || it->first != cur_end)
+                continue;
+            if (cur->second.fin)
+            {
+                if (it->second.data.empty() && it->second.fin)
+                {
+                    f.ooo_cache.erase(it);
+                    merged = true;
+                }
+                break;
+            }
+            cur->second.data.insert(cur->second.data.end(),
+                it->second.data.begin(), it->second.data.end());
+            cur->second.fin = it->second.fin;
+            f.ooo_cache.erase(it);
+            merged = true;
+            break;
+        }
+        if (!merged)
+            break;
+    }
+    f.ooo_count = f.ooo_cache.size();
     return true;
 }
 
