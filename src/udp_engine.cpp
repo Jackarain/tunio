@@ -369,6 +369,9 @@ void udp_engine::remove_session(udp_session_ptr s)
     if (s->closed)
         return;
 
+    auto pending_reads = std::move(s->pending_reads);
+    s->pending_reads.clear();
+
     s->closed = true;
     sessions_.erase(s->key);
     stats_.udp_sessions.fetch_sub(1, std::memory_order_relaxed);
@@ -379,21 +382,22 @@ void udp_engine::remove_session(udp_session_ptr s)
         s->pending_accept = false;
     }
 
-    for (auto& op : s->pending_reads)
-    {
-        post_completion_on(strand_,
-            std::move(op.handler),
-            boost::system::error_code(net::error::operation_aborted),
-            0);
-    }
-    s->pending_reads.clear();
-
     if (s->rx_bytes > 0)
     {
         account_->release(s->rx_bytes);
         s->rx_bytes = 0;
     }
     s->rx_datagrams.clear();
+
+    // 会话状态与资源已全部清理，最后再投递读完成；回调异常不会中断
+    // remove_session 或定时器的后续调度。
+    for (auto& op : pending_reads)
+    {
+        post_completion_on(strand_,
+            std::move(op.handler),
+            boost::system::error_code(net::error::operation_aborted),
+            0);
+    }
 }
 
 // ---- 会话批量控制 ----

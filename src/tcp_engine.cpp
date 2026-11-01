@@ -1544,6 +1544,8 @@ void tcp_engine::close_flow(tcp_flow& f, const boost::system::error_code& err)
     if (f.state == tcp_state::CLOSED)
         return;
 
+    [[maybe_unused]] auto keep_alive = f.shared_from_this();
+
     // 关闭后不再补发延迟确认。
     if (f.ack_timer)
     {
@@ -1568,24 +1570,19 @@ void tcp_engine::close_flow(tcp_flow& f, const boost::system::error_code& err)
             pending_flows_.erase(it);
     }
 
+    std::optional<tcp_read_handler> read_handler;
     if (f.active_read)
     {
-        auto op = std::move(*f.active_read);
+        read_handler.emplace(std::move(f.active_read->handler));
         f.active_read.reset();
-        post_completion_on(strand_, std::move(op.handler), err, 0);
     }
 
+    std::optional<tcp_write_handler> write_handler;
     if (f.active_write)
     {
-        auto h = std::move(f.active_write->handler);
+        write_handler.emplace(std::move(f.active_write->handler));
         f.active_write.reset();
-        post_completion_on(strand_, std::move(h), err, 0);
     }
-
-    // 关闭信号通道：唤醒挂起等待窗口的发送协程，协程恢复后
-    // 因 active_write 已清空而直接退出。
-    if (f.write_ch)
-        f.write_ch->close();
 
     if (f.rx_bytes > 0)
     {
@@ -1608,6 +1605,15 @@ void tcp_engine::close_flow(tcp_flow& f, const boost::system::error_code& err)
 
     f.state = tcp_state::CLOSED;
     flows_.erase(f.key);
+
+    // 状态、资源与流表均已清理完毕，再唤醒发送协程并投递完成回调。
+    // 回调异常只会从 io_context::run() 传播，不会中断本函数的清理。
+    if (f.write_ch)
+        f.write_ch->close();
+    if (read_handler)
+        post_completion_on(strand_, std::move(*read_handler), err, 0);
+    if (write_handler)
+        post_completion_on(strand_, std::move(*write_handler), err, 0);
 }
 
 void tcp_engine::notify_accept(tcp_flow& f)
@@ -1709,14 +1715,11 @@ void tcp_flow_shutdown_receive(tcp_flow_ptr flow)
 
             f.rx_shutdown = true;
 
+            std::optional<tcp_read_handler> read_handler;
             if (f.active_read)
             {
-                auto op = std::move(*f.active_read);
+                read_handler.emplace(std::move(f.active_read->handler));
                 f.active_read.reset();
-                post_completion_on(eng->strand(),
-                    std::move(op.handler),
-                    boost::system::error_code(net::error::operation_aborted),
-                    0);
             }
 
             if (f.rx_bytes > 0)
@@ -1734,6 +1737,12 @@ void tcp_flow_shutdown_receive(tcp_flow_ptr flow)
             }
             f.ooo_cache.clear();
             f.ooo_count = 0;
+
+            if (read_handler)
+                post_completion_on(eng->strand(),
+                    std::move(*read_handler),
+                    boost::system::error_code(net::error::operation_aborted),
+                    0);
         });
 }
 
@@ -1755,24 +1764,18 @@ void tcp_flow_close(tcp_flow_ptr flow)
 
             f.app_closed = true;
 
+            std::optional<tcp_read_handler> read_handler;
             if (f.active_read)
             {
-                auto op = std::move(*f.active_read);
+                read_handler.emplace(std::move(f.active_read->handler));
                 f.active_read.reset();
-                post_completion_on(eng->strand(),
-                    std::move(op.handler),
-                    boost::system::error_code(net::error::operation_aborted),
-                    0);
             }
 
+            std::optional<tcp_write_handler> write_handler;
             if (f.active_write)
             {
-                auto h = std::move(f.active_write->handler);
+                write_handler.emplace(std::move(f.active_write->handler));
                 f.active_write.reset();
-                post_completion_on(eng->strand(),
-                    std::move(h),
-                    boost::system::error_code(net::error::operation_aborted),
-                    0);
             }
 
             if (f.write_ch)
@@ -1800,6 +1803,17 @@ void tcp_flow_close(tcp_flow_ptr flow)
                 eng->abort_flow(f);
             else
                 eng->send_fin(f);
+
+            if (read_handler)
+                post_completion_on(eng->strand(),
+                    std::move(*read_handler),
+                    boost::system::error_code(net::error::operation_aborted),
+                    0);
+            if (write_handler)
+                post_completion_on(eng->strand(),
+                    std::move(*write_handler),
+                    boost::system::error_code(net::error::operation_aborted),
+                    0);
         });
 }
 
