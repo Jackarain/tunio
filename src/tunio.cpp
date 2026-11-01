@@ -327,10 +327,9 @@ void tunio_impl::close()
     net::dispatch(strand_ex_,
         [self = shared_from_this(), epoch, tcp, udp]()
         {
-            // 引擎会话清理（close_all 触发完成回调恢复上层协程）可能抛异常
-            //（如协程访问已释放对象），必须捕获，确保设备与写队列一定被
-            // 关闭/取消：否则旧引擎的读循环继续运行，注入的 tun fd 无法
-            // 撤销，反复启停后 io_context 残留任务忙跑。
+            // 会话清理中的完成投递可能失败，必须隔离异常，确保设备与写
+            // 队列一定被关闭/取消：否则旧引擎的读循环继续运行，注入的
+            // tun fd 无法撤销，反复启停后 io_context 残留任务忙跑。
             try
             {
                 if (tcp)
@@ -338,7 +337,7 @@ void tunio_impl::close()
             }
             catch (...)
             {
-                // 忽略会话清理异常，保证设备与写队列一定被关闭/取消。
+                // 忽略清理异常，保证设备与写队列一定被关闭/取消。
             }
 
             try
@@ -348,7 +347,7 @@ void tunio_impl::close()
             }
             catch (...)
             {
-                // 忽略会话清理异常，保证设备与写队列一定被关闭/取消。
+                // 忽略清理异常，保证设备与写队列一定被关闭/取消。
             }
 
             // 设备与写队列指向共享成员（reopen 后可能已指向新实例），
@@ -501,15 +500,25 @@ void tunio_impl::on_read(
         return;
     }
     stats_->rx_packets.fetch_add(1, std::memory_order_relaxed);
-    // 用户完成回调（如 TCP 直投路径）可能抛异常：捕获后仍复位读槽并
-    // 继续读泵，避免单个回调异常使 32 槽读路径整体停摆；异常被吞掉
-    //（不再经 io.run() 传播），以换读取循环的持续可用。
+    // 完成回调已统一异步派发，handle_packet 内不会执行用户代码。这里不再
+    // 吞掉报文处理异常：先复位读槽并尝试恢复读取，再把异常交给
+    // io_context::run() 的调用方。
     try
     {
         handle_packet(base, total_len);
     }
     catch (...)
     {
+        buf.reset();
+        try
+        {
+            start_read_slot(index);
+        }
+        catch (...)
+        {
+            // 保留并传播原始处理异常。
+        }
+        throw;
     }
     buf.reset();
     start_read_slot(index);

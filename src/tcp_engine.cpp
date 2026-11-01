@@ -1036,9 +1036,9 @@ void tcp_engine::send_segment(tcp_flow& f,
     size_t len,
     bool with_mss)
 {
-    // 状态守卫：连接已关闭（reset/引擎 close/超时回收）后不再出段。用户
-    // 完成回调可重入关闭路径，收尾代码恢复执行时流可能已 CLOSED；RST 在
-    // abort_flow 中先于置 CLOSED 发出，不受此守卫影响.
+    // 状态守卫：连接已关闭（reset/引擎 close/超时回收）后不再出段。关闭
+    // 可能发生在同一次入包处理的较早阶段，收尾代码继续执行时流可能已
+    // CLOSED；RST 在 abort_flow 中先于置 CLOSED 发出，不受此守卫影响。
     if (f.state == tcp_state::CLOSED)
         return;
 
