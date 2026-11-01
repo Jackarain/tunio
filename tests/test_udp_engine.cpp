@@ -13,6 +13,7 @@
 #include "test_harness.hpp"
 #include "tunio/detail/udp_engine.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>

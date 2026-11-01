@@ -12,6 +12,7 @@
 #include <boost/test/included/unit_test.hpp>
 #include "test_harness.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <csignal>
