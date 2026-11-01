@@ -224,8 +224,8 @@ class wintun_tun_device_impl
 public:
     explicit wintun_tun_device_impl(net::io_context& ctx)
         : strand_(ctx.get_executor())
-        , recv_timer_(ctx)
-        , send_timer_(ctx)
+        , recv_timer_(strand_)
+        , send_timer_(strand_)
     {
     }
     ~wintun_tun_device_impl()
