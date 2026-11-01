@@ -199,8 +199,7 @@ struct wintun_api
     }
 };
 
-class wintun_tun_device_impl :
-    public std::enable_shared_from_this<wintun_tun_device_impl>
+class wintun_tun_device_impl
 {
 public:
     explicit wintun_tun_device_impl(net::io_context& ctx)
@@ -240,15 +239,15 @@ public:
         return opened_;
     }
 
+    // 设备由 tun_device 按值持有；与 Boost.Asio 异步操作契约一致，调用方
+    // 须保证设备、缓冲区和完成处理器在操作完成前有效。
     template <typename Handler>
     void async_read(packet_buffer& buf, Handler&& handler)
     {
         net::post(strand_,
-            [self = shared_from_this(),
-                &buf,
-                h = std::forward<Handler>(handler)]() mutable
+            [this, &buf, h = std::forward<Handler>(handler)]() mutable
             {
-                self->recv_poll_loop(buf, std::move(h));
+                recv_poll_loop(buf, std::move(h));
             });
     }
 
@@ -262,11 +261,9 @@ public:
     void async_write(packet_buffer& buf, Handler&& handler)
     {
         net::post(strand_,
-            [self = shared_from_this(),
-                &buf,
-                h = std::forward<Handler>(handler)]() mutable
+            [this, &buf, h = std::forward<Handler>(handler)]() mutable
             {
-                self->send_try_and_maybe_retry(buf, std::move(h));
+                send_try_and_maybe_retry(buf, std::move(h));
             });
     }
 
@@ -315,13 +312,11 @@ private:
         // 无数据，定时重试。
         recv_timer_.expires_after(std::chrono::milliseconds(1));
         recv_timer_.async_wait(
-            [self = shared_from_this(),
-                &buf,
-                h = std::forward<Handler>(handler)](
+            [this, &buf, h = std::forward<Handler>(handler)](
                 boost::system::error_code timer_ec) mutable
             {
-                if (!timer_ec && self->is_open())
-                    self->recv_poll_loop(buf, std::move(h));
+                if (!timer_ec && is_open())
+                    recv_poll_loop(buf, std::move(h));
                 else
                     h(timer_ec ? timer_ec : boost::system::error_code{}, 0);
             });
@@ -354,7 +349,7 @@ private:
 
         send_timer_.expires_after(std::chrono::milliseconds(1));
         send_timer_.async_wait(
-            [self = shared_from_this(), &buf, h = std::move(handler)](
+            [this, &buf, h = std::move(handler)](
                 boost::system::error_code timer_ec) mutable
             {
                 if (timer_ec)
@@ -362,12 +357,12 @@ private:
                     h(timer_ec, 0);
                     return;
                 }
-                int n2 = self->send_try(
+                int n2 = send_try(
                     {reinterpret_cast<const char*>(buf.data()), buf.size()});
                 if (n2 < 0)
                 {
                     DWORD err = GetLastError();
-                    async_post_with_error(self->strand_,
+                    async_post_with_error(strand_,
                         std::move(h),
                         boost::system::error_code(static_cast<int>(err),
                             boost::system::system_category()));
@@ -375,10 +370,10 @@ private:
                 }
                 if (n2 == 0)
                 {
-                    self->send_try_and_maybe_retry(buf, std::move(h));
+                    send_try_and_maybe_retry(buf, std::move(h));
                     return;
                 }
-                async_post_with_result(self->strand_,
+                async_post_with_result(strand_,
                     std::move(h),
                     boost::system::error_code{},
                     static_cast<size_t>(n2));
