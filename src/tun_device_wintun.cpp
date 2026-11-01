@@ -48,12 +48,12 @@ static std::string narrow_from_wide(const wchar_t* ws)
         return {};
 
     int len =
-        WideCharToMultiByte(CP_ACP, 0, ws, -1, nullptr, 0, nullptr, nullptr);
+        WideCharToMultiByte(CP_UTF8, 0, ws, -1, nullptr, 0, nullptr, nullptr);
     if (len <= 0)
         return {};
 
     std::string result(static_cast<size_t>(len), '\0');
-    WideCharToMultiByte(CP_ACP,
+    WideCharToMultiByte(CP_UTF8,
         0,
         ws,
         -1,
@@ -71,12 +71,12 @@ static std::wstring wide_from_narrow(const char* ns)
 {
     if (!ns)
         return {};
-    int len = MultiByteToWideChar(CP_ACP, 0, ns, -1, nullptr, 0);
+    int len = MultiByteToWideChar(CP_UTF8, 0, ns, -1, nullptr, 0);
     if (len <= 0)
         return {};
     std::wstring result(static_cast<size_t>(len), L'\0');
     MultiByteToWideChar(
-        CP_ACP, 0, ns, -1, &result[0], static_cast<int>(result.size()));
+        CP_UTF8, 0, ns, -1, &result[0], static_cast<int>(result.size()));
     while (!result.empty() && result.back() == L'\0')
         result.pop_back();
     return result;
@@ -614,7 +614,12 @@ bool wintun_tun_device_impl::open(
         return false;
     }
 
-    std::wstring wname(adapter_name.begin(), adapter_name.end());
+    std::wstring wname = wide_from_narrow(adapter_name.c_str());
+    if (wname.empty())
+    {
+        ec = make_error_code(boost::system::errc::invalid_argument);
+        return false;
+    }
 
     static const GUID adapter_guid = {0xDEADBA11,
         0xCAFE,
