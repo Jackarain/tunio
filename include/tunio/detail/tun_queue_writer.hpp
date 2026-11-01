@@ -168,12 +168,7 @@ public:
                     // （1.38+）的默认关联执行器为 inline_executor，无法满足
                     // post 的 blocking.never 约束（编译失败），dispatch 无此
                     // 限制，且与引擎其余完成回调派发方式保持一致。
-                    auto executor = net::get_associated_executor(handler);
-                    net::dispatch(executor,
-                        [h = std::move(handler), err]() mutable
-                        {
-                            h(err, 0);
-                        });
+                    complete_write(std::move(handler), err, 0);
                     return;
                 }
 
@@ -234,8 +229,11 @@ public:
                 stats_->tx_dropped.fetch_add(1, std::memory_order_relaxed);
                 recycle(std::move(e.buf));
                 if (e.handler)
-                    e.handler(
-                        make_error_code(net::error::operation_aborted), 0);
+                {
+                    complete_write(std::move(e.handler),
+                        make_error_code(net::error::operation_aborted),
+                        0);
+                }
             }
         }
     }
