@@ -386,3 +386,38 @@ BOOST_AUTO_TEST_CASE(tun_queue_writer_cancel_counted_as_dropped)
     TEST_ASSERT(r.ec == net::error::operation_aborted);
     TEST_ASSERT(env.stats->tx_dropped.load() == dropped + 2);
 }
+
+BOOST_AUTO_TEST_CASE(tun_queue_writer_cancel_uses_associated_executor)
+{
+    backpressure_env env;
+    net::io_context target_io;
+    auto target_strand = net::make_strand(target_io);
+    bool called = false;
+    boost::system::error_code result;
+
+    std::promise<void> initiated;
+    auto initiated_fut = initiated.get_future();
+    auto writer = env.writer;
+    net::post(env.strand, [writer, target_strand, &initiated, &called,
+                              &result]() mutable {
+        writer->cancel_all();
+        tunio::packet_buffer buf(k_payload + 64, 64);
+        std::memset(buf.writable_data(), 0x5c, k_payload);
+        buf.resize(k_payload);
+        writer->async_write(std::move(buf),
+            net::bind_executor(target_strand,
+                [&called, &result, target_strand](
+                    boost::system::error_code ec, size_t) {
+                    called = true;
+                    result = ec;
+                    TEST_ASSERT(target_strand.running_in_this_thread());
+                }));
+        initiated.set_value();
+    });
+    wait_future_value(std::move(initiated_fut), 5000);
+    TEST_ASSERT(!called);
+
+    target_io.run();
+    TEST_ASSERT(called);
+    TEST_ASSERT(result == net::error::operation_aborted);
+}

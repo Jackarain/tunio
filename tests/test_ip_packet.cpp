@@ -790,4 +790,27 @@ BOOST_AUTO_TEST_CASE(test_device_read_capacity_guard)
     TEST_ASSERT(ec == net::error::message_size);
 }
 
+BOOST_AUTO_TEST_CASE(test_device_immediate_completion_uses_associated_executor)
+{
+    dev_env env;
+    ip_packet pkt(1024, 128);
+    net::io_context target_io;
+    auto target_strand = net::make_strand(target_io);
+    bool called = false;
+    boost::system::error_code result;
+
+    env.dev.async_read_ip(pkt,
+        net::bind_executor(target_strand,
+            [&](boost::system::error_code ec, size_t) {
+                called = true;
+                result = ec;
+                TEST_ASSERT(target_strand.running_in_this_thread());
+            }));
+    TEST_ASSERT(!called);
+
+    target_io.run();
+    TEST_ASSERT(called);
+    TEST_ASSERT(result == net::error::message_size);
+}
+
 } // namespace
