@@ -332,9 +332,10 @@ void tunio_impl::on_read(
     read_inflight_[index] = false;
     if (ec)
     {
-        // 非取消错误视为设备故障：关闭引擎，避免读循环空转。
+        // 非取消错误视为设备故障：走完整 close 清理设备、写队列与会话，
+        // 避免只置 open_ 后资源残留到析构。
         if (ec != net::error::operation_aborted)
-            open_.store(false, std::memory_order_release);
+            close();
         if (open_.load(std::memory_order_acquire))
             start_read_slot(index); // 设备被 close 后重新 open 的场景：续读
         return;
