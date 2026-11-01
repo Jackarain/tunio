@@ -183,7 +183,7 @@ public:
                 if (impl_.read_size_hint() != 0 &&
                     pkt.buffer().writable_size() < impl_.read_size_hint())
                 {
-                    detail::post_completion_on(ex,
+                    detail::post_completion_on(ex_,
                         std::move(handler),
                         make_error_code(net::error::message_size),
                         0);

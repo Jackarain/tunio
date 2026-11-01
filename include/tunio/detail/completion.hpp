@@ -13,31 +13,48 @@
 #include <boost/asio.hpp>
 
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 namespace tunio {
 namespace net = boost::asio;
 namespace detail {
 
-// 异步完成回调不得在发起函数内执行。先 post 到操作自身的回退执行器，
-// 确保发起函数已经返回；再在已出栈的任务中 dispatch 到处理器的关联
-// 执行器，兼顾 Asio 的非内联约束与 bind_executor 的执行器语义。
+// 异步完成回调不得在发起函数内执行。关联执行器支持 post 时直接排队；
+// inline_executor 没有排队能力，先 post 到操作自身的回退执行器，待任务
+// 出栈后再执行，兼顾 Asio 的非内联约束与 bind_executor 的执行器语义。
 template <typename FallbackExecutor, typename Handler, typename... Args>
 void post_completion_on(
     const FallbackExecutor& fallback, Handler handler, Args... args)
 {
     auto ex = net::get_associated_executor(handler, fallback);
-    net::post(fallback,
-        [h = std::move(handler),
-            args = std::tuple(std::move(args)...),
-            ex = std::move(ex)]() mutable
-        {
-            net::dispatch(std::move(ex),
-                [h = std::move(h), args = std::move(args)]() mutable
-                {
-                    std::apply(std::move(h), std::move(args));
-                });
-        });
+    auto deliver = [h = std::move(handler),
+                       args = std::tuple(std::move(args)...)]() mutable
+    {
+        std::apply(std::move(h), std::move(args));
+    };
+
+    if constexpr (std::is_same_v<std::decay_t<decltype(ex)>,
+                      net::inline_executor>)
+    {
+        net::post(fallback, std::move(deliver));
+    }
+    else if constexpr (requires {
+                           net::post(std::move(ex), std::move(deliver));
+                       })
+    {
+        net::post(std::move(ex), std::move(deliver));
+    }
+    else
+    {
+        // 某些多态执行器（如 any_completion_executor）不能直接作为
+        // post 的排队目标：先从回退执行器出栈，再 dispatch 到关联执行器。
+        net::post(fallback,
+            [ex = std::move(ex), deliver = std::move(deliver)]() mutable
+            {
+                net::dispatch(std::move(ex), std::move(deliver));
+            });
+    }
 }
 
 // 无法提供操作执行器时使用系统执行器作为提交位置；关联执行器仍会用于

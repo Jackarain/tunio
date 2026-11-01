@@ -1051,4 +1051,31 @@ BOOST_AUTO_TEST_CASE(test_device_immediate_completion_uses_associated_executor)
     TEST_ASSERT(result == net::error::message_size);
 }
 
+BOOST_AUTO_TEST_CASE(test_device_immediate_error_is_not_inline_with_inline_executor)
+{
+    net::io_context io;
+    tun_device dev(io);
+    int sv[2];
+    if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) != 0) {
+        TEST_THROW("socketpair failed");
+    }
+    boost::system::error_code assign_ec;
+    TEST_ASSERT(dev.assign(sv[0], 1500, false, assign_ec));
+
+    ip_packet pkt(1024, 128);
+    bool called = false;
+    dev.async_read_ip(pkt,
+        net::bind_executor(net::inline_executor(),
+            [&](boost::system::error_code, size_t) {
+                called = true;
+            }));
+    TEST_ASSERT(!called);
+
+    io.run();
+    TEST_ASSERT(called);
+
+    dev.close();
+    ::close(sv[1]);
+}
+
 } // namespace
