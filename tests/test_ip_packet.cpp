@@ -77,6 +77,24 @@ BOOST_AUTO_TEST_CASE(test_parse_ipv4_udp)
     TEST_ASSERT(std::memcmp(p.transport_data(), data.data(), 5) == 0);
 }
 
+BOOST_AUTO_TEST_CASE(test_parse_udp_ignores_ip_padding)
+{
+    const std::vector<uint8_t> data = {1, 2, 3, 4, 5};
+    auto vec = make_udp(0x0a000002, 0x08080808, 30000, 53, data);
+    vec.insert(vec.end(), {0xaa, 0xbb, 0xcc});
+    vec[2] = static_cast<uint8_t>(vec.size() >> 8);
+    vec[3] = static_cast<uint8_t>(vec.size() & 0xff);
+
+    ip_packet p;
+    p.parse(vec.data(), vec.size());
+    TEST_ASSERT(p.valid() && p.is_udp());
+    TEST_ASSERT(p.payload_size() == sizeof(tunio::udp_header) + data.size() + 3);
+    TEST_ASSERT(ntohs(p.udp()->length) ==
+        sizeof(tunio::udp_header) + data.size());
+    TEST_ASSERT(p.transport_data_size() == data.size());
+    TEST_ASSERT(std::memcmp(p.transport_data(), data.data(), data.size()) == 0);
+}
+
 BOOST_AUTO_TEST_CASE(test_parse_ipv4_icmp)
 {
     const std::vector<uint8_t> data = {0xde, 0xad, 0xbe, 0xef};

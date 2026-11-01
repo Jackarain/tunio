@@ -423,9 +423,7 @@ size_t ip_packet::transport_data_size() const noexcept
             ? payload_len_ - tcp_.header_len()
             : 0;
     if (is_udp() && transport_parsed_)
-        return payload_len_ > sizeof(udp_header)
-            ? payload_len_ - sizeof(udp_header)
-            : 0;
+        return static_cast<size_t>(ntohs(udp_.length)) - sizeof(udp_header);
     if ((is_icmp() || is_icmpv6()) && transport_parsed_)
         return payload_len_ > 8 ? payload_len_ - 8 : 0;
     return payload_len_;
