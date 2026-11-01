@@ -3436,6 +3436,93 @@ BOOST_AUTO_TEST_CASE(test_ooo_same_start_longer_replaces)
     peer.close();
 }
 
+BOOST_AUTO_TEST_CASE(test_ooo_same_start_longer_at_segment_limit)
+{
+    engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+        std::chrono::seconds(30), 4096, std::chrono::milliseconds(5000),
+        std::chrono::milliseconds(200), 8, 1, false, 15, 1);
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(env.io.get_executor());
+    constexpr uint16_t port = 12384;
+    constexpr uint32_t base = 1001;
+    establish_tcp(env, acceptor, peer, port, 1000);
+
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 5, base, 65535, {'F', 'G', 'H', 'I', 'J'}));
+    const std::string longer = "FGHIJKLMNO";
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 5, base, 65535,
+        std::vector<uint8_t>(longer.begin(), longer.end())));
+
+    std::promise<size_t> first_n;
+    std::promise<std::string> second_data;
+    std::array<char, 64> buf;
+    peer.async_read_some(net::buffer(buf), [&](boost::system::error_code ec,
+        size_t n) {
+        TEST_ASSERT(!ec);
+        first_n.set_value(n);
+        peer.async_read_some(net::buffer(buf),
+            [&](boost::system::error_code ec2, size_t n2) {
+            TEST_ASSERT(!ec2);
+            second_data.set_value(std::string(buf.data(), n2));
+        });
+    });
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18, base,
+        base, 65535, {'A', 'B', 'C', 'D', 'E'}));
+
+    TEST_ASSERT(future_get(first_n.get_future()) == 5);
+    TEST_ASSERT(future_get(second_data.get_future()) == longer);
+    TEST_ASSERT(last_ack_window(env) == 4096 - longer.size());
+    peer.close();
+}
+
+BOOST_AUTO_TEST_CASE(test_ooo_fin_extension_at_segment_limit)
+{
+    engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),
+        std::chrono::seconds(30), 4096, std::chrono::milliseconds(5000),
+        std::chrono::milliseconds(200), 8, 1, false, 15, 1);
+    tun_tcp_acceptor acceptor(env.engine);
+    tun_tcp_socket peer(env.io.get_executor());
+    constexpr uint16_t port = 12385;
+    constexpr uint32_t base = 1001;
+    establish_tcp(env, acceptor, peer, port, 1000);
+
+    const std::string out_of_order = "FGHIJ";
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18,
+        base + 5, base, 65535,
+        std::vector<uint8_t>(out_of_order.begin(), out_of_order.end())));
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x11,
+        base + 10, base, 65535, {}));
+
+    std::promise<std::string> data;
+    std::promise<boost::system::error_code> eof;
+    std::array<char, 64> buf1;
+    std::array<char, 64> buf2;
+    std::array<char, 64> buf3;
+    auto received = std::make_shared<std::string>();
+    peer.async_read_some(net::buffer(buf1), [&, received](
+        boost::system::error_code ec, size_t n) {
+        TEST_ASSERT(!ec);
+        received->append(buf1.data(), n);
+        peer.async_read_some(net::buffer(buf2), [&, received](
+            boost::system::error_code ec2, size_t n2) {
+            TEST_ASSERT(!ec2);
+            received->append(buf2.data(), n2);
+            data.set_value(*received);
+            peer.async_read_some(net::buffer(buf3),
+                [&](boost::system::error_code ec3, size_t) {
+                eof.set_value(ec3);
+            });
+        });
+    });
+    env.dev.send(make_tcp(CLIENT_IP, DEST_IP, port, DEST_PORT, 0x18, base,
+        base, 65535, {'A', 'B', 'C', 'D', 'E'}));
+
+    TEST_ASSERT(future_get(data.get_future()) == "ABCDEFGHIJ");
+    TEST_ASSERT(future_get(eof.get_future()) == net::error::eof);
+    peer.close();
+}
+
 BOOST_AUTO_TEST_CASE(test_ooo_multiple_overlaps_are_merged)
 {
     engine_env env(1500, std::chrono::seconds(1), std::chrono::seconds(30),

@@ -755,7 +755,9 @@ bool tcp_engine::ooo_append(
 
     size_t overlap = 0;
     bool fin_covered = false;
-    for (const auto& [old_seq, old_seg] : f.ooo_cache)
+    bool touches_existing = false;
+    tcp_flow::ooo_segment* fin_extension = nullptr;
+    for (auto& [old_seq, old_seg] : f.ooo_cache)
     {
         const int64_t start = offset(old_seq);
         const int64_t end = start + static_cast<int64_t>(old_seg.data.size());
@@ -763,15 +765,32 @@ bool tcp_engine::ooo_append(
         const int64_t hi = std::min<int64_t>(end, static_cast<int64_t>(len));
         if (lo < hi)
             overlap += static_cast<size_t>(hi - lo);
-        if (old_seg.fin && end == static_cast<int64_t>(len))
-            fin_covered = true;
+        if (start <= static_cast<int64_t>(len) && end >= 0)
+            touches_existing = true;
+        if (end == static_cast<int64_t>(len))
+        {
+            if (old_seg.fin)
+                fin_covered = true;
+            else
+                fin_extension = &old_seg;
+        }
     }
 
     const size_t net_add = len - overlap;
-    if (net_add == 0 && (!fin || fin_covered))
-        return false; // 完全重复：保留先到数据并触发 re-ACK
+    if (net_add == 0)
+    {
+        if (!fin || fin_covered)
+            return false; // 完全重复：保留先到数据并触发 re-ACK
+        if (!fin_extension)
+            return false; // FIN 位于已缓存数据中间，忽略非法段
+        fin_extension->fin = true;
+        return true;
+    }
 
-    if (f.ooo_cache.size() >= cfg_.tcp_ooo_max_segments ||
+    // 与本段重叠或相邻的旧段会在插入后合并，段数不会增加；仅全新区间
+    // 才受段数上限约束.
+    if ((f.ooo_cache.size() >= cfg_.tcp_ooo_max_segments &&
+            !touches_existing) ||
         f.rx_bytes + f.ooo_bytes + net_add > cfg_.max_rx_queue_per_flow ||
         !account_->reserve(net_add))
     {
