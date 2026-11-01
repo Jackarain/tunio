@@ -26,7 +26,10 @@ namespace detail {
 class unsupported_tun_device
 {
 public:
-    explicit unsupported_tun_device(net::io_context&) {}
+    explicit unsupported_tun_device(net::io_context& ctx)
+        : ex_(ctx.get_executor())
+    {
+    }
 
     bool open(const device_config&, boost::system::error_code& ec)
     {
@@ -70,7 +73,13 @@ public:
     template <typename Handler>
     void async_read(packet_buffer&, Handler&& handler)
     {
-        std::forward<Handler>(handler)(net::error::bad_descriptor, 0);
+        auto h = std::forward<Handler>(handler);
+        auto ex = net::get_associated_executor(h, ex_);
+        net::dispatch(std::move(ex),
+            [h = std::move(h)]() mutable
+            {
+                std::move(h)(net::error::bad_descriptor, 0);
+            });
     }
 
     template <typename Handler>
@@ -82,7 +91,13 @@ public:
     template <typename Handler>
     void async_write(packet_buffer&, Handler&& handler)
     {
-        std::forward<Handler>(handler)(net::error::bad_descriptor, 0);
+        auto h = std::forward<Handler>(handler);
+        auto ex = net::get_associated_executor(h, ex_);
+        net::dispatch(std::move(ex),
+            [h = std::move(h)]() mutable
+            {
+                std::move(h)(net::error::bad_descriptor, 0);
+            });
     }
 
     template <typename Handler>
@@ -90,6 +105,9 @@ public:
     {
         async_write(buf, std::forward<Handler>(handler));
     }
+
+private:
+    net::any_io_executor ex_;
 };
 
 } // namespace detail

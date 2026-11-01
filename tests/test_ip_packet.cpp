@@ -15,6 +15,7 @@
 
 #include "tunio/ip_packet.hpp"
 #include "tunio/tun_device.hpp"
+#include "tunio/detail/impl/tun_device_unsupported.hpp"
 
 #include <array>
 #include <atomic>
@@ -863,6 +864,80 @@ BOOST_AUTO_TEST_CASE(test_device_utun_read_uses_associated_executor)
     TEST_ASSERT(!result);
     TEST_ASSERT(pkt.valid() && pkt.is_udp());
     target_guard.reset();
+}
+
+BOOST_AUTO_TEST_CASE(test_device_utun_write_error_uses_associated_executor)
+{
+    dev_env env(true);
+    tunio::packet_buffer buf(64, 0);
+    buf.resize(20);
+    std::memset(buf.data(), 0, buf.size());
+    buf.data()[0] = 0x45;
+    net::io_context target_io;
+    auto target_strand = net::make_strand(target_io);
+    auto target_guard = net::make_work_guard(target_io);
+    std::atomic<bool> called{false};
+    bool on_target = false;
+    boost::system::error_code result;
+
+    env.dev.async_write_packet(buf,
+        net::bind_executor(target_strand,
+            [&](boost::system::error_code ec, size_t) {
+                result = ec;
+                on_target = target_strand.running_in_this_thread();
+                called.store(true, std::memory_order_release);
+            }));
+
+    TEST_ASSERT(!called.load(std::memory_order_acquire));
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(3);
+    while (!called.load(std::memory_order_acquire) &&
+        std::chrono::steady_clock::now() < deadline) {
+        target_io.run_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    TEST_ASSERT(called.load(std::memory_order_acquire));
+    TEST_ASSERT(on_target);
+    TEST_ASSERT(result == net::error::invalid_argument);
+    target_guard.reset();
+}
+
+BOOST_AUTO_TEST_CASE(test_unsupported_device_completion_uses_associated_executor)
+{
+    net::io_context io;
+    tunio::detail::unsupported_tun_device dev(io);
+    tunio::packet_buffer buf;
+    net::io_context target_io;
+    auto target_strand = net::make_strand(target_io);
+    int completed = 0;
+    bool read_on_target = false;
+    bool write_on_target = false;
+    boost::system::error_code read_ec;
+    boost::system::error_code write_ec;
+
+    dev.async_read(buf,
+        net::bind_executor(target_strand,
+            [&](boost::system::error_code ec, size_t) {
+                ++completed;
+                read_ec = ec;
+                read_on_target = target_strand.running_in_this_thread();
+            }));
+    dev.async_write(buf,
+        net::bind_executor(target_strand,
+            [&](boost::system::error_code ec, size_t) {
+                ++completed;
+                write_ec = ec;
+                write_on_target = target_strand.running_in_this_thread();
+            }));
+
+    TEST_ASSERT(completed == 0);
+    target_io.run();
+    TEST_ASSERT(completed == 2);
+    TEST_ASSERT(read_on_target);
+    TEST_ASSERT(write_on_target);
+    TEST_ASSERT(read_ec == net::error::bad_descriptor);
+    TEST_ASSERT(write_ec == net::error::bad_descriptor);
 }
 
 BOOST_AUTO_TEST_CASE(test_device_write_ip)

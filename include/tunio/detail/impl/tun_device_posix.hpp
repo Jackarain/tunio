@@ -165,8 +165,14 @@ public:
             // headroom 不足 4 字节时写入会越过堆分配起始地址（下溢），拒绝。
             if (buf.headroom() < 4)
             {
-                std::forward<Handler>(handler)(
-                    make_error_code(net::error::invalid_argument), 0);
+                auto h = std::forward<Handler>(handler);
+                auto ex = net::get_associated_executor(h, ctx_.get_executor());
+                net::dispatch(std::move(ex),
+                    [h = std::move(h)]() mutable
+                    {
+                        std::move(h)(
+                            make_error_code(net::error::invalid_argument), 0);
+                    });
                 return;
             }
             uint8_t* prefix = buf.data() - 4;
