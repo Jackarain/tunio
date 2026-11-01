@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "tunio/detail/completion.hpp"
 #include "tunio/packet_buffer.hpp"
 #include "tunio/tun_config.hpp"
 
@@ -121,33 +122,21 @@ namespace tunio {
 namespace net = boost::asio;
 namespace detail {
 
-// Post helper that captures ec and bytes into a closure — works with any
-// Boost.Asio version (post(executor, token) only).
 template <typename FallbackExecutor, typename HandlerT, typename EcT, typename BytesT>
 void async_post_with_result(
     const FallbackExecutor& fallback, HandlerT&& h, EcT ec, BytesT bytes)
 {
-    auto ex = net::get_associated_executor(h, fallback);
-    net::post(ex,
-        [h = std::forward<HandlerT>(h),
-            ec = std::move(ec),
-            bytes = std::move(bytes)]() mutable
-        {
-            h(ec, bytes);
-        });
+    post_completion_on(fallback,
+        std::forward<HandlerT>(h),
+        std::move(ec),
+        std::move(bytes));
 }
 
-// Post helper that captures an error_code into a closure.
 template <typename FallbackExecutor, typename HandlerT>
 void async_post_with_error(
     const FallbackExecutor& fallback, HandlerT&& h, boost::system::error_code ec)
 {
-    auto ex = net::get_associated_executor(h, fallback);
-    net::post(ex,
-        [h = std::forward<HandlerT>(h), ec]() mutable
-        {
-            h(ec, 0);
-        });
+    post_completion_on(fallback, std::forward<HandlerT>(h), ec, 0);
 }
 
 // Wintun DLL 动态加载的 API 指针表。
